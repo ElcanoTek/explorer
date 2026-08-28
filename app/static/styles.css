@@ -1207,6 +1207,10 @@ input.flatpickr-mobile {
 
 .message-advanced__content code,
 .email-meta__row code {
+  /* S3 keys and Message-IDs are identifiers: the code face, not the UI face.
+   * Without this they fell through to the browser's default monospace, so the
+   * only monospace Explorer shipped was whatever the visitor's OS supplied. */
+  font-family: var(--font-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--color-text-primary);
@@ -1280,6 +1284,12 @@ input.flatpickr-mobile {
   line-height: var(--line-height-body-lg);
 }
 
+/* The plain-text body is a <pre>: preformatted mail relies on a fixed advance
+ * width for its own alignment, so it renders in the code face. */
+.message-body--text {
+  font-family: var(--font-code);
+}
+
 .message-body--quoted {
   opacity: 0.82;
 }
@@ -1293,6 +1303,18 @@ input.flatpickr-mobile {
   color: var(--color-text-primary) !important;
   line-height: var(--line-height-body-lg) !important;
   max-width: 100% !important;
+}
+
+/* Preformatted blocks in a sender's HTML would otherwise resolve to the bare
+ * `monospace` keyword, i.e. whatever mono the visitor's OS happens to have.
+ * Normalise them onto the code face, the same way colour and line-height
+ * above are normalised. */
+.body-preview-html.message-body pre,
+.body-preview-html.message-body code,
+.body-preview-html.message-body samp,
+.body-preview-html.message-body kbd,
+.body-preview-html.message-body tt {
+  font-family: var(--font-code) !important;
 }
 
 .body-preview-html.message-body a,

@@ -2,28 +2,40 @@
   color-scheme: dark;
   --theme-selector-attribute: data-theme;
   --theme-preference-storage-key: flag-theme-preference;
-  --font-heading: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-code: "Share Tech Mono", "SF Mono", "Consolas", monospace;
-  --font-code-ui: "VT323", "Share Tech Mono", monospace;
+  /* Brand faces come from fonts/fonts.css, which sets --font-brand to
+   * "Nebula Sans" and both code variables to "Hack". There is exactly one font
+   * sheet and one pair of faces across every Elcano product — see Flag's FONTS.md.
+   * The fallbacks below name the same two faces, so a product that forgets the
+   * sheet degrades to a system stack rather than to a different brand face.
+   * Never name a family in product CSS; always use these tokens. */
+  --font-heading: var(--font-brand, "Nebula Sans"), "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: var(--font-brand, "Nebula Sans"), "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* One mono serves both code and code-chrome. The variables stay distinct so
+   * product CSS reading --font-code-ui keeps working, but they resolve alike. */
+  --font-code: var(--font-code-brand, "Hack"), ui-monospace, "SF Mono", "Consolas", monospace;
+  --font-code-ui: var(--font-code-ui-brand, "Hack"), ui-monospace, "SF Mono", "Consolas", monospace;
 
+  /* Only these four weights are shipped as real faces. Anything else is a
+   * synthetic smear — see Flag's FONTS.md before adding a fifth. */
   --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
   --font-size-display: clamp(2rem, 1.75rem + 0.8vw, 2.5rem);
   --line-height-display: 1.15;
   --font-size-title: 1.75rem;
-  --line-height-title: 1.2143;
+  --line-height-title: 1.2;
   --font-size-subtitle: 1.125rem;
-  --line-height-subtitle: 1.3334;
-  --font-size-body-lg: 0.875rem;
-  --line-height-body-lg: 1.4286;
-  --font-size-body: 0.8125rem;
-  --line-height-body: 1.3847;
-  --font-size-caption: 0.75rem;
-  --line-height-caption: 1.3334;
-  --font-size-overline: 0.6875rem;
-  --line-height-overline: 1.2728;
+  --line-height-subtitle: 1.3;
+  --font-size-body-lg: 1.0625rem;
+  --line-height-body-lg: 1.5;
+  --font-size-body: 1rem;
+  --line-height-body: 1.5;
+  --font-size-caption: 0.8125rem;
+  --line-height-caption: 1.4;
+  --font-size-overline: 0.75rem;
+  --line-height-overline: 1.4;
 
   --color-primary: #7272ab;
   --color-primary-hover: #8686c4;
@@ -52,6 +64,8 @@
   --color-warning: #ff8847;
   --color-danger: #ff5555;
   --color-info: #8a8bc0;
+  /* Text color used on top of --color-success fills (e.g. success buttons). */
+  --color-on-success: var(--color-black);
 
   --color-status-pending-fg: #d3dde6;
   --color-status-pending-bg: rgba(124, 140, 152, 0.2);
@@ -193,6 +207,15 @@ body.theme-light {
   --color-text-disabled: rgba(92, 106, 135, 0.6);
   --color-overlay-soft: rgba(114, 114, 171, 0.08);
   --color-overlay-strong: rgba(20, 24, 36, 0.16);
+
+  /* Light-mode accent overrides: the dark-theme accents are tuned for dark
+   * surfaces and fail WCAG AA as text on white (#ff5555 ≈ 2.9:1). These darker
+   * equivalents all reach ≥ 4.5:1 on --color-bg / --color-surface-1/2. */
+  --color-success: #1e7a3f;
+  --color-warning: #8f3e10;
+  --color-danger: #b3261e;
+  --color-info: #4f5496;
+  --color-on-success: var(--color-white);
 
   --color-status-pending-fg: #33415f;
   --color-status-pending-bg: rgba(124, 140, 152, 0.18);
