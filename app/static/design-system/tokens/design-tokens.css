@@ -1,0 +1,255 @@
+:root {
+  color-scheme: dark;
+  --theme-selector-attribute: data-theme;
+  --theme-preference-storage-key: flag-theme-preference;
+  --font-heading: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-code: "Share Tech Mono", "SF Mono", "Consolas", monospace;
+  --font-code-ui: "VT323", "Share Tech Mono", monospace;
+
+  --font-weight-regular: 400;
+  --font-weight-bold: 700;
+
+  --font-size-display: clamp(2rem, 1.75rem + 0.8vw, 2.5rem);
+  --line-height-display: 1.15;
+  --font-size-title: 1.75rem;
+  --line-height-title: 1.2143;
+  --font-size-subtitle: 1.125rem;
+  --line-height-subtitle: 1.3334;
+  --font-size-body-lg: 0.875rem;
+  --line-height-body-lg: 1.4286;
+  --font-size-body: 0.8125rem;
+  --line-height-body: 1.3847;
+  --font-size-caption: 0.75rem;
+  --line-height-caption: 1.3334;
+  --font-size-overline: 0.6875rem;
+  --line-height-overline: 1.2728;
+
+  --color-primary: #7272ab;
+  --color-primary-hover: #8686c4;
+  --color-secondary: #586f7c;
+  --color-accent: #9da7ef;
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  --color-bg: #1a0b1e;
+  --color-surface-1: #241b31;
+  --color-surface-2: #2f2741;
+
+  --color-border: rgba(114, 114, 171, 0.35);
+  --color-border-strong: rgba(114, 114, 171, 0.55);
+  --color-border-subtle: rgba(255, 255, 255, 0.14);
+
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #d2d9de;
+  --color-text-muted: #beb6cd;
+  --color-text-disabled: rgba(210, 217, 222, 0.45);
+
+  --color-overlay-soft: rgba(0, 0, 0, 0.2);
+  --color-overlay-strong: rgba(0, 0, 0, 0.4);
+
+  --color-success: #50fa7b;
+  --color-warning: #ff8847;
+  --color-danger: #ff5555;
+  --color-info: #8a8bc0;
+
+  --color-status-pending-fg: #d3dde6;
+  --color-status-pending-bg: rgba(124, 140, 152, 0.2);
+  --color-status-pending-border: rgba(124, 140, 152, 0.6);
+
+  --color-status-scheduled-fg: #ffe4b8;
+  --color-status-scheduled-bg: rgba(224, 171, 74, 0.18);
+  --color-status-scheduled-border: rgba(224, 171, 74, 0.62);
+
+  --color-status-assigned-fg: #cfe3ff;
+  --color-status-assigned-bg: rgba(90, 132, 255, 0.2);
+  --color-status-assigned-border: rgba(90, 132, 255, 0.58);
+
+  --color-status-leased-fg: #e5d6ff;
+  --color-status-leased-bg: rgba(168, 119, 255, 0.2);
+  --color-status-leased-border: rgba(168, 119, 255, 0.58);
+
+  --color-status-running-fg: #c9f0ff;
+  --color-status-running-bg: rgba(47, 183, 220, 0.22);
+  --color-status-running-border: rgba(47, 183, 220, 0.62);
+
+  --color-status-analyzing-fg: #d6ddff;
+  --color-status-analyzing-bg: rgba(124, 107, 255, 0.22);
+  --color-status-analyzing-border: rgba(124, 107, 255, 0.62);
+
+  --color-status-success-fg: #cbfdd8;
+  --color-status-success-bg: rgba(80, 250, 123, 0.14);
+  --color-status-success-border: rgba(80, 250, 123, 0.6);
+
+  --color-status-warning-fg: #ffd2a1;
+  --color-status-warning-bg: rgba(255, 136, 71, 0.2);
+  --color-status-warning-border: rgba(255, 136, 71, 0.62);
+
+  --color-status-error-fg: #ffd2d2;
+  --color-status-error-bg: rgba(255, 85, 85, 0.14);
+  --color-status-error-border: rgba(255, 85, 85, 0.6);
+
+  --color-status-cancelled-fg: #c7ced4;
+  --color-status-cancelled-bg: rgba(108, 118, 130, 0.16);
+  --color-status-cancelled-border: rgba(108, 118, 130, 0.48);
+
+  --gradient-bg-home-signature:
+    radial-gradient(circle at 8% -4%, rgba(114, 114, 171, 0.34), transparent 34%),
+    radial-gradient(circle at 92% 2%, rgba(88, 111, 124, 0.28), transparent 32%),
+    radial-gradient(circle at 72% 82%, rgba(114, 114, 171, 0.18), transparent 30%),
+    linear-gradient(150deg, #0f0612 0%, #1a0b1e 52%, #090409 100%);
+
+  --gradient-bg-product-standard:
+    radial-gradient(circle at 10% 20%, rgba(114, 114, 171, 0.3), transparent 55%),
+    radial-gradient(circle at 80% 0%, rgba(88, 111, 124, 0.35), transparent 50%),
+    linear-gradient(160deg, #1a0b1e 0%, #000000 100%);
+
+  --gradient-bg-ops-console:
+    radial-gradient(ellipse at center, rgba(113, 114, 170, 0.06) 0%, transparent 60%),
+    linear-gradient(180deg, #1a0b1e 0%, #241b31 40%, #1a0b1e 100%);
+
+  --gradient-surface-panel:
+    linear-gradient(165deg, rgba(26, 11, 30, 0.88), rgba(52, 43, 73, 0.82));
+
+  --gradient-surface-card:
+    linear-gradient(145deg, rgba(38, 21, 44, 0.92), rgba(23, 13, 29, 0.88));
+
+  --gradient-surface-elevated:
+    linear-gradient(150deg, rgba(30, 17, 36, 0.94), rgba(22, 12, 28, 0.92));
+
+  --gradient-action-primary:
+    linear-gradient(140deg, #7272ab, #586f7c);
+
+  --gradient-action-success:
+    linear-gradient(155deg, rgba(44, 78, 59, 0.82), rgba(32, 53, 41, 0.9));
+
+  --gradient-action-disabled:
+    linear-gradient(150deg, rgba(69, 74, 86, 0.5), rgba(54, 59, 70, 0.38));
+
+  --gradient-featured-top-accent:
+    linear-gradient(90deg, rgba(200, 201, 237, 0.95), rgba(114, 114, 171, 0.45));
+
+  --gradient-featured-top-accent-selected:
+    linear-gradient(90deg, rgba(157, 167, 239, 0.98), rgba(114, 114, 171, 0.72));
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 2.5rem;
+  --space-9: 3rem;
+
+  --space-control-inline: var(--space-3);
+  --space-control-stack: var(--space-2);
+  --space-card-padding: var(--space-6);
+  --space-section-stack: var(--space-7);
+  --space-page-gutter: var(--space-6);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-pill: 999rem;
+
+  --shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 12px 24px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 22px 54px rgba(0, 0, 0, 0.52);
+  --shadow-section: 0 6px 16px rgba(0, 0, 0, 0.22);
+  --shadow-control-selected: 0 0 0 2px var(--color-status-running-border);
+
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+
+  --container-default: 72.5rem;
+  --container-dense: 87.5rem;
+
+  --transition-fast: 140ms ease;
+  --transition-base: 200ms ease;
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"],
+body.theme-light {
+  color-scheme: light;
+  --color-bg: #f4f6fb;
+  --color-primary-hover: #5f5f97;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #e9eefc;
+  --color-border: rgba(38, 55, 92, 0.2);
+  --color-border-strong: rgba(38, 55, 92, 0.32);
+  --color-border-subtle: rgba(38, 55, 92, 0.18);
+  --color-text-primary: #141824;
+  --color-text-secondary: #33415f;
+  --color-text-muted: #5c6a87;
+  --color-text-disabled: rgba(92, 106, 135, 0.6);
+  --color-overlay-soft: rgba(114, 114, 171, 0.08);
+  --color-overlay-strong: rgba(20, 24, 36, 0.16);
+
+  --color-status-pending-fg: #33415f;
+  --color-status-pending-bg: rgba(124, 140, 152, 0.18);
+  --color-status-pending-border: rgba(124, 140, 152, 0.42);
+  --color-status-scheduled-fg: #7a4a12;
+  --color-status-scheduled-bg: rgba(224, 171, 74, 0.24);
+  --color-status-scheduled-border: rgba(224, 171, 74, 0.54);
+  --color-status-assigned-fg: #1f3f87;
+  --color-status-assigned-bg: rgba(90, 132, 255, 0.2);
+  --color-status-assigned-border: rgba(90, 132, 255, 0.44);
+  --color-status-leased-fg: #5a2f8f;
+  --color-status-leased-bg: rgba(168, 119, 255, 0.18);
+  --color-status-leased-border: rgba(168, 119, 255, 0.42);
+  --color-status-running-fg: #0f5e78;
+  --color-status-running-bg: rgba(47, 183, 220, 0.22);
+  --color-status-running-border: rgba(47, 183, 220, 0.46);
+  --color-status-analyzing-fg: #3b3391;
+  --color-status-analyzing-bg: rgba(124, 107, 255, 0.2);
+  --color-status-analyzing-border: rgba(124, 107, 255, 0.44);
+  --color-status-success-fg: #1c5a33;
+  --color-status-success-bg: rgba(80, 250, 123, 0.16);
+  --color-status-success-border: rgba(80, 250, 123, 0.42);
+  --color-status-warning-fg: #8f3e10;
+  --color-status-warning-bg: rgba(255, 136, 71, 0.24);
+  --color-status-warning-border: rgba(255, 136, 71, 0.48);
+  --color-status-error-fg: #7c1f1f;
+  --color-status-error-bg: rgba(255, 85, 85, 0.18);
+  --color-status-error-border: rgba(255, 85, 85, 0.44);
+  --color-status-cancelled-fg: #59657a;
+  --color-status-cancelled-bg: rgba(108, 118, 130, 0.16);
+  --color-status-cancelled-border: rgba(108, 118, 130, 0.34);
+
+  --gradient-bg-home-signature:
+    radial-gradient(circle at 9% -8%, rgba(114, 114, 171, 0.28), transparent 42%),
+    radial-gradient(circle at 90% 0%, rgba(88, 111, 124, 0.24), transparent 38%),
+    linear-gradient(150deg, #f7f9ff 0%, #eaf0ff 52%, #e2e9fb 100%);
+  --gradient-bg-product-standard:
+    radial-gradient(circle at 12% 16%, rgba(114, 114, 171, 0.3), transparent 52%),
+    radial-gradient(circle at 82% 0%, rgba(88, 111, 124, 0.24), transparent 44%),
+    linear-gradient(160deg, #eef3ff 0%, #dde6fb 100%);
+  --gradient-bg-ops-console:
+    radial-gradient(circle at 18% 22%, rgba(88, 111, 124, 0.28), transparent 48%),
+    radial-gradient(circle at 80% 82%, rgba(114, 114, 171, 0.22), transparent 46%),
+    linear-gradient(180deg, #edf2ff 0%, #dce6fb 45%, #e7edfc 100%);
+  --gradient-surface-panel: linear-gradient(165deg, #ffffff, #f2f6ff);
+  --gradient-surface-card: linear-gradient(145deg, #ffffff, #eef3ff);
+  --gradient-surface-elevated: linear-gradient(150deg, #ffffff, #e8efff);
+  --gradient-featured-top-accent:
+    linear-gradient(90deg, rgba(114, 114, 171, 0.42), rgba(88, 111, 124, 0.22));
+  --gradient-featured-top-accent-selected:
+    linear-gradient(90deg, rgba(114, 114, 171, 0.78), rgba(88, 111, 124, 0.42));
+
+  --shadow-sm: 0 6px 14px rgba(40, 52, 86, 0.12);
+  --shadow-md: 0 10px 18px rgba(38, 55, 92, 0.16);
+  --shadow-lg: 0 16px 34px rgba(38, 55, 92, 0.2);
+  --shadow-section: 0 4px 10px rgba(40, 52, 86, 0.08);
+  --shadow-control-selected: 0 0 0 2px var(--color-status-running-border);
+
+  --focus-ring: 0 0 0 2px var(--color-white), 0 0 0 4px var(--color-accent);
+}

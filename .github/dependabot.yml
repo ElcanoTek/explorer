@@ -1,0 +1,19 @@
+# Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Weekly version + security updates, all bundled into one PR per ecosystem.
+# Tests gate the merge — review the consolidated diff, don't read every changelog.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      pip:
+        patterns:
+          - "*"

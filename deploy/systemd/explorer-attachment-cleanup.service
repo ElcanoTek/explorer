@@ -1,0 +1,6 @@
+[Unit]
+Description=Clean Explorer attachment temp files
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -lc 'mkdir -p /opt/explorer/.tmp/email_attachments && /usr/bin/find /opt/explorer/.tmp/email_attachments -mindepth 1 -maxdepth 1 -type f -mmin +60 -delete'

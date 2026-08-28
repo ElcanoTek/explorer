@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block header_title %}Email Details{% endblock %}
+{% block header_intro %}Review message metadata, attachments, and body content with the shared Explorer visual system.{% endblock %}
+{% block topbar_actions %}
+<a href="/" class="btn btn-ghost">Back to Inbox</a>
+{% endblock %}
+{% block content %}
+{% set raw_from = email.from or "" %}
+{% set sender_name = raw_from.split("<")[0].replace('"', "").strip() %}
+{% set sender_email = raw_from.split("<")[1].split(">")[0].strip() if "<" in raw_from and ">" in raw_from else raw_from.strip() %}
+{% set sender_display = sender_name if sender_name else sender_email %}
+{% set avatar_letter = (sender_display[:1] or "?")|upper %}
+
+<section class="card message-thread">
+  <h1 class="message-thread__subject">{{ email.subject or "(no subject)" }}</h1>
+
+  <article class="message-card" aria-label="Email message">
+    <header class="message-card__header">
+      <div class="message-card__primary">
+        <div class="message-card__avatar" aria-hidden="true">{{ avatar_letter }}</div>
+        <div class="message-card__identity">
+          <p class="message-card__from-line">
+            <strong class="message-card__sender">{{ sender_display }}</strong>
+            {% if sender_email and sender_email != sender_display %}
+            <span class="message-card__sender-email">&lt;{{ sender_email }}&gt;</span>
+            {% endif %}
+          </p>
+        </div>
+      </div>
+      <div class="message-card__meta-list">
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">To:</p>
+          <p class="message-card__meta-value message-card__to-line">{{ email.to }}</p>
+        </div>
+        {% if email.cc %}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Cc</p>
+          <p class="message-card__meta-value message-card__cc-line">{{ email.cc }}</p>
+        </div>
+        {% endif %}
+        {% if email.bcc %}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Bcc</p>
+          <p class="message-card__meta-value message-card__bcc-line">{{ email.bcc }}</p>
+        </div>
+        {% endif %}
+        {% if email.reply_to %}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Reply-To</p>
+          <p class="message-card__meta-value message-card__reply-to-line">{{ email.reply_to }}</p>
+        </div>
+        {% endif %}
+      </div>
+      <p class="message-card__timestamp"><span class="email-meta__date" data-email-date="{{ email.date }}">{{ email.date }}</span></p>
+    </header>
+
+    <div class="message-card__body-wrap">
+      <details class="message-advanced">
+        <summary>Advanced details</summary>
+        <div class="message-advanced__content">
+          <p class="email-meta__row"><strong>S3 key:</strong> <code>{{ email.s3_key }}</code></p>
+          <p class="email-meta__row"><strong>Message ID:</strong> <code>{{ email.message_id }}</code></p>
+        </div>
+      </details>
+
+      {% if email.attachments %}
+      <div class="attachment-chips" aria-label="Attachments">
+        {% for att in email.attachments %}
+        <a class="attachment-chip" href="/attachment?s3_key={{ email.s3_key|urlencode }}&filename={{ att.filename|urlencode }}" aria-label="Download {{ att.filename }}">
+          <svg class="attachment-chip__icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+          <span class="attachment-chip__meta">
+            <span class="attachment-chip__name" title="{{ att.filename }}">{{ att.filename }}</span>
+            <span class="attachment-chip__size">{{ att.size_bytes }} bytes</span>
+          </span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if email.body_preview_html %}
+      <div class="body-preview body-preview-html message-body" id="message-body">{{ email.body_preview_html | safe }}</div>
+      {% else %}
+      <pre class="body-preview message-body message-body--text" id="message-body">{{ email.body_preview }}</pre>
+      {% endif %}
+    </div>
+  </article>
+</section>
+
+<script>
+  (function () {
+    const formatDates = () => {
+      const formatter = new Intl.DateTimeFormat(undefined, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      });
+
+      document.querySelectorAll(".email-meta__date[data-email-date]").forEach((node) => {
+        const value = node.getAttribute("data-email-date");
+        if (!value) return;
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return;
+        node.textContent = formatter.format(parsed);
+      });
+    };
+
+    const createTrimToggle = (target) => {
+      if (!target || target.dataset.trimmed === "1") {
+        return;
+      }
+
+      target.hidden = true;
+      target.dataset.trimmed = "1";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "trimmed-toggle";
+      button.setAttribute("aria-expanded", "false");
+      button.innerHTML = '<span class="trimmed-toggle__dots">...</span><span>Show trimmed content</span>';
+
+      button.addEventListener("click", () => {
+        const isHidden = target.hidden;
+        target.hidden = !isHidden;
+        button.setAttribute("aria-expanded", isHidden ? "true" : "false");
+        button.lastChild.textContent = isHidden ? "Hide trimmed content" : "Show trimmed content";
+      });
+
+      target.parentNode.insertBefore(button, target);
+    };
+
+    const collapseQuotedHtml = () => {
+      const htmlBody = document.querySelector(".body-preview-html");
+      if (!htmlBody) {
+        return;
+      }
+
+      const candidates = htmlBody.querySelectorAll("blockquote, div.gmail_quote, div[id='divRplyFwdMsg']");
+      if (!candidates.length) {
+        return;
+      }
+
+      createTrimToggle(candidates[0]);
+    };
+
+    const collapseQuotedText = () => {
+      const textBody = document.querySelector(".message-body--text");
+      if (!textBody) {
+        return;
+      }
+
+      const rawText = textBody.textContent || "";
+      if (!rawText.trim()) {
+        return;
+      }
+
+      const lines = rawText.split(/\r?\n/);
+      let splitIndex = -1;
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i] || "";
+        if (/^>/.test(line.trim()) || /^On\s.+wrote:\s*$/i.test(line.trim())) {
+          splitIndex = i;
+          break;
+        }
+      }
+
+      if (splitIndex <= 0) {
+        return;
+      }
+
+      const visibleText = lines.slice(0, splitIndex).join("\n").trimEnd();
+      const quotedText = lines.slice(splitIndex).join("\n").trim();
+      if (!quotedText) {
+        return;
+      }
+
+      const visibleBlock = document.createElement("pre");
+      visibleBlock.className = "body-preview message-body";
+      visibleBlock.textContent = visibleText;
+
+      const quotedBlock = document.createElement("pre");
+      quotedBlock.className = "body-preview message-body message-body--quoted";
+      quotedBlock.textContent = quotedText;
+
+      const parent = textBody.parentNode;
+      parent.replaceChild(visibleBlock, textBody);
+      parent.appendChild(quotedBlock);
+      createTrimToggle(quotedBlock);
+    };
+
+    const normalizeMessageLinks = (root) => {
+      if (!root) {
+        return;
+      }
+      root.querySelectorAll("a[href]").forEach((link) => {
+        const href = (link.getAttribute("href") || "").trim();
+        if (!href || href.startsWith("#")) {
+          return;
+        }
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+      });
+    };
+
+    const linkifyPlainTextBody = (root) => {
+      if (!root || !root.classList.contains("message-body--text") || root.dataset.linkified === "1") {
+        return;
+      }
+
+      const escapeHtml = (value) =>
+        value
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+
+      const text = root.textContent || "";
+      const urlRegex = /(https?:\/\/[^\s<]+[^\s<\.)])/gi;
+      const linked = escapeHtml(text).replace(urlRegex, (url) => {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+      });
+
+      root.innerHTML = linked.replace(/\r?\n/g, "<br>");
+      root.dataset.linkified = "1";
+    };
+
+    formatDates();
+    const messageBody = document.getElementById("message-body");
+    linkifyPlainTextBody(messageBody);
+    normalizeMessageLinks(messageBody);
+    collapseQuotedHtml();
+    collapseQuotedText();
+  })();
+</script>
+{% endblock %}

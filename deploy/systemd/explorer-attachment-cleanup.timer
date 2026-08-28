@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Explorer attachment cleanup periodically
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+AccuracySec=1m
+Unit=explorer-attachment-cleanup.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

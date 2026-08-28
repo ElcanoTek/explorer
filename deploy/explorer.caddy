@@ -1,0 +1,19 @@
+# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via
+# `import conf.d/*.caddy`. bootstrap.sh substitutes {{HOSTNAME}} and
+# injects `tls internal` when Let's Encrypt is disabled.
+
+{{HOSTNAME}} {
+	reverse_proxy 127.0.0.1:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

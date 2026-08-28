@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Explorer favicon light mode">
+  <rect width="64" height="64" rx="14" fill="#EEF3FF"/>
+  <rect x="13" y="17" width="34" height="24" rx="5" fill="none" stroke="#1A0B1E" stroke-width="3"/>
+  <path d="M15 20l15 11a3.5 3.5 0 0 0 4 0l15-11" fill="none" stroke="#1A0B1E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="46" cy="45" r="8" fill="#586F7C"/>
+  <path d="M52 51l5 5" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+</svg>

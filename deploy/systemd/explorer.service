@@ -1,0 +1,29 @@
+[Unit]
+Description=Explorer FastAPI service
+After=network.target
+
+[Service]
+Type=simple
+User=explorer
+Group=explorer
+WorkingDirectory=/opt/explorer
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/explorer/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=5
+RuntimeDirectory=explorer
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/explorer/.tmp
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

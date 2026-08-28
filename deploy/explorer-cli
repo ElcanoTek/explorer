@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 ElcanoTek, Inc.
+
+# /usr/local/bin/explorer — operator entry point for the Elcano
+# Explorer email-archive service.
+#
+# Thin dispatcher that forwards to systemctl/journalctl and to
+# scripts/update.sh for in-place updates. Installed by
+# scripts/bootstrap.sh. Patterned after gig/moc.
+
+set -euo pipefail
+
+SRC_DIR="${EXPLORER_SRC_DIR:-/opt/explorer-src}"
+APP_DIR="${EXPLORER_APP_DIR:-/opt/explorer}"
+ENV_FILE="$APP_DIR/.env"
+SERVICE="explorer.service"
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  start)    exec sudo systemctl start "$SERVICE" ;;
+  stop)     exec sudo systemctl stop "$SERVICE" ;;
+  restart)  exec sudo systemctl restart "$SERVICE" ;;
+  status)   exec sudo systemctl status "$SERVICE" ;;
+  logs)
+    if [[ $# -gt 0 ]]; then exec sudo journalctl -u "$SERVICE" "$@"; fi
+    exec sudo journalctl -fu "$SERVICE"
+    ;;
+  update)
+    [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    exec sudo bash "$SRC_DIR/scripts/update.sh" "$@"
+    ;;
+  rebuild)
+    # Rebuild and restart whatever is currently checked out, without
+    # fetching or fast-forwarding the branch.  Useful after a manual
+    # rollback or when you know the checkout is already correct.
+    [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    exec sudo env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 bash "$SRC_DIR/scripts/update.sh"
+    ;;
+  provision)
+    # Decrypt an optional encrypted config bundle and merge it into
+    # /opt/explorer/.env. Re-run after the bundle is rotated. Pass
+    # --client=NAME to pick a bundle; --no-restart to skip the systemctl
+    # restart at the end. See provision/README.md.
+    [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    exec sudo bash "$SRC_DIR/scripts/provision.sh" "$@"
+    ;;
+  env)
+    sub="${1:-show}"; shift || true
+    case "$sub" in
+      show|print|"")
+        [[ -f "$ENV_FILE" ]] || { echo "$ENV_FILE missing — run bootstrap.sh" >&2; exit 1; }
+        awk -F= '
+          /^[[:space:]]*#/    { next }
+          /TOKEN|KEY|SECRET|PASSWORD/ { printf "%s=[REDACTED]\n", $1; next }
+          NF>=2                { print }
+        ' "$ENV_FILE"
+        ;;
+      edit)
+        if ! sudo test -f "$ENV_FILE"; then
+          sudo install -o explorer -g explorer -m 0640 /dev/null "$ENV_FILE"
+        fi
+        editor="${EDITOR:-${VISUAL:-vi}}"
+        exec sudo "$editor" "$ENV_FILE"
+        ;;
+      help|--help|-h|*)
+        cat <<EOF
+explorer env              print /opt/explorer/.env (secrets redacted)
+explorer env edit         edit /opt/explorer/.env
+EOF
+        ;;
+    esac
+    ;;
+  tls)
+    sub="${1:-status}"; shift || true
+    snippet="/etc/caddy/conf.d/explorer.caddy"
+    if ! command -v caddy >/dev/null 2>&1; then
+      echo "Caddy not installed — re-run bootstrap with a hostname to set up TLS" >&2; exit 1
+    fi
+    case "$sub" in
+      status)
+        if [[ -f "$snippet" ]]; then
+          host=$(awk '/^[^[:space:]{}#]/ && /{/ {sub(" {",""); print; exit}' "$snippet" 2>/dev/null)
+          echo "Host: ${host:-<unconfigured>}"
+          if [[ -n "$host" ]]; then
+            echo | openssl s_client -servername "$host" -connect "${host}:443" 2>/dev/null \
+              | openssl x509 -noout -subject -issuer -dates 2>/dev/null \
+              || echo "(could not reach ${host}:443 — check DNS + firewall)"
+          fi
+        else
+          echo "No Caddy site block at $snippet"
+        fi
+        sudo systemctl is-active caddy.service 2>&1 || true
+        ;;
+      reload)   exec sudo caddy reload --config /etc/caddy/Caddyfile ;;
+      restart)  exec sudo systemctl restart caddy.service ;;
+      help|--help|-h|*)
+        cat <<EOF
+explorer tls status     show hostname + cert expiry + Caddy state
+explorer tls reload     reload /etc/caddy/Caddyfile without dropping connections
+explorer tls restart    restart the Caddy service
+EOF
+        ;;
+    esac
+    ;;
+  help|-h|--help|"")
+    cat <<'EOF'
+explorer — email-archive service operator CLI
+
+SERVICE CONTROL
+  explorer start | stop | restart | status
+  explorer logs [journalctl args...]
+
+UPDATES
+  explorer update                   git pull + rebuild + restart
+                                    (use EXPLORER_UPDATE_YES=1 to skip prompt)
+  explorer rebuild                  rebuild + restart current checkout
+                                    (skip fetch — useful after a manual rollback)
+  explorer provision [--client=N]   decrypt an encrypted config bundle and
+                                    merge into .env + restart
+                                    (--no-restart to skip; see provision/README.md)
+
+TLS (when Caddy was installed by bootstrap)
+  explorer tls status               show hostname + cert expiry + Caddy state
+  explorer tls reload               reload /etc/caddy/Caddyfile
+  explorer tls restart              restart Caddy
+
+CONFIG
+  explorer env                      print /opt/explorer/.env (secrets redacted)
+  explorer env edit                 edit /opt/explorer/.env
+EOF
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    exec "$0" --help
+    ;;
+esac

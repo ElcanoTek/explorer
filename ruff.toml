@@ -1,0 +1,17 @@
+# Lint/format configuration for Explorer.
+#
+# Pinned explicitly rather than riding Ruff's default rule set, so a
+# contributor's `ruff check` matches CI regardless of which Ruff release
+# they happen to have installed.
+target-version = "py311"
+line-length = 88
+
+[lint]
+select = [
+    "E4",  # pycodestyle: imports
+    "E7",  # pycodestyle: statement layout
+    "E9",  # pycodestyle: runtime/syntax errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
