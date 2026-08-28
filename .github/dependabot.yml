@@ -1,6 +1,20 @@
 # Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-# Weekly version + security updates, all bundled into one PR per ecosystem.
-# Tests gate the merge — review the consolidated diff, don't read every changelog.
+#
+# Two ecosystems are in play: the pins in requirements.txt, and the actions
+# pinned in .github/workflows/ci.yml. Both get weekly version updates
+# bundled into one PR per ecosystem, so a bump is a single consolidated diff
+# gated by CI — review the diff, don't read every changelog.
+#
+# Security updates are deliberately left ungrouped. Dependabot groups apply
+# to version updates only unless a group sets `applies-to: security-updates`,
+# and ungrouped is what we want here: an advisory fix arrives as its own
+# small PR that can land immediately instead of riding the weekly bundle.
+# That is what `open-pull-requests-limit` leaves headroom for.
+#
+# `labels: []` opts out of labelling entirely, including Dependabot's
+# default `dependencies` label. Dependabot only applies labels that already
+# exist in the repo, so naming any here would mean creating and maintaining
+# them by hand for no gain — these PRs are self-evident from their title.
 version: 2
 updates:
   - package-ecosystem: pip
@@ -8,12 +22,25 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - python
+    labels: []
     commit-message:
       prefix: chore(deps)
     groups:
       pip:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    # For this ecosystem "/" means the whole repo — i.e. every workflow under
+    # .github/workflows — not a manifest sitting in the root directory.
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: []
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      actions:
         patterns:
           - "*"
