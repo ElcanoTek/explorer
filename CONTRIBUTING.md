@@ -93,6 +93,10 @@ under `app/static/vendor/` is left alone.
   file.
 - One topic per PR. Say what breaks and how you tested it.
 - CI (`.github/workflows/ci.yml`) must be green: lint, format check, tests.
+  CodeQL (`.github/workflows/codeql.yml`) scans on every push and PR and
+  weekly; a new alert on your branch is yours to look at.
+- Use the issue and pull-request templates under `.github/`; they ask for
+  exactly what a reviewer needs.
 - Dependency bumps arrive via Dependabot (`.github/dependabot.yml`); please
   don't hand-roll them.
 

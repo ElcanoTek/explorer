@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: mailto:security@elcanotek.com
+    about: Report a vulnerability privately by email — see SECURITY.md. Never in a public issue.
+  - name: Licensing
+    url: mailto:licensing@elcanotek.com
+    about: Commercial licence questions (see docs/LICENSING.md).
