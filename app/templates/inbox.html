@@ -3,6 +3,7 @@
 {% block header_intro %}{% endblock %}
 {% block topbar_actions %}
 <form method="post" action="/logout">
+  {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />{% endif %}
   <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Log out" aria-label="Log out" title="Log out">
     <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#logout"></use></svg>
   </button>

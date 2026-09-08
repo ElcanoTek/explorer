@@ -92,6 +92,6 @@ shred -u /tmp/acme.env
 These are generated or entered per host by `bootstrap.sh`:
 
 - `EXPLORER_SESSION_SECRET` — must be unique per host.
-- `AUTH_SIGNING_PUBKEY` — the auth service's Ed25519 public key. It is a
-  *public* key, so it needs no encryption; keeping it out of the bundle also
-  means a key rotation does not require re-encrypting anything.
+- `AUTH_SIGNING_PUBKEY` — in Elcano mode, the auth service's Ed25519 public
+  key. It is a *public* key, so it needs no encryption; keeping it out of the
+  bundle also means a key rotation does not require re-encrypting anything.

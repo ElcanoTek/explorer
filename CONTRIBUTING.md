@@ -39,7 +39,7 @@ and a real one has been committed here before.
 python -m pytest -q
 ```
 
-61 tests, under a second, **no AWS account and no network needed**. Anything
+91 tests, under a second, **no AWS account and no network needed**. Anything
 that would touch S3 goes through the fake client in `tests/test_s3_email.py`
 (`FakeS3`), and anything that needs a signed-in browser mints a throwaway
 Ed25519 key and its own session cookie (`tests/test_endpoints.py`). Please
@@ -51,6 +51,9 @@ test:
 | File | Covers |
 |---|---|
 | `tests/test_auth.py` | The cookie verifier — valid, expired, tampered, foreign-key, malformed. |
+| `tests/test_local_auth.py` | Password policy and hashing, opaque sessions, expiry, revocation, and rate limits. |
+| `tests/test_local_auth_endpoints.py` | Local login, CSRF, mandatory password replacement, cookies, and logout. |
+| `tests/test_auth_admin.py` | Operator-managed account creation, recovery, disablement, and session revocation. |
 | `tests/test_date_parsing.py` | Date-range parsing, day counting, S3 key scoping, cursor cache. |
 | `tests/test_s3_email.py` | Prefix expansion, header parsing, search, HTML sanitizing, attachments. |
 | `tests/test_endpoints.py` | Routes end to end via `TestClient`, signed in and anonymous. |

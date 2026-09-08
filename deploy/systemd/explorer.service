@@ -12,6 +12,8 @@ ExecStart=/opt/explorer/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.
 Restart=always
 RestartSec=5
 RuntimeDirectory=explorer
+StateDirectory=explorer
+StateDirectoryMode=0700
 UMask=027
 NoNewPrivileges=true
 PrivateTmp=true
@@ -21,7 +23,7 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/opt/explorer/.tmp
+ReadWritePaths=/opt/explorer/.tmp /var/lib/explorer
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 

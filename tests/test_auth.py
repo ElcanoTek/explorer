@@ -70,7 +70,7 @@ def test_missing_email_rejected(signing_key):
 
 def test_tampered_payload_rejected(signing_key):
     token = _mint(signing_key)
-    body, sig = token.split(".")
+    _body, sig = token.split(".")
     # Flip a byte in the payload; signature no longer matches.
     bad = (
         base64.urlsafe_b64encode(b'{"email":"mallory@evil.com","exp":9999999999}')
@@ -119,3 +119,17 @@ def test_login_redirect_points_at_auth_with_return_to():
     loc = resp.headers["location"]
     assert loc.startswith(auth.AUTH_LOGIN_URL + "/?return_to=")
     assert "explorer.elcanotek.com" in loc
+
+
+def test_unknown_auth_mode_fails_configuration(monkeypatch):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "anything-goes")
+
+    with pytest.raises(RuntimeError, match="EXPLORER_AUTH_MODE"):
+        auth.build_auth_provider()
+
+
+def test_local_auth_rejects_insecure_cookie(monkeypatch):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "local")
+    monkeypatch.setenv("EXPLORER_AUTH_COOKIE_SECURE", "0")
+    with pytest.raises(RuntimeError, match="Secure cookies"):
+        auth.build_auth_provider()

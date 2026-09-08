@@ -370,6 +370,11 @@ summary:focus-visible,
   margin-top: var(--space-4);
 }
 
+.auth-card {
+  width: min(100%, 32rem);
+  margin-inline: auto;
+}
+
 .caption {
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);

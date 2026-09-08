@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import hmac
+import os
+import secrets
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -13,15 +16,27 @@ from typing import Any, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.auth import AUTH_LOGIN_URL, current_identity, login_redirect
+from app.auth import (
+    AuthProvider,
+    ElcanoAuthProvider,
+    LocalAuthProvider,
+    build_auth_provider,
+)
 from app.config import settings
+from app.local_auth import (
+    LOCAL_AUTH_COOKIE_NAME,
+    InvalidCurrentPasswordError,
+    LocalIdentity,
+    PasswordPolicyError,
+    verify_csrf_token,
+)
 from app.s3_email import S3EmailInbox, SearchCancelledError
 
 # Anchor every filesystem path to the package so the app works regardless of
@@ -34,11 +49,27 @@ ROOT_DIR = APP_DIR.parent
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     prune_attachment_cache()
+    provider = build_auth_provider()
+    if isinstance(provider, LocalAuthProvider) and settings.session_secret in {
+        "",
+        "explorer-dev-session-secret",
+    }:
+        raise RuntimeError(
+            "Local auth requires a generated EXPLORER_SESSION_SECRET for login CSRF"
+        )
+    _app.state.auth_provider = provider
     yield
 
 
 app = FastAPI(title="Explorer", version="0.1.0", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    session_cookie="explorer_ui",
+    same_site="lax",
+    https_only=os.getenv("EXPLORER_UI_COOKIE_SECURE", "1").strip().lower()
+    in {"1", "true", "yes", "on"},
+)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 templates.env.globals["static_version"] = str(int(time.time()))
@@ -66,6 +97,36 @@ ALLOWED_S3_KEY_ROOTS = tuple(
         if root
     }
 )
+
+PUBLIC_AUTH_PATHS = {"/health", "/login"}
+MUST_CHANGE_ALLOWED_PATHS = {"/change-password", "/logout"}
+
+
+def request_auth_provider(request: Request) -> AuthProvider:
+    return cast(AuthProvider, request.app.state.auth_provider)
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next) -> Response:
+    provider = request_auth_provider(request)
+    path = request.url.path
+    if path == "/health" or path.startswith("/static/"):
+        request.state.identity = None
+        return await call_next(request)
+
+    identity = provider.identity(request)
+    request.state.identity = identity
+    is_public = path in PUBLIC_AUTH_PATHS or path.startswith("/static/")
+    if not is_public and identity is None:
+        return provider.unauthenticated_response(request)
+    if (
+        isinstance(identity, LocalIdentity)
+        and identity.must_change_password
+        and path not in MUST_CHANGE_ALLOWED_PATHS
+        and not path.startswith("/static/")
+    ):
+        return RedirectResponse(url="/change-password", status_code=303)
+    return await call_next(request)
 
 
 def is_allowed_s3_key(key: str) -> bool:
@@ -190,7 +251,7 @@ def count_days_covered(date_ranges: list[tuple[date, date]]) -> int:
 
         last_start, last_end = merged[-1]
         if start.toordinal() <= last_end.toordinal() + 1:
-            merged[-1] = (last_start, end if end > last_end else last_end)
+            merged[-1] = (last_start, max(last_end, end))
             continue
         merged.append((start, end))
 
@@ -432,7 +493,7 @@ def create_search_job(
                 error=None,
                 completed_at=time.time(),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - background jobs persist failures.
             update_search_job(
                 job_id,
                 status="error",
@@ -497,27 +558,184 @@ def remove_attachment_file(path: Path) -> None:
         pass
 
 
-def is_logged_in(request: Request) -> bool:
-    # Login is the unified elcano_auth cookie, verified against the auth
-    # service's Ed25519 public key (see app/auth.py). No local password.
-    return current_identity(request) is not None
+def login_csrf_token(request: Request) -> str:
+    token = cast(str | None, request.session.get("login_csrf_token"))
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["login_csrf_token"] = token
+    return token
+
+
+def render_login(
+    request: Request,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "error": error,
+            "csrf_token": login_csrf_token(request),
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/login")
+def login_page(request: Request):
+    provider = request_auth_provider(request)
+    if not isinstance(provider, LocalAuthProvider):
+        if request.state.identity is not None:
+            return RedirectResponse(url="/", status_code=303)
+        return provider.unauthenticated_response(request)
+    identity = cast(LocalIdentity | None, request.state.identity)
+    if identity is not None:
+        destination = "/change-password" if identity.must_change_password else "/"
+        return RedirectResponse(url=destination, status_code=303)
+    return render_login(request)
+
+
+@app.post("/login")
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    csrf_token: str | None = Form(default=None),
+):
+    provider = request_auth_provider(request)
+    if not isinstance(provider, LocalAuthProvider):
+        return provider.unauthenticated_response(request)
+
+    expected_csrf = cast(str, request.session.get("login_csrf_token", ""))
+    if (
+        not expected_csrf
+        or not csrf_token
+        or not hmac.compare_digest(expected_csrf, csrf_token)
+    ):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    remote_address = request.client.host if request.client else "unknown"
+    if not provider.store.login_allowed(username, remote_address):
+        return render_login(
+            request,
+            error="Unable to sign in right now. Try again later.",
+            status_code=429,
+        )
+
+    user = provider.store.authenticate(username, password)
+    if user is None:
+        provider.store.record_login_failure(username, remote_address)
+        return render_login(
+            request,
+            error="Invalid username or password.",
+            status_code=401,
+        )
+
+    provider.store.record_login_success(user.username, remote_address)
+    issued = provider.store.create_session(user.id)
+    request.session.pop("login_csrf_token", None)
+    destination = "/change-password" if user.must_change_password else "/"
+    response = RedirectResponse(url=destination, status_code=303)
+    provider.set_session_cookie(response, issued.token)
+    return response
+
+
+@app.get("/change-password")
+def change_password_page(request: Request):
+    provider = request_auth_provider(request)
+    identity = request.state.identity
+    if not isinstance(provider, LocalAuthProvider) or not isinstance(
+        identity, LocalIdentity
+    ):
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "change_password.html",
+        {
+            "error": None,
+            "identity": identity,
+            "csrf_token": provider.csrf_token(request),
+        },
+    )
+
+
+@app.post("/change-password")
+def change_password_submit(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    provider = request_auth_provider(request)
+    identity = request.state.identity
+    if not isinstance(provider, LocalAuthProvider) or not isinstance(
+        identity, LocalIdentity
+    ):
+        raise HTTPException(status_code=404)
+    raw_token = request.cookies.get(LOCAL_AUTH_COOKIE_NAME, "")
+    if not verify_csrf_token(raw_token, csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    error: str | None = None
+    if new_password != confirm_password:
+        error = "New passwords do not match."
+    else:
+        try:
+            provider.store.change_password(
+                identity.user_id, current_password, new_password
+            )
+        except (InvalidCurrentPasswordError, PasswordPolicyError) as exc:
+            error = str(exc)
+    if error:
+        return templates.TemplateResponse(
+            request,
+            "change_password.html",
+            {
+                "error": error,
+                "identity": identity,
+                "csrf_token": provider.csrf_token(request),
+            },
+            status_code=400,
+        )
+
+    issued = provider.store.create_session(identity.user_id)
+    response = RedirectResponse(url="/", status_code=303)
+    provider.set_session_cookie(response, issued.token)
+    return response
 
 
 @app.post("/logout")
-def logout(request: Request):
-    # Logout is owned by the auth service — it clears the shared cookie. We
-    # drop our own ephemeral session state and forward there; auth redirects
-    # back to its own login afterward.
+def logout(request: Request, csrf_token: str | None = Form(default=None)):
+    provider = request_auth_provider(request)
+    if isinstance(provider, ElcanoAuthProvider):
+        return provider.logout_response(request)
+
+    if not isinstance(provider, LocalAuthProvider):
+        raise HTTPException(status_code=500, detail="Unsupported auth provider")
+    raw_token = request.cookies.get(LOCAL_AUTH_COOKIE_NAME, "")
+    if not verify_csrf_token(raw_token, csrf_token or ""):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+    provider.store.revoke_session(raw_token)
     request.session.clear()
-    return RedirectResponse(url=f"{AUTH_LOGIN_URL}/logout", status_code=303)
+    response = RedirectResponse(url="/login", status_code=303)
+    provider.clear_session_cookie(response)
+    return response
 
 
 @app.get("/")
 def inbox_page(
     request: Request,
     day: str | None = Query(default=None),
-    date_from: list[str] | None = Query(default=None),
-    date_to: list[str] | None = Query(default=None),
+    date_from: list[str] | None = Query(default=None),  # noqa: B008
+    date_to: list[str] | None = Query(default=None),  # noqa: B008
     date_ranges: str | None = Query(default=None),
     mode: str | None = Query(default=None),
     sender: str | None = Query(default=None),
@@ -532,8 +750,6 @@ def inbox_page(
     search_job: str | None = Query(default=None),
     cancel_search: str | None = Query(default=None),
 ):
-    if not is_logged_in(request):
-        return login_redirect(request)
     search_owner_id = get_or_create_search_owner_id(request)
 
     selected_mode = (mode or search_mode or "view").strip().lower()
@@ -543,7 +759,7 @@ def inbox_page(
     prune_view_cache()
     prune_search_job_cache()
 
-    selected_day = date.today()
+    selected_day = date.today()  # noqa: DTZ011 - archive dates use host-local day.
     selected_ranges: list[tuple[date, date]] = [(selected_day, selected_day)]
     date_windows = [{"from": selected_day.isoformat(), "to": selected_day.isoformat()}]
     scanned_objects = 0
@@ -793,7 +1009,7 @@ def inbox_page(
                             cancel_search_params["date_to"] = [
                                 item["to"] for item in date_windows
                             ]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - surface safe search error in UI.
             error = str(exc)
 
     return templates.TemplateResponse(
@@ -834,19 +1050,22 @@ def inbox_page(
             "search_sender": search_sender,
             "search_body": search_body,
             "max_results": max_results,
+            "csrf_token": (
+                request_auth_provider(request).csrf_token(request)
+                if isinstance(request_auth_provider(request), LocalAuthProvider)
+                else ""
+            ),
         },
     )
 
 
 @app.get("/email")
 def email_detail_page(request: Request, s3_key: str = Query(...)):
-    if not is_logged_in(request):
-        return login_redirect(request)
     if not is_allowed_s3_key(s3_key):
         raise HTTPException(status_code=404, detail="Unknown email key.")
     try:
         email_data = inbox.get_email(s3_key=s3_key)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return templates.TemplateResponse(
@@ -862,8 +1081,6 @@ def email_detail_page(request: Request, s3_key: str = Query(...)):
 def download_attachment(
     request: Request, s3_key: str = Query(...), filename: str = Query(...)
 ):
-    if not is_logged_in(request):
-        return login_redirect(request)
     if not is_allowed_s3_key(s3_key):
         raise HTTPException(status_code=404, detail="Unknown email key.")
     prune_attachment_cache()
@@ -871,7 +1088,7 @@ def download_attachment(
         saved_path = inbox.download_attachment(
             s3_key=s3_key, filename=filename, out_dir=attachment_dir
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return FileResponse(
