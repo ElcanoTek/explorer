@@ -4,15 +4,16 @@ The authoritative deployment guide. Every path and command below is taken
 from the scripts and unit files in this repository (`scripts/`, `deploy/`) —
 if you change those, change this document too.
 
-Explorer is a single-process FastAPI app. It stores nothing durable: no
-database, no queue, no cache server. All state is the S3 archive it reads,
-plus a handful of in-memory caches and a temp directory for attachments in
-flight. That makes deployment simple and makes rollback almost free.
+Explorer is a single-process FastAPI app. The email archive remains in S3.
+External-auth deployments keep only in-memory caches and temporary attachment
+files; local-auth deployments additionally keep a small SQLite users/session
+database under `/var/lib/explorer`. There is no queue or cache server.
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Service user and directory layout](#service-user-and-directory-layout)
 - [Environment variables](#environment-variables)
+- [Local authentication database and backups](#local-authentication-database-and-backups)
 - [AWS IAM policy](#aws-iam-policy)
 - [Attachment cleanup timer](#attachment-cleanup-timer)
 - [TLS and the reverse proxy](#tls-and-the-reverse-proxy)
@@ -42,9 +43,8 @@ graph. `uv` is in the Fedora repositories.
 - Root (the installer creates a system user and writes to `/etc/systemd/system`).
 - An S3 bucket holding SES-delivered MIME objects, and read-only credentials
   for it — see [AWS IAM policy](#aws-iam-policy).
-- The base64 Ed25519 **public** key of your magic-link auth service
-  (`AUTH_SIGNING_PUBKEY`). Without it Explorer redirects every request to
-  sign-in and nobody can get in.
+- An authentication choice: the base64 Ed25519 public key of your external
+  magic-link service, or deployment-local accounts managed by Explorer.
 - For automatic TLS: a public DNS `A` record pointing at the box, and
   inbound 80/443.
 
@@ -65,9 +65,10 @@ missing. In order it:
 3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
    rsyncs the source into `/opt/explorer`.
 4. Builds `/opt/explorer/.venv` with `uv` and installs `requirements.txt`.
-5. Prompts for `AUTH_SIGNING_PUBKEY`, a TLS hostname, `EMAIL_S3_BUCKET` and
-   `AWS_REGION`; generates `EXPLORER_SESSION_SECRET`; writes
-   `/opt/explorer/.env` mode `0640`, owned by `explorer`.
+5. Prompts for an authentication mode and its required values, a TLS hostname,
+   `EMAIL_S3_BUCKET`, and `AWS_REGION`; generates
+   `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0640`, owned
+   by `explorer`.
 6. Installs the systemd units, the tmpfiles rule and
    `/usr/local/bin/explorer`.
 7. Enables and starts `explorer.service` and the cleanup timer, then health
@@ -88,6 +89,7 @@ prompt with no value and no default aborts the run.
 
 ```bash
 sudo EXPLORER_BOOTSTRAP_NON_INTERACTIVE=1 \
+     EXPLORER_AUTH_MODE='elcano' \
      AUTH_SIGNING_PUBKEY='...' \
      EMAIL_S3_BUCKET='my-email-archive' \
      AWS_REGION='us-east-1' \
@@ -97,6 +99,10 @@ sudo EXPLORER_BOOTSTRAP_NON_INTERACTIVE=1 \
      EXPLORER_BOOTSTRAP_LE_EMAIL='ops@example.com' \
      bash /opt/explorer-src/scripts/bootstrap.sh
 ```
+
+For an isolated local-auth deployment, replace the two auth lines with
+`EXPLORER_AUTH_MODE='local'`; no signing public key is required. After
+bootstrap, create the first account with `sudo explorer user add USERNAME`.
 
 Leave `EXPLORER_BOOTSTRAP_HOSTNAME` empty to skip the proxy entirely and
 front Explorer with your own.
@@ -125,7 +131,8 @@ present, bootstrap silently skips this step.
 | `/opt/explorer/.venv` | `explorer:explorer` | Virtualenv built by `uv`. |
 | `/opt/explorer/.venv.old` | `explorer:explorer` | Previous venv, kept for one successful update cycle as a rollback window. |
 | `/opt/explorer/.env` | `explorer:explorer`, `0640` | Configuration and secrets. Never overwritten by an update. |
-| `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Attachments in flight. The only writable path the unit grants. |
+| `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Writable scratch space for attachments in flight. |
+| `/var/lib/explorer/auth.db` | `explorer:explorer`, `0600` | Local-mode users, password hashes, sessions, rate limits, and auth events. Absent until local mode initializes. |
 | `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
 | `/etc/tmpfiles.d/explorer.conf` | root | Creates the attachment dir on boot. |
 | `/usr/local/bin/explorer` | root, `0755` | Operator CLI (`deploy/explorer-cli`). |
@@ -136,8 +143,8 @@ a hardened unit (`deploy/systemd/explorer.service`): `NoNewPrivileges`,
 `PrivateTmp`, `PrivateDevices`, `ProtectHome`, `ProtectSystem=full`,
 `ProtectKernelModules`, `ProtectKernelTunables`, `ProtectControlGroups`,
 `LockPersonality`, `UMask=027`, `RestrictAddressFamilies=AF_UNIX AF_INET
-AF_INET6`, and `ReadWritePaths=/opt/explorer/.tmp` — so the process can write
-exactly one directory.
+AF_INET6`, and `ReadWritePaths=/opt/explorer/.tmp /var/lib/explorer` — so the
+process can write only attachment scratch space and its private auth state.
 
 Uvicorn binds **`127.0.0.1:8080`** with `--proxy-headers
 --forwarded-allow-ips=127.0.0.1`. It is not reachable off-box without a
@@ -160,9 +167,35 @@ but lose to `.env`.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `AUTH_SIGNING_PUBKEY` | **yes** | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Explorer verifies the session cookie's signature with it. Any parse failure is treated as "no key", which means "everyone is logged out". Safe to store in plaintext config — a public key cannot mint sessions. |
+| `EXPLORER_AUTH_MODE` | no | `elcano` | Selects exactly one provider. `elcano` preserves the external magic-link cookie; `local` enables deployment-local username/password accounts. Any other value fails startup. |
+| `AUTH_SIGNING_PUBKEY` | Elcano mode | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Explorer verifies the session cookie's signature with it. Any parse failure is treated as "no key", which means "everyone is logged out". Safe to store in plaintext config — a public key cannot mint sessions. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are redirected, as `<url>/?return_to=<escaped current url>`. Set it to your own auth service. Trailing slashes are stripped. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Cookie the auth service mints. Must match. |
+| `EXPLORER_AUTH_DB` | local mode | `/var/lib/explorer/auth.db` | SQLite database for users, sessions, login throttles, and auth events. Keep it outside the application tree and mode `0600`. |
+| `EXPLORER_AUTH_COOKIE_SECURE` | local mode | `1` | Controls the `Secure` attribute on `__Host-explorer_session`. The `__Host-` contract requires HTTPS, so local mode fails startup if this is disabled. |
+| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Local session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
+| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Local session absolute lifetime. |
+| `EXPLORER_ARGON2_MEMORY_COST` | no | `19456` | Argon2id memory cost in KiB. Production refuses values below 19456. |
+| `EXPLORER_ARGON2_TIME_COST` | no | `2` | Argon2id iteration count. Production refuses values below 2. |
+| `EXPLORER_ARGON2_PARALLELISM` | no | `1` | Argon2id parallelism. Must be positive. |
+
+Local mode has no registration or public password-reset endpoint. Manage its
+accounts on the host:
+
+```bash
+sudo explorer user add user@example.com
+sudo explorer user list
+sudo explorer user reset-password user@example.com
+sudo explorer user disable user@example.com
+sudo explorer user enable user@example.com
+sudo explorer user revoke-sessions user@example.com
+```
+
+`add` and `reset-password` require an attached terminal and prompt twice for a
+password-manager-generated temporary password using hidden input. Explorer
+never prints or writes that password. The user must replace it after signing
+in. Reset, disablement, logout, and explicit revocation invalidate the affected
+server-side sessions immediately.
 
 ### AWS and S3
 
@@ -179,17 +212,55 @@ but lose to `.env`.
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only access key. Leave **both** key variables blank to use the ambient chain (instance role, `~/.aws/credentials`, `AWS_PROFILE`) — preferred on EC2. |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
 
-### Session cookie
+### Session and CSRF cookie
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `EXPLORER_SESSION_SECRET` | strongly recommended | `explorer-dev-session-secret` | Signs the Starlette session cookie holding a per-browser `search_owner_id`, which scopes search jobs and pagination cursors to the browser that started them. **Not** the auth boundary — but leaving it at the built-in default lets anyone forge that id and read another browser's in-flight results. Bootstrap generates one; to rotate: |
+| `EXPLORER_SESSION_SECRET` | local: **required**; Elcano: strongly recommended | `explorer-dev-session-secret` | Signs login CSRF state and the `explorer_ui` cookie holding a per-browser `search_owner_id`. Local mode refuses the placeholder outside tests. Bootstrap generates one; to rotate: |
+| `EXPLORER_UI_COOKIE_SECURE` | no | `1` | Adds `Secure` to `explorer_ui`. Keep enabled behind production HTTPS. |
 
 ```bash
 openssl rand -hex 32
 sudo explorer env edit          # set EXPLORER_SESSION_SECRET
-sudo explorer restart           # invalidates in-flight searches only
+sudo explorer restart           # invalidates login CSRF and in-flight searches
 ```
+
+## Local authentication database and backups
+
+The local database contains salted password hashes rather than plaintext
+passwords, and SHA-256 hashes rather than usable session tokens. It still
+contains usernames and authentication history, so treat backups as sensitive.
+Vultr instance backups are useful disaster recovery, but keep a separate,
+regularly tested database backup as well.
+
+SQLite's online backup API produces a transactionally consistent copy while
+Explorer is running:
+
+```bash
+sudo install -d -m 0700 -o explorer -g explorer /var/backups/explorer
+cd /opt/explorer
+sudo -u explorer .venv/bin/python - <<'PY'
+from datetime import UTC, datetime
+from pathlib import Path
+import sqlite3
+
+source = sqlite3.connect("/var/lib/explorer/auth.db")
+target = Path("/var/backups/explorer") / f"auth-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.db"
+destination = sqlite3.connect(target)
+with destination:
+    source.backup(destination)
+destination.close()
+source.close()
+target.chmod(0o600)
+print(target)
+PY
+```
+
+Copy that file to access-controlled storage outside the VM and test restoration
+periodically. Restoring an old database can otherwise resurrect a session that
+was valid at backup time: stop Explorer, replace `auth.db`, delete every row
+from `sessions`, verify `PRAGMA integrity_check`, restore owner/mode, and only
+then start the service.
 
 ## AWS IAM policy
 
@@ -334,6 +405,7 @@ it does is also doable by hand.
 | `explorer provision [--client=NAME]` | `sudo bash /opt/explorer-src/scripts/provision.sh` |
 | `explorer env` | print `/opt/explorer/.env`, secrets redacted |
 | `explorer env edit` | `$EDITOR /opt/explorer/.env` (creates it if missing) |
+| `explorer user add\|list\|reset-password\|disable\|enable\|revoke-sessions` | manage deployment-local accounts; requires `EXPLORER_AUTH_MODE=local` |
 | `explorer tls status` / `reload` / `restart` | Caddy controls |
 | `explorer --help` | full usage |
 
@@ -356,9 +428,8 @@ on the old revision if the build fails:
    diverged branch aborts rather than merging. HEAD is never detached.
 2. If this update changed `update.sh` itself, re-exec the new copy in
    rebuild-only mode, because the running shell still holds the old inode.
-3. Verify `AUTH_SIGNING_PUBKEY` is set in `.env.shared` or `.env`, offering to
-   paste it if not — without it the service comes back in a redirect loop
-   that the health check below cannot detect.
+3. In Elcano mode, verify `AUTH_SIGNING_PUBKEY` is set in `.env.shared` or
+   `.env`, offering to paste it if not. Local mode skips this check.
 4. Build a fresh venv in `/opt/explorer.staging.XXXXXX` (deliberately beside
    `/opt/explorer`, not in `/tmp`: a venv built under `/tmp` keeps its
    SELinux `tmp_t` label after `mv` and systemd refuses to exec it with
@@ -398,27 +469,25 @@ can lose your configuration.
 
 ## Health checks
 
-Explorer has no dedicated `/health` route: the app is stateless and `/` is
-the cheapest honest probe. An **unauthenticated** `GET /` returns **303** to
-the auth service, which proves the process is up, the templates render and
-the auth gate is wired.
+Explorer exposes a deliberately public, data-free `/health` route. It returns
+`200` only after application startup succeeds, including authentication-store
+initialization in local mode.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/    # expect 303
-curl -sI https://explorer.example.com/ | head -1                    # through the proxy
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health  # expect 200
+curl -sI https://explorer.example.com/health | head -1                 # through proxy
 systemctl is-active explorer.service
 ```
 
-Treat `200` or `303` as healthy (a browser with a valid cookie gets `200`).
-`000`/connection refused means the process is down; `502` from the proxy
-means the proxy is up but Explorer is not.
-
-**A 303 does not prove sign-in works** — a missing `AUTH_SIGNING_PUBKEY`
-produces exactly the same 303. To verify end to end, sign in with a browser.
+`000`/connection refused means the process is down; `502` from the proxy means
+the proxy is up but Explorer is not. The health route deliberately does not
+prove credentials work; verify sign-in separately with a browser.
 
 ## Troubleshooting
 
 ### Infinite redirect loop between Explorer and the login page
+
+This section applies to `EXPLORER_AUTH_MODE=elcano`.
 
 Sign-in bounces you to auth, auth bounces you back, forever. Almost always
 `AUTH_SIGNING_PUBKEY` is missing or wrong, so Explorer treats a perfectly
@@ -577,6 +646,7 @@ sudo useradd --system --home-dir /opt/explorer --shell /usr/sbin/nologin explore
 sudo git clone https://github.com/ElcanoTek/explorer.git /opt/explorer-src
 sudo rsync -a --exclude='/.git' /opt/explorer-src/ /opt/explorer/
 sudo mkdir -p /opt/explorer/.tmp/email_attachments
+sudo install -d -m 0700 -o explorer -g explorer /var/lib/explorer
 sudo chown -R explorer:explorer /opt/explorer
 
 sudo -u explorer python3 -m venv /opt/explorer/.venv

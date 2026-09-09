@@ -40,11 +40,15 @@ case "$cmd" in
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
     exec sudo env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 bash "$SRC_DIR/scripts/update.sh"
     ;;
+  user)
+    [[ -x "$APP_DIR/.venv/bin/python" ]] || { echo "Explorer venv missing at $APP_DIR/.venv" >&2; exit 1; }
+    cd "$APP_DIR"
+    exec sudo -u explorer "$APP_DIR/.venv/bin/python" -m app.auth_admin user "$@"
+    ;;
   provision)
     # Decrypt an optional encrypted config bundle and merge it into
-    # /opt/explorer/.env. Re-run after the bundle is rotated. Pass
-    # --client=NAME to pick a bundle; --no-restart to skip the systemctl
-    # restart at the end. See provision/README.md.
+    # /opt/explorer/.env. Pass --client=NAME to select a bundle and
+    # --no-restart to skip the systemctl restart. See provision/README.md.
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
     exec sudo bash "$SRC_DIR/scripts/provision.sh" "$@"
     ;;
@@ -131,6 +135,14 @@ TLS (when Caddy was installed by bootstrap)
 CONFIG
   explorer env                      print /opt/explorer/.env (secrets redacted)
   explorer env edit                 edit /opt/explorer/.env
+
+LOCAL USERS (EXPLORER_AUTH_MODE=local)
+  explorer user add USERNAME        create user; securely prompt for temp password
+  explorer user list                list users and account state
+  explorer user reset-password USER set temporary password + revoke sessions
+  explorer user disable USER        disable account + revoke sessions
+  explorer user enable USER         enable account
+  explorer user revoke-sessions USER revoke all active sessions
 EOF
     ;;
   *)

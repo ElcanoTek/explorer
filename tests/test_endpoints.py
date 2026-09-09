@@ -12,7 +12,6 @@ import time
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi.testclient import TestClient
 
 from app import auth, main
 
@@ -33,21 +32,23 @@ def _mint(priv: Ed25519PrivateKey) -> str:
 
 
 @pytest.fixture()
-def client(monkeypatch):
+def client(monkeypatch, asgi_client):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "elcano")
     priv = Ed25519PrivateKey.generate()
     pub = priv.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
     monkeypatch.setenv("AUTH_SIGNING_PUBKEY", base64.b64encode(pub).decode())
-    with TestClient(main.app) as test_client:
+    with asgi_client(main.app) as test_client:
         test_client.cookies.set(auth.AUTH_COOKIE_NAME, _mint(priv))
         yield test_client
 
 
 @pytest.fixture()
-def anonymous_client(monkeypatch):
+def anonymous_client(monkeypatch, asgi_client):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "elcano")
     monkeypatch.setenv("AUTH_SIGNING_PUBKEY", "")
-    with TestClient(main.app) as test_client:
+    with asgi_client(main.app) as test_client:
         yield test_client
 
 
@@ -123,6 +124,15 @@ def test_unauthenticated_email_detail_redirects(anonymous_client):
         params={"s3_key": f"{main.settings.email_s3_prefix}x"},
         follow_redirects=False,
     )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(auth.AUTH_LOGIN_URL)
+
+
+def test_local_session_cookie_is_not_accepted_by_elcano_provider(anonymous_client):
+    anonymous_client.cookies.set("__Host-explorer_session", "copied-local-token")
+
+    response = anonymous_client.get("/", follow_redirects=False)
+
     assert response.status_code == 303
     assert response.headers["location"].startswith(auth.AUTH_LOGIN_URL)
 

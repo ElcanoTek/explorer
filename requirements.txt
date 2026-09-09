@@ -8,3 +8,4 @@ itsdangerous==2.2.0
 bleach==6.4.0
 uvicorn[standard]==0.52.4
 cryptography==50.0.1
+argon2-cffi==25.1.0

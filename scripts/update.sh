@@ -121,23 +121,25 @@ else
   fi
 fi
 
-# ── 1b. auth public key ──────────────────────────────────────────────────
-# Explorer verifies the session cookie with the auth service's PUBLIC key
-# (AUTH_SIGNING_PUBKEY). Without it every request bounces to the login URL in
-# a redirect loop — and the health check below still passes on that 303, so
-# the breakage would otherwise be silent. Make sure it's set before restarting.
+# ── 1b. external-auth public key ────────────────────────────────────────
+# Elcano mode verifies its session cookie with the auth service's public key.
+# Local mode does not need that key.
 ensure_auth_pubkey() {
-  local found="" f v
+  local found="" mode="" f v
   for f in "$APP_DIR/.env.shared" "$APP_DIR/.env"; do
     [[ -f "$f" ]] || continue
+    v="$(sed -n 's/^[[:space:]]*EXPLORER_AUTH_MODE[[:space:]]*=[[:space:]]*//p' "$f" | tail -n1)"
+    v="${v%[\"\']}"; v="${v#[\"\']}"
+    [[ -n "$v" ]] && mode="${v,,}"
     v="$(sed -n 's/^[[:space:]]*AUTH_SIGNING_PUBKEY[[:space:]]*=[[:space:]]*//p' "$f" | tail -n1)"
     v="${v%[\"\']}"; v="${v#[\"\']}"
     [[ -n "$v" ]] && found="$v"
   done
+  [[ "${mode:-elcano}" == "local" ]] && return 0
   [[ -n "$found" ]] && return 0
 
   warn "AUTH_SIGNING_PUBKEY is not set — Explorer can't verify the session"
-  warn "cookie, so every request will redirect to sign-in in a loop until it is."
+  warn "cookie, so every request will redirect to sign-in until it is."
   if [[ -t 0 ]]; then
     printf '%s?%s Paste the auth service public key now (blank to skip): ' "$c_cyan" "$c_reset"
     local pubkey_in; read -r pubkey_in
@@ -204,6 +206,7 @@ install -m 0644 "$APP_DIR/deploy/systemd/explorer-attachment-cleanup.service" /e
 install -m 0644 "$APP_DIR/deploy/systemd/explorer-attachment-cleanup.timer" /etc/systemd/system/
 install -m 0644 "$APP_DIR/deploy/systemd/explorer.tmpfiles.conf" /etc/tmpfiles.d/explorer.conf
 install -m 0755 "$APP_DIR/deploy/explorer-cli" "$CLI_TARGET"
+systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf >/dev/null
 # Keep /etc/motd in sync with deploy/motd — boxes bootstrapped before the
 # banner existed never got one, and this heals drift on every update.
 if [[ -f "$APP_DIR/deploy/motd" ]] && ! cmp -s "$APP_DIR/deploy/motd" /etc/motd; then
@@ -219,13 +222,12 @@ ok "service restarted"
 
 # ── 4. health check ─────────────────────────────────────────────────────
 step "4/4  Health check"
-# Explorer owns no /login route anymore — login is the unified elcano_auth
-# cookie. An unauthenticated GET / 303-redirects to the auth service (the
-# healthy signal); GET /login would 404. Probe / and accept 2xx/3xx.
+# Probe the deliberately public, data-free health endpoint. A redirect is not
+# accepted because it can hide an auth configuration failure.
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || echo 000)
-  if [[ "$code" == "200" || "$code" == "302" || "$code" == "303" ]]; then
-    ok "explorer / → $code (server up, redirecting to auth)"
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null || echo 000)
+  if [[ "$code" == "200" ]]; then
+    ok "explorer /health → $code"
     # Drop the old venv only after we know the new install is live;
     # keeping it around for one successful cycle gives operators a
     # trivial rollback window.
@@ -234,7 +236,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   fi
   sleep 1
   if [[ "$i" == "10" ]]; then
-    warn "explorer didn't answer / within 10s"
+    warn "explorer didn't answer /health within 10s"
     warn "  Rollback: systemctl stop $SERVICE && rm -rf $APP_DIR/.venv && mv $APP_DIR/.venv.old $APP_DIR/.venv && systemctl start $SERVICE"
     exit 1
   fi
@@ -246,7 +248,6 @@ printf '%s ✓ Updated %s → %s%s\n' "$c_bold" "${before_sha:0:12}" "${after_sh
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 say
 say "  Logs:      ${c_dim}explorer logs${c_reset}"
-# `explorer update` would fast-forward straight back to the tip, so a
-# rollback has to rebuild the older checkout WITHOUT fetching. Use a named
-# branch so the checkout never ends up detached.
+# `explorer update` would fast-forward straight back to the tip, so rebuild
+# the named rollback branch without fetching.
 say "  Roll back: ${c_dim}cd $SRC_DIR && sudo git checkout -B rollback $before_sha && sudo explorer rebuild${c_reset}"

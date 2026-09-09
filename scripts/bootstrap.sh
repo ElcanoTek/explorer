@@ -10,10 +10,10 @@
 #   2. Creates 'explorer' system user + /opt/explorer
 #   3. Syncs source to /opt/explorer-src, then rsyncs into /opt/explorer
 #   4. Builds the venv via uv and installs Python deps
-#   5. Writes /opt/explorer/.env with session secret + AUTH_SIGNING_PUBKEY
+#   5. Writes /opt/explorer/.env with the selected authentication provider
 #   6. Installs the explorer + attachment-cleanup systemd units + timer
 #   7. Installs /usr/local/bin/explorer operator CLI
-#   8. Enables and starts the service; health-checks /
+#   8. Enables and starts the service; health-checks /health
 #
 # Usage:
 #   sudo bash scripts/bootstrap.sh
@@ -91,6 +91,7 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 fi
 mkdir -p "$APP_DIR/.tmp/email_attachments"
+install -d -m 0700 -o "$APP_USER" -g "$APP_USER" /var/lib/explorer
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 if [[ ! -d "$INSTALL_SRC_DIR/.git" ]]; then
@@ -136,11 +137,23 @@ fi
 
 EXPLORER_SESSION_SECRET="${EXPLORER_SESSION_SECRET:-$(genbase64 32)}"
 
-# Explorer verifies the session cookie minted by an external magic-link auth
-# service, using that service's Ed25519 PUBLIC key (base64, 32 raw bytes).
-# Safe to paste — a public key can only verify, never mint, sessions. Without
-# it the app redirects every request to the login URL.
-AUTH_SIGNING_PUBKEY="$(prompt AUTH_SIGNING_PUBKEY "auth service AUTH_SIGNING_PUBKEY, base64 (blank to set later)" "${AUTH_SIGNING_PUBKEY:-}")"
+EXPLORER_AUTH_MODE="$(prompt EXPLORER_AUTH_MODE "Authentication mode: elcano (magic link) or local (username/password)" "${EXPLORER_AUTH_MODE:-elcano}")"
+EXPLORER_AUTH_MODE="${EXPLORER_AUTH_MODE,,}"
+case "$EXPLORER_AUTH_MODE" in
+  elcano|local) ;;
+  *) die "authentication mode must be 'elcano' or 'local'" ;;
+esac
+
+AUTH_SIGNING_PUBKEY="${AUTH_SIGNING_PUBKEY:-}"
+if [[ "$EXPLORER_AUTH_MODE" == "elcano" ]]; then
+  # Elcano mode verifies a shared magic-link cookie with the auth service's
+  # public key. It can verify but cannot mint sessions.
+  AUTH_SIGNING_PUBKEY="$(prompt AUTH_SIGNING_PUBKEY "auth service AUTH_SIGNING_PUBKEY, base64 (blank to set later)" "$AUTH_SIGNING_PUBKEY")"
+fi
+
+EXPLORER_AUTH_DB="${EXPLORER_AUTH_DB:-/var/lib/explorer/auth.db}"
+EXPLORER_SESSION_IDLE_SECONDS="${EXPLORER_SESSION_IDLE_SECONDS:-3600}"
+EXPLORER_SESSION_ABSOLUTE_SECONDS="${EXPLORER_SESSION_ABSOLUTE_SECONDS:-43200}"
 
 # ── Caddy / TLS intent (actual install happens in step 7) ────────
 # Collect answers now so the rest of the run has no surprise prompts.
@@ -171,9 +184,16 @@ cat > "$ENV_FILE" <<EOF
 
 EXPLORER_SESSION_SECRET="$EXPLORER_SESSION_SECRET"
 
-# Auth service's Ed25519 public key — verifies the session cookie.
+# Authentication provider: elcano keeps magic-link auth; local owns users and
+# opaque server-side sessions in a deployment-local SQLite database.
+EXPLORER_AUTH_MODE="$EXPLORER_AUTH_MODE"
+EXPLORER_AUTH_DB="$EXPLORER_AUTH_DB"
+EXPLORER_AUTH_COOKIE_SECURE="1"
+EXPLORER_SESSION_IDLE_SECONDS="$EXPLORER_SESSION_IDLE_SECONDS"
+EXPLORER_SESSION_ABSOLUTE_SECONDS="$EXPLORER_SESSION_ABSOLUTE_SECONDS"
+
+# Elcano mode only — public verification key from the auth service.
 AUTH_SIGNING_PUBKEY="$AUTH_SIGNING_PUBKEY"
-# Where unauthenticated browsers are sent to sign in.
 # AUTH_LOGIN_URL="https://auth.elcanotek.com"
 
 # ── AWS / S3 (optional) ──
@@ -234,18 +254,17 @@ systemctl enable explorer.service >/dev/null 2>&1 || true
 systemctl restart explorer.service
 ok "explorer.service restarted"
 
-# Health check — probe /. With no elcano_auth cookie the app redirects (303)
-# to the auth service, which proves it's up and the auth gate is wired.
+# Health check uses the deliberately public, data-free endpoint.
 healthy=0
 for _ in $(seq 1 15); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || echo 000)
-  if [[ "$code" == "200" || "$code" == "303" || "$code" == "302" ]]; then healthy=1; break; fi
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health 2>/dev/null || echo 000)
+  if [[ "$code" == "200" ]]; then healthy=1; break; fi
   sleep 1
 done
 if [[ "$healthy" == "1" ]]; then
-  ok "health check / → ${code} (app up; unauthenticated requests redirect to auth)"
+  ok "health check /health → ${code}"
 else
-  warn "explorer didn't answer / in 15s — check: explorer logs"
+  warn "explorer didn't answer /health in 15s — check: explorer logs"
 fi
 
 # ── step 7: Caddy / TLS (optional) ──────────────────────────────────────
@@ -367,10 +386,15 @@ else
   say "  URL         ${c_bold}http://127.0.0.1:8080${c_reset}  (front with your reverse proxy for HTTPS)"
 fi
 say "  Logs        ${c_dim}explorer logs${c_reset}"
-say "  CLI         ${c_dim}explorer start|stop|restart|status|update|env|tls${c_reset}"
+say "  CLI         ${c_dim}explorer start|stop|restart|status|update|env|tls|user${c_reset}"
 say
-say "  Sign-in     ${c_dim}via the external magic-link auth service — no local password${c_reset}"
-if [[ -z "$AUTH_SIGNING_PUBKEY" ]]; then
+if [[ "$EXPLORER_AUTH_MODE" == "local" ]]; then
+  say "  Sign-in     ${c_dim}local username/password (${EXPLORER_SESSION_IDLE_SECONDS}s idle, ${EXPLORER_SESSION_ABSOLUTE_SECONDS}s absolute)${c_reset}"
+  say "  Next        ${c_dim}explorer user add user@example.com${c_reset}"
+else
+  say "  Sign-in     ${c_dim}via the external magic-link auth service — no local password${c_reset}"
+fi
+if [[ "$EXPLORER_AUTH_MODE" == "elcano" && -z "$AUTH_SIGNING_PUBKEY" ]]; then
   printf '  %s! AUTH_SIGNING_PUBKEY is unset — every request will redirect to sign-in.%s\n' "$c_yellow" "$c_reset"
   printf '  %s  Set it with: explorer env edit  (paste the auth service public key), then: explorer restart%s\n' "$c_yellow" "$c_reset"
 fi
