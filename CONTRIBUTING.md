@@ -39,21 +39,22 @@ and a real one has been committed here before.
 python -m pytest -q
 ```
 
-91 tests, under a second, **no AWS account and no network needed**. Anything
+The test suite runs in under a second with **no AWS account and no network
+needed**. Anything
 that would touch S3 goes through the fake client in `tests/test_s3_email.py`
 (`FakeS3`), and anything that needs a signed-in browser mints a throwaway
 Ed25519 key and its own session cookie (`tests/test_endpoints.py`). Please
 keep it that way: a test that needs credentials is a test nobody runs.
 
-The suite covers four areas, and a change in any of them should come with a
+The suite covers these areas, and a change in any of them should come with a
 test:
 
 | File | Covers |
 |---|---|
 | `tests/test_auth.py` | The cookie verifier — valid, expired, tampered, foreign-key, malformed. |
-| `tests/test_local_auth.py` | Password policy and hashing, opaque sessions, expiry, revocation, and rate limits. |
-| `tests/test_local_auth_endpoints.py` | Local login, CSRF, mandatory password replacement, cookies, and logout. |
-| `tests/test_auth_admin.py` | Operator-managed account creation, recovery, disablement, and session revocation. |
+| `tests/test_central_auth.py` | Local access-list enforcement, opaque app sessions, expiry, revocation, and CSRF. |
+| `tests/test_central_auth_endpoints.py` | Central redirect/callback, state/PKCE, allowlist denial, cookies, and logout. |
+| `tests/test_access_admin.py` | Operator-managed per-Explorer email access. |
 | `tests/test_date_parsing.py` | Date-range parsing, day counting, S3 key scoping, cursor cache. |
 | `tests/test_s3_email.py` | Prefix expansion, header parsing, search, HTML sanitizing, attachments. |
 | `tests/test_endpoints.py` | Routes end to end via `TestClient`, signed in and anonymous. |

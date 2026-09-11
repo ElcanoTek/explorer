@@ -123,7 +123,7 @@ fi
 
 # ── 1b. external-auth public key ────────────────────────────────────────
 # Elcano mode verifies its session cookie with the auth service's public key.
-# Local mode does not need that key.
+# Central mode does not need that key.
 ensure_auth_pubkey() {
   local found="" mode="" f v
   for f in "$APP_DIR/.env.shared" "$APP_DIR/.env"; do
@@ -135,7 +135,7 @@ ensure_auth_pubkey() {
     v="${v%[\"\']}"; v="${v#[\"\']}"
     [[ -n "$v" ]] && found="$v"
   done
-  [[ "${mode:-elcano}" == "local" ]] && return 0
+  [[ "${mode:-elcano}" != "elcano" ]] && return 0
   [[ -n "$found" ]] && return 0
 
   warn "AUTH_SIGNING_PUBKEY is not set — Explorer can't verify the session"

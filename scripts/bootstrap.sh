@@ -64,6 +64,16 @@ prompt() {
   [[ -z "$answer" ]] && answer="$default"
   printf '%s' "$answer"
 }
+prompt_secret() {
+  local varname="$1" label="$2" answer=""
+  if [[ -n "${!varname:-}" ]]; then printf '%s' "${!varname}"; return; fi
+  if [[ "$NON_INTERACTIVE" == "1" ]]; then die "non-interactive + missing: set $varname"; fi
+  ask "$label:"
+  read -r -s answer
+  printf '\n' >&2
+  [[ -n "$answer" ]] || die "$varname is required"
+  printf '%s' "$answer"
+}
 genbase64() { openssl rand -base64 "$1" | tr -d '=\n' | tr '/+' '_-'; }
 genhex()    { openssl rand -hex "$1"; }
 
@@ -131,17 +141,20 @@ ok "venv + deps ready at $APP_DIR/.venv"
 step "4/7  Configuring the instance"
 if [[ -f "$ENV_FILE" ]]; then
   info "found existing $ENV_FILE — re-using values, only asking for what's missing"
+  set -a
   # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
+  . "$ENV_FILE"
+  set +a
 fi
 
 EXPLORER_SESSION_SECRET="${EXPLORER_SESSION_SECRET:-$(genbase64 32)}"
 
-EXPLORER_AUTH_MODE="$(prompt EXPLORER_AUTH_MODE "Authentication mode: elcano (magic link) or local (username/password)" "${EXPLORER_AUTH_MODE:-elcano}")"
+EXPLORER_AUTH_MODE="$(prompt EXPLORER_AUTH_MODE "Authentication mode: elcano (magic link) or central (shared auth service)" "${EXPLORER_AUTH_MODE:-elcano}")"
 EXPLORER_AUTH_MODE="${EXPLORER_AUTH_MODE,,}"
 case "$EXPLORER_AUTH_MODE" in
-  elcano|local) ;;
-  *) die "authentication mode must be 'elcano' or 'local'" ;;
+  elcano|central) ;;
+  local) die "local password auth was removed; choose 'central' and configure the client auth service" ;;
+  *) die "authentication mode must be 'elcano' or 'central'" ;;
 esac
 
 AUTH_SIGNING_PUBKEY="${AUTH_SIGNING_PUBKEY:-}"
@@ -151,7 +164,7 @@ if [[ "$EXPLORER_AUTH_MODE" == "elcano" ]]; then
   AUTH_SIGNING_PUBKEY="$(prompt AUTH_SIGNING_PUBKEY "auth service AUTH_SIGNING_PUBKEY, base64 (blank to set later)" "$AUTH_SIGNING_PUBKEY")"
 fi
 
-EXPLORER_AUTH_DB="${EXPLORER_AUTH_DB:-/var/lib/explorer/auth.db}"
+EXPLORER_ACCESS_DB="${EXPLORER_ACCESS_DB:-/var/lib/explorer/access.db}"
 EXPLORER_SESSION_IDLE_SECONDS="${EXPLORER_SESSION_IDLE_SECONDS:-3600}"
 EXPLORER_SESSION_ABSOLUTE_SECONDS="${EXPLORER_SESSION_ABSOLUTE_SECONDS:-43200}"
 
@@ -171,6 +184,21 @@ if [[ -n "$HOSTNAME_FOR_TLS" && "$HOSTNAME_FOR_TLS" != "localhost" ]]; then
   fi
 fi
 
+AUTH_ISSUER_URL="${AUTH_ISSUER_URL:-}"
+EXPLORER_PUBLIC_URL="${EXPLORER_PUBLIC_URL:-}"
+AUTH_CLIENT_ID="${AUTH_CLIENT_ID:-explorer}"
+AUTH_CLIENT_SECRET="${AUTH_CLIENT_SECRET:-}"
+if [[ "$EXPLORER_AUTH_MODE" == "central" ]]; then
+  AUTH_ISSUER_URL="$(prompt AUTH_ISSUER_URL "Central auth origin (for example https://auth.example.com)" "$AUTH_ISSUER_URL")"
+  public_default="$EXPLORER_PUBLIC_URL"
+  if [[ -z "$public_default" && -n "$HOSTNAME_FOR_TLS" ]]; then
+    public_default="https://$HOSTNAME_FOR_TLS"
+  fi
+  EXPLORER_PUBLIC_URL="$(prompt EXPLORER_PUBLIC_URL "Explorer public origin" "$public_default")"
+  AUTH_CLIENT_ID="$(prompt AUTH_CLIENT_ID "Registered auth client ID" "$AUTH_CLIENT_ID")"
+  AUTH_CLIENT_SECRET="$(prompt_secret AUTH_CLIENT_SECRET "Registered auth client secret (input hidden)")"
+fi
+
 # AWS creds for S3 email archive reads. We don't auto-generate anything
 # here — blank values are passed through and the operator can edit
 # /opt/explorer/.env later. Services won't crash without them but
@@ -184,10 +212,10 @@ cat > "$ENV_FILE" <<EOF
 
 EXPLORER_SESSION_SECRET="$EXPLORER_SESSION_SECRET"
 
-# Authentication provider: elcano keeps magic-link auth; local owns users and
-# opaque server-side sessions in a deployment-local SQLite database.
+# Authentication provider: elcano keeps magic-link auth; central delegates
+# sign-in and keeps only an app access list plus opaque Explorer sessions.
 EXPLORER_AUTH_MODE="$EXPLORER_AUTH_MODE"
-EXPLORER_AUTH_DB="$EXPLORER_AUTH_DB"
+EXPLORER_ACCESS_DB="$EXPLORER_ACCESS_DB"
 EXPLORER_AUTH_COOKIE_SECURE="1"
 EXPLORER_SESSION_IDLE_SECONDS="$EXPLORER_SESSION_IDLE_SECONDS"
 EXPLORER_SESSION_ABSOLUTE_SECONDS="$EXPLORER_SESSION_ABSOLUTE_SECONDS"
@@ -195,6 +223,12 @@ EXPLORER_SESSION_ABSOLUTE_SECONDS="$EXPLORER_SESSION_ABSOLUTE_SECONDS"
 # Elcano mode only — public verification key from the auth service.
 AUTH_SIGNING_PUBKEY="$AUTH_SIGNING_PUBKEY"
 # AUTH_LOGIN_URL="https://auth.elcanotek.com"
+
+# Central mode only — exact callback: $EXPLORER_PUBLIC_URL/auth/callback
+AUTH_ISSUER_URL="$AUTH_ISSUER_URL"
+EXPLORER_PUBLIC_URL="$EXPLORER_PUBLIC_URL"
+AUTH_CLIENT_ID="$AUTH_CLIENT_ID"
+AUTH_CLIENT_SECRET="$AUTH_CLIENT_SECRET"
 
 # ── AWS / S3 (optional) ──
 AWS_REGION="$AWS_REGION"
@@ -386,11 +420,12 @@ else
   say "  URL         ${c_bold}http://127.0.0.1:8080${c_reset}  (front with your reverse proxy for HTTPS)"
 fi
 say "  Logs        ${c_dim}explorer logs${c_reset}"
-say "  CLI         ${c_dim}explorer start|stop|restart|status|update|env|tls|user${c_reset}"
+say "  CLI         ${c_dim}explorer start|stop|restart|status|update|env|tls|access${c_reset}"
 say
-if [[ "$EXPLORER_AUTH_MODE" == "local" ]]; then
-  say "  Sign-in     ${c_dim}local username/password (${EXPLORER_SESSION_IDLE_SECONDS}s idle, ${EXPLORER_SESSION_ABSOLUTE_SECONDS}s absolute)${c_reset}"
-  say "  Next        ${c_dim}explorer user add user@example.com${c_reset}"
+if [[ "$EXPLORER_AUTH_MODE" == "central" ]]; then
+  say "  Sign-in     ${c_dim}central auth + app-scoped Explorer session (${EXPLORER_SESSION_IDLE_SECONDS}s idle, ${EXPLORER_SESSION_ABSOLUTE_SECONDS}s absolute)${c_reset}"
+  say "  Callback    ${c_dim}${EXPLORER_PUBLIC_URL}/auth/callback${c_reset}"
+  say "  Next        ${c_dim}explorer access grant user@example.com${c_reset}"
 else
   say "  Sign-in     ${c_dim}via the external magic-link auth service — no local password${c_reset}"
 fi

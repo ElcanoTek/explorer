@@ -95,3 +95,6 @@ These are generated or entered per host by `bootstrap.sh`:
 - `AUTH_SIGNING_PUBKEY` — in Elcano mode, the auth service's Ed25519 public
   key. It is a *public* key, so it needs no encryption; keeping it out of the
   bundle also means a key rotation does not require re-encrypting anything.
+- `AUTH_CLIENT_SECRET` — in central mode, use a distinct secret for each
+  Explorer deployment and enter it on that host rather than sharing it in a
+  multi-host bundle.

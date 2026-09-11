@@ -5,15 +5,15 @@ from the scripts and unit files in this repository (`scripts/`, `deploy/`) —
 if you change those, change this document too.
 
 Explorer is a single-process FastAPI app. The email archive remains in S3.
-External-auth deployments keep only in-memory caches and temporary attachment
-files; local-auth deployments additionally keep a small SQLite users/session
+Elcano deployments keep only in-memory caches and temporary attachment files;
+central-auth deployments additionally keep a small SQLite access/session
 database under `/var/lib/explorer`. There is no queue or cache server.
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Service user and directory layout](#service-user-and-directory-layout)
 - [Environment variables](#environment-variables)
-- [Local authentication database and backups](#local-authentication-database-and-backups)
+- [Explorer access database and backups](#explorer-access-database-and-backups)
 - [AWS IAM policy](#aws-iam-policy)
 - [Attachment cleanup timer](#attachment-cleanup-timer)
 - [TLS and the reverse proxy](#tls-and-the-reverse-proxy)
@@ -43,8 +43,8 @@ graph. `uv` is in the Fedora repositories.
 - Root (the installer creates a system user and writes to `/etc/systemd/system`).
 - An S3 bucket holding SES-delivered MIME objects, and read-only credentials
   for it — see [AWS IAM policy](#aws-iam-policy).
-- An authentication choice: the base64 Ed25519 public key of your external
-  magic-link service, or deployment-local accounts managed by Explorer.
+- An authentication choice: Elcano's base64 Ed25519 magic-link public key, or
+  a registered client ID/secret from the new central auth service.
 - For automatic TLS: a public DNS `A` record pointing at the box, and
   inbound 80/443.
 
@@ -100,9 +100,10 @@ sudo EXPLORER_BOOTSTRAP_NON_INTERACTIVE=1 \
      bash /opt/explorer-src/scripts/bootstrap.sh
 ```
 
-For an isolated local-auth deployment, replace the two auth lines with
-`EXPLORER_AUTH_MODE='local'`; no signing public key is required. After
-bootstrap, create the first account with `sudo explorer user add USERNAME`.
+For a client deployment, use `EXPLORER_AUTH_MODE='central'` and also provide
+`AUTH_ISSUER_URL`, `EXPLORER_PUBLIC_URL`, `AUTH_CLIENT_ID`, and the registered
+`AUTH_CLIENT_SECRET`. After bootstrap, grant the first user access with
+`sudo explorer access grant user@example.com`.
 
 Leave `EXPLORER_BOOTSTRAP_HOSTNAME` empty to skip the proxy entirely and
 front Explorer with your own.
@@ -132,7 +133,7 @@ present, bootstrap silently skips this step.
 | `/opt/explorer/.venv.old` | `explorer:explorer` | Previous venv, kept for one successful update cycle as a rollback window. |
 | `/opt/explorer/.env` | `explorer:explorer`, `0640` | Configuration and secrets. Never overwritten by an update. |
 | `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Writable scratch space for attachments in flight. |
-| `/var/lib/explorer/auth.db` | `explorer:explorer`, `0600` | Local-mode users, password hashes, sessions, rate limits, and auth events. Absent until local mode initializes. |
+| `/var/lib/explorer/access.db` | `explorer:explorer`, `0600` | Central-mode email access list and app-scoped session hashes. Contains no passwords. |
 | `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
 | `/etc/tmpfiles.d/explorer.conf` | root | Creates the attachment dir on boot. |
 | `/usr/local/bin/explorer` | root, `0755` | Operator CLI (`deploy/explorer-cli`). |
@@ -167,35 +168,85 @@ but lose to `.env`.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `EXPLORER_AUTH_MODE` | no | `elcano` | Selects exactly one provider. `elcano` preserves the external magic-link cookie; `local` enables deployment-local username/password accounts. Any other value fails startup. |
+| `EXPLORER_AUTH_MODE` | no | `elcano` | Selects exactly one provider. `elcano` preserves Elcano's external magic-link cookie; `central` delegates login to the new auth service. Any other value fails startup. |
 | `AUTH_SIGNING_PUBKEY` | Elcano mode | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Explorer verifies the session cookie's signature with it. Any parse failure is treated as "no key", which means "everyone is logged out". Safe to store in plaintext config — a public key cannot mint sessions. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are redirected, as `<url>/?return_to=<escaped current url>`. Set it to your own auth service. Trailing slashes are stripped. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Cookie the auth service mints. Must match. |
-| `EXPLORER_AUTH_DB` | local mode | `/var/lib/explorer/auth.db` | SQLite database for users, sessions, login throttles, and auth events. Keep it outside the application tree and mode `0600`. |
-| `EXPLORER_AUTH_COOKIE_SECURE` | local mode | `1` | Controls the `Secure` attribute on `__Host-explorer_session`. The `__Host-` contract requires HTTPS, so local mode fails startup if this is disabled. |
-| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Local session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
-| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Local session absolute lifetime. |
-| `EXPLORER_ARGON2_MEMORY_COST` | no | `19456` | Argon2id memory cost in KiB. Production refuses values below 19456. |
-| `EXPLORER_ARGON2_TIME_COST` | no | `2` | Argon2id iteration count. Production refuses values below 2. |
-| `EXPLORER_ARGON2_PARALLELISM` | no | `1` | Argon2id parallelism. Must be positive. |
+| `AUTH_ISSUER_URL` | central mode | *(empty)* | HTTPS origin of the client's central auth service, without a path or query. |
+| `EXPLORER_PUBLIC_URL` | central mode | *(empty)* | Explorer's public HTTPS origin. The callback is exactly `<origin>/auth/callback`. |
+| `AUTH_CLIENT_ID` | central mode | `explorer` | Client identifier registered at the auth service. |
+| `AUTH_CLIENT_SECRET` | central mode | *(empty)* | Unique per-deployment client secret, at least 32 bytes. |
+| `AUTH_HTTP_TIMEOUT_SECONDS` | no | `10` | Backchannel code-exchange timeout; must be greater than 0 and no more than 60 seconds. |
+| `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | SQLite email access list and Explorer session hashes. Keep it outside the application tree and mode `0600`. |
+| `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Controls `Secure` on `__Host-explorer_session`. Central mode refuses an insecure setting in production. |
+| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
+| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Explorer app-session absolute lifetime. |
 
-Local mode has no registration or public password-reset endpoint. Manage its
-accounts on the host:
+Central mode owns no passwords. Manage only the local authorization list:
 
 ```bash
-sudo explorer user add user@example.com
-sudo explorer user list
-sudo explorer user reset-password user@example.com
-sudo explorer user disable user@example.com
-sudo explorer user enable user@example.com
-sudo explorer user revoke-sessions user@example.com
+sudo explorer access grant user@example.com
+sudo explorer access list
+sudo explorer access revoke user@example.com
 ```
 
-`add` and `reset-password` require an attached terminal and prompt twice for a
-password-manager-generated temporary password using hidden input. Explorer
-never prints or writes that password. The user must replace it after signing
-in. Reset, disablement, logout, and explicit revocation invalidate the affected
-server-side sessions immediately.
+Granting access creates no credential; the user signs in with the central auth
+service. Revoking access immediately invalidates all Explorer sessions for
+that email.
+
+#### Central auth service contract
+
+Explorer expects an OAuth-style authorization-code handoff with exact
+redirect-URI matching, state, nonce, and S256 PKCE:
+
+1. `GET <AUTH_ISSUER_URL>/authorize` receives `response_type=code`,
+   `client_id`, `redirect_uri`, `scope=email`, `state`, `nonce`,
+   `code_challenge`, and `code_challenge_method=S256`.
+2. After central authentication, auth redirects to the registered Explorer
+   callback with `code` and the unchanged `state`. The code must be random,
+   single-use, short-lived, and bound to the client ID, exact callback,
+   central account/session, nonce, and PKCE challenge.
+3. Explorer sends `POST <AUTH_ISSUER_URL>/token` as
+   `application/x-www-form-urlencoded` with `grant_type=authorization_code`,
+   `code`, `client_id`, exact `redirect_uri`, and `code_verifier`. It
+   authenticates with HTTP Basic using the client ID and secret.
+4. A successful exchange returns JSON with string fields `sub`, `email`, and
+   `nonce`. Explorer requires the nonce to match before applying its local
+   allowlist and issuing an app session. Errors must not return identity data.
+
+The central auth repository's authorization-code work must implement this
+contract before `central` mode can be deployed end to end.
+
+This first compatibility phase does not include back-channel logout or a
+central-session introspection call. Disabling an account or ending its central
+session prevents new authorization codes, but an Explorer session already
+issued to that user remains active until its 60-minute idle timeout, 12-hour
+absolute timeout, or `explorer access revoke`. Add back-channel revocation (or
+short-interval introspection) before promising immediate cross-service
+disablement.
+
+#### Replacing the removed local-password mode
+
+An existing `EXPLORER_AUTH_MODE=local` configuration now fails closed at
+startup; it is never silently converted. Create the matching user in the
+central auth service, register Explorer's client and exact callback, replace
+the auth variables in `/opt/explorer/.env`, and grant the same email locally:
+
+```bash
+sudo explorer env edit
+# EXPLORER_AUTH_MODE="central"
+# AUTH_ISSUER_URL="https://auth.client.example"
+# EXPLORER_PUBLIC_URL="https://explorer.client.example"
+# AUTH_CLIENT_ID="explorer"
+# AUTH_CLIENT_SECRET="<registered per-deployment secret>"
+# EXPLORER_ACCESS_DB="/var/lib/explorer/access.db"
+sudo explorer restart
+sudo explorer access grant user@example.com
+```
+
+The old `/var/lib/explorer/auth.db` is not read or migrated because central
+auth—not Explorer—now owns credentials. Keep that file only until the new flow
+has been verified and your retention policy allows its secure disposal.
 
 ### AWS and S3
 
@@ -216,22 +267,22 @@ server-side sessions immediately.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `EXPLORER_SESSION_SECRET` | local: **required**; Elcano: strongly recommended | `explorer-dev-session-secret` | Signs login CSRF state and the `explorer_ui` cookie holding a per-browser `search_owner_id`. Local mode refuses the placeholder outside tests. Bootstrap generates one; to rotate: |
+| `EXPLORER_SESSION_SECRET` | central: **required**; Elcano: strongly recommended | `explorer-dev-session-secret` | Signs central login state/PKCE data and the `explorer_ui` cookie holding a per-browser `search_owner_id`. Central mode refuses the placeholder. Bootstrap generates one; to rotate: |
 | `EXPLORER_UI_COOKIE_SECURE` | no | `1` | Adds `Secure` to `explorer_ui`. Keep enabled behind production HTTPS. |
 
 ```bash
 openssl rand -hex 32
 sudo explorer env edit          # set EXPLORER_SESSION_SECRET
-sudo explorer restart           # invalidates login CSRF and in-flight searches
+sudo explorer restart           # invalidates login state and in-flight searches
 ```
 
-## Local authentication database and backups
+## Explorer access database and backups
 
-The local database contains salted password hashes rather than plaintext
-passwords, and SHA-256 hashes rather than usable session tokens. It still
-contains usernames and authentication history, so treat backups as sensitive.
-Vultr instance backups are useful disaster recovery, but keep a separate,
-regularly tested database backup as well.
+The central-mode database contains the service-specific email access list and
+SHA-256 hashes of Explorer session identifiers. It contains no password hashes
+and no central auth cookie, but its identity data is still sensitive. Vultr
+instance backups are useful disaster recovery; keep a separate, regularly
+tested database backup as well.
 
 SQLite's online backup API produces a transactionally consistent copy while
 Explorer is running:
@@ -244,8 +295,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
-source = sqlite3.connect("/var/lib/explorer/auth.db")
-target = Path("/var/backups/explorer") / f"auth-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.db"
+source = sqlite3.connect("/var/lib/explorer/access.db")
+target = Path("/var/backups/explorer") / f"access-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.db"
 destination = sqlite3.connect(target)
 with destination:
     source.backup(destination)
@@ -258,7 +309,7 @@ PY
 
 Copy that file to access-controlled storage outside the VM and test restoration
 periodically. Restoring an old database can otherwise resurrect a session that
-was valid at backup time: stop Explorer, replace `auth.db`, delete every row
+was valid at backup time: stop Explorer, replace `access.db`, delete every row
 from `sessions`, verify `PRAGMA integrity_check`, restore owner/mode, and only
 then start the service.
 
@@ -341,10 +392,10 @@ retention rules.
 
 1. It speaks plain HTTP. Session cookies over plain HTTP on a routable
    interface is not acceptable for a mail archive.
-2. The session cookie is issued by the auth service for the **parent
-   domain** (e.g. `.example.com`) so several services can share one sign-in.
-   The browser only sends it to a host under that domain, so Explorer has to
-   be served from one — `https://explorer.example.com`, not an IP.
+2. Authentication is origin-sensitive. Elcano mode receives its shared cookie
+   only below the configured parent domain. Central mode uses a host-only
+   Explorer cookie and an exact registered HTTPS callback. In either mode,
+   serve Explorer as `https://explorer.example.com`, not by IP.
 
 ### Caddy (what bootstrap installs)
 
@@ -372,9 +423,10 @@ explorer tls restart
 ### Your own proxy
 
 Answer "no" to the Caddy prompt and point nginx, HAProxy, an ALB or anything
-else at `127.0.0.1:8080`. Requirements: terminate TLS, serve from a hostname
-under the auth cookie's domain, and forward `X-Forwarded-*` (the unit already
-trusts `127.0.0.1`). nginx equivalent:
+else at `127.0.0.1:8080`. Requirements: terminate TLS, use the hostname in
+`EXPLORER_PUBLIC_URL` (and, in Elcano mode, one under the auth cookie's
+domain), and forward `X-Forwarded-*` (the unit already trusts `127.0.0.1`).
+nginx equivalent:
 
 ```nginx
 location / {
@@ -405,7 +457,7 @@ it does is also doable by hand.
 | `explorer provision [--client=NAME]` | `sudo bash /opt/explorer-src/scripts/provision.sh` |
 | `explorer env` | print `/opt/explorer/.env`, secrets redacted |
 | `explorer env edit` | `$EDITOR /opt/explorer/.env` (creates it if missing) |
-| `explorer user add\|list\|reset-password\|disable\|enable\|revoke-sessions` | manage deployment-local accounts; requires `EXPLORER_AUTH_MODE=local` |
+| `explorer access grant\|list\|revoke` | manage the central-mode email access list |
 | `explorer tls status` / `reload` / `restart` | Caddy controls |
 | `explorer --help` | full usage |
 
@@ -429,7 +481,7 @@ on the old revision if the build fails:
 2. If this update changed `update.sh` itself, re-exec the new copy in
    rebuild-only mode, because the running shell still holds the old inode.
 3. In Elcano mode, verify `AUTH_SIGNING_PUBKEY` is set in `.env.shared` or
-   `.env`, offering to paste it if not. Local mode skips this check.
+   `.env`, offering to paste it if not. Central mode skips this check.
 4. Build a fresh venv in `/opt/explorer.staging.XXXXXX` (deliberately beside
    `/opt/explorer`, not in `/tmp`: a venv built under `/tmp` keeps its
    SELinux `tmp_t` label after `mv` and systemd refuses to exec it with
@@ -470,8 +522,8 @@ can lose your configuration.
 ## Health checks
 
 Explorer exposes a deliberately public, data-free `/health` route. It returns
-`200` only after application startup succeeds, including authentication-store
-initialization in local mode.
+`200` only after application startup succeeds, including access-store and
+central-client configuration in central mode.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health  # expect 200
@@ -518,6 +570,25 @@ Check, in order:
 
 The public key is cached and re-parsed only when the environment value
 changes, so a rotation needs a restart to be picked up from `.env`.
+
+### Central sign-in returns 400, 403, or 502
+
+This section applies to `EXPLORER_AUTH_MODE=central`.
+
+- `400` means the callback lacked a matching live state transaction, was
+  replayed, expired after ten minutes, or auth returned an error. Start again
+  at `/auth/login`; do not reuse a callback URL.
+- `403` means central authentication succeeded but the returned email is not
+  currently enabled. Run `sudo explorer access list`, then grant the exact
+  email if appropriate.
+- `502` means the server-to-server `/token` exchange failed or returned an
+  invalid subject/email/nonce. Confirm the issuer URL, exact callback, client
+  ID/secret, TLS certificate, and that the auth service implements the
+  documented contract.
+
+The auth service must be reachable from the Explorer box, not only from the
+operator's browser. Use `sudo explorer logs -n 100` for startup errors; secrets
+remain redacted in `sudo explorer env`.
 
 ### `AccessDenied` / `NoSuchBucket` from S3
 
@@ -582,9 +653,9 @@ finds nothing. Search the copy date, or re-derive your partitioning.
 
 ### Clock skew
 
-Session tokens carry `exp`, compared against the server's clock. A box that
-has drifted fast rejects valid cookies as expired (redirect loop); drifted
-slow, it honours cookies past their expiry.
+Elcano session tokens carry `exp`, and central login transactions plus local
+Explorer sessions use server timestamps. A fast clock can reject valid state
+or sessions; a slow clock can honor them longer than intended.
 
 ```bash
 timedatectl status              # want: "System clock synchronized: yes"

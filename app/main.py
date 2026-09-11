@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import hmac
 import os
-import secrets
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -13,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -24,19 +22,20 @@ from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import (
+    AUTH_LOGIN_URL,
     AuthProvider,
+    CentralAuthClient,
+    CentralAuthProvider,
     ElcanoAuthProvider,
-    LocalAuthProvider,
     build_auth_provider,
 )
-from app.config import settings
-from app.local_auth import (
-    LOCAL_AUTH_COOKIE_NAME,
-    InvalidCurrentPasswordError,
-    LocalIdentity,
-    PasswordPolicyError,
+from app.central_auth import (
+    AccessDeniedError,
+    AuthTransactionError,
+    CentralAuthError,
     verify_csrf_token,
 )
+from app.config import settings
 from app.s3_email import S3EmailInbox, SearchCancelledError
 
 # Anchor every filesystem path to the package so the app works regardless of
@@ -49,13 +48,13 @@ ROOT_DIR = APP_DIR.parent
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     prune_attachment_cache()
-    provider = build_auth_provider()
-    if isinstance(provider, LocalAuthProvider) and settings.session_secret in {
+    provider = build_auth_provider(CentralAuthClient)
+    if isinstance(provider, CentralAuthProvider) and settings.session_secret in {
         "",
         "explorer-dev-session-secret",
     }:
         raise RuntimeError(
-            "Local auth requires a generated EXPLORER_SESSION_SECRET for login CSRF"
+            "Central auth requires a generated EXPLORER_SESSION_SECRET for login state"
         )
     _app.state.auth_provider = provider
     yield
@@ -98,8 +97,13 @@ ALLOWED_S3_KEY_ROOTS = tuple(
     }
 )
 
-PUBLIC_AUTH_PATHS = {"/health", "/login"}
-MUST_CHANGE_ALLOWED_PATHS = {"/change-password", "/logout"}
+PUBLIC_AUTH_PATHS = {
+    "/health",
+    "/login",
+    "/auth/login",
+    "/auth/callback",
+    "/signed-out",
+}
 
 
 def request_auth_provider(request: Request) -> AuthProvider:
@@ -119,13 +123,6 @@ async def require_authentication(request: Request, call_next) -> Response:
     is_public = path in PUBLIC_AUTH_PATHS or path.startswith("/static/")
     if not is_public and identity is None:
         return provider.unauthenticated_response(request)
-    if (
-        isinstance(identity, LocalIdentity)
-        and identity.must_change_password
-        and path not in MUST_CHANGE_ALLOWED_PATHS
-        and not path.startswith("/static/")
-    ):
-        return RedirectResponse(url="/change-password", status_code=303)
     return await call_next(request)
 
 
@@ -558,29 +555,20 @@ def remove_attachment_file(path: Path) -> None:
         pass
 
 
-def login_csrf_token(request: Request) -> str:
-    token = cast(str | None, request.session.get("login_csrf_token"))
-    if not token:
-        token = secrets.token_urlsafe(32)
-        request.session["login_csrf_token"] = token
-    return token
-
-
-def render_login(
-    request: Request,
-    *,
-    error: str | None = None,
-    status_code: int = 200,
-) -> Response:
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {
-            "error": error,
-            "csrf_token": login_csrf_token(request),
-        },
-        status_code=status_code,
-    )
+def safe_local_path(raw: str | None, default: str = "/") -> str:
+    if not raw or len(raw) > 2048:
+        return default
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or not raw.startswith("/")
+        or raw.startswith("//")
+        or "\\" in raw
+        or any(ord(char) < 32 or ord(char) == 127 for char in raw)
+    ):
+        return default
+    return raw
 
 
 @app.get("/health")
@@ -589,127 +577,69 @@ def health() -> dict[str, str]:
 
 
 @app.get("/login")
-def login_page(request: Request):
+@app.get("/auth/login")
+def login_page(
+    request: Request, next: str | None = Query(default=None, max_length=2048)
+):
     provider = request_auth_provider(request)
-    if not isinstance(provider, LocalAuthProvider):
-        if request.state.identity is not None:
-            return RedirectResponse(url="/", status_code=303)
-        return provider.unauthenticated_response(request)
-    identity = cast(LocalIdentity | None, request.state.identity)
-    if identity is not None:
-        destination = "/change-password" if identity.must_change_password else "/"
+    destination = safe_local_path(next)
+    if request.state.identity is not None:
         return RedirectResponse(url=destination, status_code=303)
-    return render_login(request)
+    if isinstance(provider, CentralAuthProvider):
+        return provider.begin_login(request, destination)
+    return provider.unauthenticated_response(request)
 
 
-@app.post("/login")
-def login_submit(
+@app.get("/auth/callback")
+def auth_callback(
     request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    csrf_token: str | None = Form(default=None),
+    code: str | None = Query(default=None, max_length=4096),
+    state: str | None = Query(default=None, max_length=512),
+    error: str | None = Query(default=None, max_length=256),
 ):
     provider = request_auth_provider(request)
-    if not isinstance(provider, LocalAuthProvider):
-        return provider.unauthenticated_response(request)
-
-    expected_csrf = cast(str, request.session.get("login_csrf_token", ""))
-    if (
-        not expected_csrf
-        or not csrf_token
-        or not hmac.compare_digest(expected_csrf, csrf_token)
-    ):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    remote_address = request.client.host if request.client else "unknown"
-    if not provider.store.login_allowed(username, remote_address):
-        return render_login(
-            request,
-            error="Unable to sign in right now. Try again later.",
-            status_code=429,
+    if not isinstance(provider, CentralAuthProvider):
+        raise HTTPException(status_code=404)
+    if error or not code or not state:
+        request.session.pop("central_auth_transaction", None)
+        raise HTTPException(status_code=400, detail="Sign-in was not completed.")
+    try:
+        _principal, token, destination = provider.complete_login(
+            request, code=code, state=state
         )
-
-    user = provider.store.authenticate(username, password)
-    if user is None:
-        provider.store.record_login_failure(username, remote_address)
-        return render_login(
-            request,
-            error="Invalid username or password.",
-            status_code=401,
-        )
-
-    provider.store.record_login_success(user.username, remote_address)
-    issued = provider.store.create_session(user.id)
-    request.session.pop("login_csrf_token", None)
-    destination = "/change-password" if user.must_change_password else "/"
-    response = RedirectResponse(url=destination, status_code=303)
-    provider.set_session_cookie(response, issued.token)
+    except AuthTransactionError as exc:
+        raise HTTPException(
+            status_code=400, detail="Sign-in expired. Try again."
+        ) from exc
+    except AccessDeniedError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account does not have access to this Explorer instance.",
+        ) from exc
+    except CentralAuthError as exc:
+        raise HTTPException(
+            status_code=502, detail="The authentication service is unavailable."
+        ) from exc
+    response = RedirectResponse(url=safe_local_path(destination), status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    provider.set_session_cookie(response, token)
     return response
 
 
-@app.get("/change-password")
-def change_password_page(request: Request):
+@app.get("/signed-out")
+def signed_out(request: Request):
+    if request.state.identity is not None:
+        return RedirectResponse(url="/", status_code=303)
     provider = request_auth_provider(request)
-    identity = request.state.identity
-    if not isinstance(provider, LocalAuthProvider) or not isinstance(
-        identity, LocalIdentity
-    ):
-        raise HTTPException(status_code=404)
-    return templates.TemplateResponse(
-        request,
-        "change_password.html",
-        {
-            "error": None,
-            "identity": identity,
-            "csrf_token": provider.csrf_token(request),
-        },
+    account_url = (
+        f"{provider.client.issuer_url}/account"
+        if isinstance(provider, CentralAuthProvider)
+        else os.getenv("AUTH_LOGIN_URL", AUTH_LOGIN_URL).rstrip("/")
     )
-
-
-@app.post("/change-password")
-def change_password_submit(
-    request: Request,
-    current_password: str = Form(...),
-    new_password: str = Form(...),
-    confirm_password: str = Form(...),
-    csrf_token: str = Form(...),
-):
-    provider = request_auth_provider(request)
-    identity = request.state.identity
-    if not isinstance(provider, LocalAuthProvider) or not isinstance(
-        identity, LocalIdentity
-    ):
-        raise HTTPException(status_code=404)
-    raw_token = request.cookies.get(LOCAL_AUTH_COOKIE_NAME, "")
-    if not verify_csrf_token(raw_token, csrf_token):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    error: str | None = None
-    if new_password != confirm_password:
-        error = "New passwords do not match."
-    else:
-        try:
-            provider.store.change_password(
-                identity.user_id, current_password, new_password
-            )
-        except (InvalidCurrentPasswordError, PasswordPolicyError) as exc:
-            error = str(exc)
-    if error:
-        return templates.TemplateResponse(
-            request,
-            "change_password.html",
-            {
-                "error": error,
-                "identity": identity,
-                "csrf_token": provider.csrf_token(request),
-            },
-            status_code=400,
-        )
-
-    issued = provider.store.create_session(identity.user_id)
-    response = RedirectResponse(url="/", status_code=303)
-    provider.set_session_cookie(response, issued.token)
-    return response
+    return templates.TemplateResponse(
+        request, "signed_out.html", {"account_url": account_url}
+    )
 
 
 @app.post("/logout")
@@ -718,14 +648,14 @@ def logout(request: Request, csrf_token: str | None = Form(default=None)):
     if isinstance(provider, ElcanoAuthProvider):
         return provider.logout_response(request)
 
-    if not isinstance(provider, LocalAuthProvider):
+    if not isinstance(provider, CentralAuthProvider):
         raise HTTPException(status_code=500, detail="Unsupported auth provider")
-    raw_token = request.cookies.get(LOCAL_AUTH_COOKIE_NAME, "")
+    raw_token = request.cookies.get(provider.cookie_name, "")
     if not verify_csrf_token(raw_token, csrf_token or ""):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
     provider.store.revoke_session(raw_token)
     request.session.clear()
-    response = RedirectResponse(url="/login", status_code=303)
+    response = RedirectResponse(url="/signed-out", status_code=303)
     provider.clear_session_cookie(response)
     return response
 
@@ -1052,7 +982,7 @@ def inbox_page(
             "max_results": max_results,
             "csrf_token": (
                 request_auth_provider(request).csrf_token(request)
-                if isinstance(request_auth_provider(request), LocalAuthProvider)
+                if isinstance(request_auth_provider(request), CentralAuthProvider)
                 else ""
             ),
         },
