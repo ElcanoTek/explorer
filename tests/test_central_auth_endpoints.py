@@ -17,6 +17,7 @@ from app.central_auth import (
     CentralAuthClient,
     CentralAuthError,
     CentralAuthStore,
+    CodeExchangeRejectedError,
 )
 
 
@@ -189,6 +190,31 @@ def test_callback_fails_closed_when_code_exchange_fails(central_client) -> None:
 
     assert response.status_code == 502
     assert CENTRAL_AUTH_COOKIE_NAME not in client.cookies
+
+
+def test_rejected_code_is_a_retry_not_an_outage(central_client) -> None:
+    client, _store = central_client
+    FakeAuthClient.exchange_error = CodeExchangeRejectedError("code consumed")
+
+    response = complete_login(client)
+
+    assert response.status_code == 400
+    assert "Try again" in response.text
+    assert CENTRAL_AUTH_COOKIE_NAME not in client.cookies
+
+
+def test_non_ascii_state_is_rejected_not_crashed(central_client) -> None:
+    client, _store = central_client
+    begin_login(client)
+
+    response = client.get(
+        "/auth/callback",
+        params={"code": "irrelevant", "state": "\u00e9tat"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert FakeAuthClient.exchanged_codes == []
 
 
 def test_external_next_url_is_not_used_after_callback(central_client) -> None:

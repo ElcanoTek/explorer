@@ -275,7 +275,9 @@ class CentralAuthProvider:
             or not isinstance(nonce, str)
             or not isinstance(next_path, str)
             or not isinstance(created_at, int)
-            or not hmac.compare_digest(expected_state, state)
+            or not hmac.compare_digest(
+                expected_state.encode("utf-8"), state.encode("utf-8")
+            )
             or now < created_at
             or now - created_at > LOGIN_TRANSACTION_SECONDS
         ):

@@ -237,7 +237,9 @@ EMAIL_S3_BUCKET="$EMAIL_S3_BUCKET"
 # AWS_SECRET_ACCESS_KEY=
 EOF
 chown "$APP_USER:$APP_USER" "$ENV_FILE"
-chmod 0640 "$ENV_FILE"
+# Owner-only: this file carries the session secret, the central-auth client
+# secret, and any AWS keys.
+chmod 0600 "$ENV_FILE"
 ok "env seeded at $ENV_FILE"
 
 # ── step 4b: optional encrypted config bundle ───────────────────────────
