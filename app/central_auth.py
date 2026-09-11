@@ -57,6 +57,25 @@ class AuthTransactionError(CentralAuthError):
     """The browser callback did not match a live login transaction."""
 
 
+class CodeExchangeRejectedError(CentralAuthError):
+    """The auth service refused the code: expired, replayed, or superseded.
+
+    This is the user's problem to retry, not an outage: a second tab, a slow
+    click, or a stale bookmark produces it. Callers should say "try again",
+    not "the service is unavailable".
+    """
+
+
+# Tolerated skew between this host's clock and the auth service's when
+# checking the assertion expiry. The assertion lives five minutes.
+CLOCK_SKEW_SECONDS = 60
+
+
+def _constant_time_equal(expected: str, actual: str) -> bool:
+    """compare_digest on str raises TypeError for non-ASCII; compare bytes."""
+    return hmac.compare_digest(expected.encode("utf-8"), actual.encode("utf-8"))
+
+
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
     subject: str
@@ -229,12 +248,19 @@ class CentralAuthClient:
         try:
             with _open_token_request(request, self.timeout_seconds) as response:
                 raw = response.read(MAX_TOKEN_RESPONSE_BYTES + 1)
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-        ) as exc:
+        except urllib.error.HTTPError as exc:
+            # 400 is the auth service's invalid_grant: the code was consumed,
+            # expired, or superseded by a newer /authorize for this browser.
+            # Anything else (401 invalid_client, 5xx) is a deployment or
+            # availability problem.
+            if exc.code == 400:
+                raise CodeExchangeRejectedError(
+                    "The authentication service rejected the sign-in code"
+                ) from exc
+            raise CentralAuthError(
+                "The authentication service rejected the code exchange"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise CentralAuthError(
                 "The authentication service rejected the code exchange"
             ) from exc
@@ -250,13 +276,28 @@ class CentralAuthClient:
         subject = payload.get("sub")
         email = payload.get("email")
         nonce = payload.get("nonce")
+        issuer = payload.get("iss")
+        audience = payload.get("aud")
+        expires_at = payload.get("exp")
+        now = int(time.time())
+        # The response arrives over an authenticated TLS backchannel, so these
+        # checks defend against misconfiguration rather than an attacker: a
+        # response minted by a different issuer, for a different client, or
+        # replayed after its assertion window must not create a session.
         if (
             not isinstance(subject, str)
             or not subject
             or len(subject) > 255
             or not isinstance(email, str)
             or not isinstance(nonce, str)
-            or not hmac.compare_digest(nonce, expected_nonce)
+            or not _constant_time_equal(expected_nonce, nonce)
+            or not isinstance(issuer, str)
+            or issuer.rstrip("/") != self.issuer_url
+            or not isinstance(audience, str)
+            or audience != self.client_id
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or expires_at + CLOCK_SKEW_SECONDS <= now
         ):
             raise CentralAuthError("The authentication response was invalid")
         try:

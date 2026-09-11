@@ -33,6 +33,7 @@ from app.central_auth import (
     AccessDeniedError,
     AuthTransactionError,
     CentralAuthError,
+    CodeExchangeRejectedError,
     verify_csrf_token,
 )
 from app.config import settings
@@ -615,6 +616,12 @@ def auth_callback(
         raise HTTPException(
             status_code=403,
             detail="Your account does not have access to this Explorer instance.",
+        ) from exc
+    except CodeExchangeRejectedError as exc:
+        # A consumed, expired, or superseded code (for example a second tab
+        # that started its own sign-in) is a retry, not an outage.
+        raise HTTPException(
+            status_code=400, detail="Sign-in expired. Try again."
         ) from exc
     except CentralAuthError as exc:
         raise HTTPException(

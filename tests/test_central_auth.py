@@ -9,6 +9,8 @@ import hashlib
 import json
 import sqlite3
 import stat
+import time
+import urllib.error
 import urllib.parse
 
 import pytest
@@ -18,6 +20,7 @@ from app.central_auth import (
     CentralAuthClient,
     CentralAuthError,
     CentralAuthStore,
+    CodeExchangeRejectedError,
     csrf_token_for_session,
     verify_csrf_token,
 )
@@ -117,6 +120,9 @@ def test_code_exchange_authenticates_client_and_validates_nonce(monkeypatch) -> 
                     "sub": "account-123",
                     "email": "Alice@Example.com",
                     "nonce": "expected-nonce",
+                    "iss": "https://auth.example.com",
+                    "aud": "explorer",
+                    "exp": int(time.time()) + 300,
                 }
             ).encode()
 
@@ -192,7 +198,16 @@ def test_code_exchange_rejects_wrong_nonce(monkeypatch) -> None:
             return None
 
         def read(self, _limit):
-            return b'{"sub":"account-123","email":"alice@example.com","nonce":"wrong"}'
+            return json.dumps(
+                {
+                    "sub": "account-123",
+                    "email": "alice@example.com",
+                    "nonce": "wrong",
+                    "iss": "https://auth.example.com",
+                    "aud": "explorer",
+                    "exp": int(time.time()) + 300,
+                }
+            ).encode()
 
     monkeypatch.setattr(
         "app.central_auth._open_token_request", lambda *_args: Response()
@@ -210,3 +225,108 @@ def test_code_exchange_rejects_wrong_nonce(monkeypatch) -> None:
             code_verifier="pkce-verifier",
             expected_nonce="expected-nonce",
         )
+
+
+def _client() -> CentralAuthClient:
+    return CentralAuthClient(
+        issuer_url="https://auth.example.com",
+        public_url="https://explorer.example.com",
+        client_id="explorer",
+        client_secret="a-random-client-secret-with-32-bytes",
+    )
+
+
+def _fake_response(payload: dict):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return json.dumps(payload).encode()
+
+    return Response()
+
+
+def _valid_payload() -> dict:
+    return {
+        "sub": "account-123",
+        "email": "alice@example.com",
+        "nonce": "expected-nonce",
+        "iss": "https://auth.example.com",
+        "aud": "explorer",
+        "exp": int(time.time()) + 300,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"aud": "lens"},
+        {"iss": "https://other-auth.example.com"},
+        {"exp": int(time.time()) - 120},
+        {"exp": "soon"},
+        {"exp": True},
+    ],
+)
+def test_code_exchange_rejects_wrong_audience_issuer_or_expired(
+    monkeypatch, mutation
+) -> None:
+    payload = _valid_payload() | mutation
+    monkeypatch.setattr(
+        "app.central_auth._open_token_request",
+        lambda *_args: _fake_response(payload),
+    )
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _client().exchange(
+            code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
+        )
+
+
+def test_code_exchange_tolerates_small_clock_skew(monkeypatch) -> None:
+    payload = _valid_payload() | {"exp": int(time.time()) - 10}
+    monkeypatch.setattr(
+        "app.central_auth._open_token_request",
+        lambda *_args: _fake_response(payload),
+    )
+    principal = _client().exchange(
+        code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
+    )
+    assert principal.subject == "account-123"
+
+
+def test_non_ascii_nonce_from_issuer_is_rejected_not_crashed(monkeypatch) -> None:
+    payload = _valid_payload() | {"nonce": "expected-nonc\u00e9"}
+    monkeypatch.setattr(
+        "app.central_auth._open_token_request",
+        lambda *_args: _fake_response(payload),
+    )
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _client().exchange(
+            code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
+        )
+
+
+def test_http_400_from_token_endpoint_is_a_rejected_code(monkeypatch) -> None:
+    def refuse(*_args):
+        raise urllib.error.HTTPError(
+            "https://auth.example.com/token", 400, "Bad Request", {}, None
+        )
+
+    monkeypatch.setattr("app.central_auth._open_token_request", refuse)
+    with pytest.raises(CodeExchangeRejectedError):
+        _client().exchange(code="code", code_verifier="v" * 43, expected_nonce="n")
+
+
+def test_http_401_from_token_endpoint_is_an_outage_not_a_retry(monkeypatch) -> None:
+    def refuse(*_args):
+        raise urllib.error.HTTPError(
+            "https://auth.example.com/token", 401, "Unauthorized", {}, None
+        )
+
+    monkeypatch.setattr("app.central_auth._open_token_request", refuse)
+    with pytest.raises(CentralAuthError) as excinfo:
+        _client().exchange(code="code", code_verifier="v" * 43, expected_nonce="n")
+    assert not isinstance(excinfo.value, CodeExchangeRejectedError)
