@@ -3,11 +3,11 @@
 
 """Pluggable authentication for Explorer deployments.
 
-``elcano`` mode preserves the external magic-link service: Explorer verifies
-its Ed25519-signed cookie with ``AUTH_SIGNING_PUBKEY``. ``local`` mode owns a
-deployment-local username/password store and opaque, revocable sessions.
+``elcano`` mode preserves the external magic-link service unchanged.
+``central`` mode uses the new central password auth service, then applies an
+Explorer-local email allowlist and issues an app-scoped opaque session.
 
-Token format::
+The preserved Elcano cookie format is::
 
     base64url(payload_json) + "." + base64url(ed25519_sig)
 
@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import time
 from typing import Protocol
 from urllib.parse import quote
@@ -34,11 +37,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 
-from app.local_auth import (
-    LOCAL_AUTH_COOKIE_NAME,
-    LocalAuthStore,
-    LocalIdentity,
-    csrf_token_for_session,
+from app.central_auth import (
+    CENTRAL_AUTH_COOKIE_NAME,
+    LOGIN_TRANSACTION_SECONDS,
+    AuthenticatedPrincipal,
+    AuthTransactionError,
+    CentralAuthClient,
+    CentralAuthStore,
+    CentralIdentity,
 )
 
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "elcano_auth")
@@ -123,15 +129,15 @@ def verify_session(token: str | None) -> dict | None:
 
 def current_identity(request: Request) -> dict | None:
     """The verified identity for this request, or None if not signed in."""
-    return verify_session(request.cookies.get(AUTH_COOKIE_NAME))
+    cookie_name = os.getenv("AUTH_COOKIE_NAME", AUTH_COOKIE_NAME)
+    return verify_session(request.cookies.get(cookie_name))
 
 
 def login_redirect(request: Request) -> RedirectResponse:
     """Send the browser to the auth service, signed back to this URL."""
     return_to = quote(str(request.url), safe="")
-    return RedirectResponse(
-        url=f"{AUTH_LOGIN_URL}/?return_to={return_to}", status_code=303
-    )
+    login_url = os.getenv("AUTH_LOGIN_URL", AUTH_LOGIN_URL).rstrip("/")
+    return RedirectResponse(url=f"{login_url}/?return_to={return_to}", status_code=303)
 
 
 class AuthProvider(Protocol):
@@ -139,7 +145,7 @@ class AuthProvider(Protocol):
 
     mode: str
 
-    def identity(self, request: Request) -> dict | LocalIdentity | None: ...
+    def identity(self, request: Request) -> dict | CentralIdentity | None: ...
 
     def unauthenticated_response(self, request: Request) -> RedirectResponse: ...
 
@@ -157,47 +163,143 @@ class ElcanoAuthProvider:
 
     def logout_response(self, request: Request) -> RedirectResponse:
         request.session.clear()
-        return RedirectResponse(url=f"{AUTH_LOGIN_URL}/logout", status_code=303)
+        login_url = os.getenv("AUTH_LOGIN_URL", AUTH_LOGIN_URL).rstrip("/")
+        return RedirectResponse(url=f"{login_url}/logout", status_code=303)
 
 
-class LocalAuthProvider:
-    """Opaque-cookie adapter backed by a deployment-local SQLite store."""
+class CentralAuthProvider:
+    """Central SSO client with local authorization and app-only sessions."""
 
-    mode = "local"
+    mode = "central"
 
-    def __init__(self, store: LocalAuthStore, *, cookie_secure: bool = True) -> None:
+    def __init__(
+        self,
+        store: CentralAuthStore,
+        client: CentralAuthClient,
+        *,
+        cookie_secure: bool = True,
+    ) -> None:
         self.store = store
+        self.client = client
         self.cookie_secure = cookie_secure
+        self.cookie_name = (
+            CENTRAL_AUTH_COOKIE_NAME if cookie_secure else "explorer_session"
+        )
 
     @classmethod
-    def from_env(cls) -> LocalAuthProvider:
+    def from_env(
+        cls, client_factory: type[CentralAuthClient] = CentralAuthClient
+    ) -> CentralAuthProvider:
         raw_secure = os.getenv("EXPLORER_AUTH_COOKIE_SECURE", "1")
         cookie_secure = raw_secure.strip().lower() in {"1", "true", "yes", "on"}
-        if not cookie_secure:
+        raw_ui_secure = os.getenv("EXPLORER_UI_COOKIE_SECURE", "1")
+        ui_cookie_secure = raw_ui_secure.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        allow_insecure = os.getenv("AUTH_ALLOW_INSECURE_HTTP", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if (not cookie_secure or not ui_cookie_secure) and not allow_insecure:
             raise RuntimeError(
-                "Local auth requires Secure cookies and an HTTPS deployment"
+                "Central auth requires Secure app and UI cookies; insecure HTTP is only allowed for development"
             )
-        return cls(LocalAuthStore.from_env(), cookie_secure=cookie_secure)
+        client = client_factory.from_env()
+        store = CentralAuthStore.from_env()
+        return cls(
+            store,
+            client,
+            cookie_secure=cookie_secure,
+        )
 
-    def identity(self, request: Request) -> LocalIdentity | None:
-        return self.store.get_identity(request.cookies.get(LOCAL_AUTH_COOKIE_NAME))
+    def identity(self, request: Request) -> CentralIdentity | None:
+        return self.store.get_identity(request.cookies.get(self.cookie_name))
 
     def unauthenticated_response(self, request: Request) -> RedirectResponse:
-        return RedirectResponse(url="/login", status_code=303)
+        target = request.url.path
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        if len(target) > 2048:
+            target = "/"
+        return RedirectResponse(
+            url=f"/auth/login?next={quote(target, safe='')}", status_code=303
+        )
+
+    def begin_login(self, request: Request, next_path: str) -> RedirectResponse:
+        if len(next_path) > 2048:
+            next_path = "/"
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = secrets.token_urlsafe(64)
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        request.session["central_auth_transaction"] = {
+            "state": state,
+            "nonce": nonce,
+            "verifier": verifier,
+            "next": next_path,
+            "created_at": int(time.time()),
+        }
+        response = RedirectResponse(
+            self.client.authorization_url(
+                state=state, code_challenge=challenge, nonce=nonce
+            ),
+            status_code=303,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def complete_login(
+        self, request: Request, *, code: str, state: str
+    ) -> tuple[AuthenticatedPrincipal, str, str]:
+        transaction = request.session.pop("central_auth_transaction", None)
+        if not isinstance(transaction, dict):
+            raise AuthTransactionError("The sign-in transaction is missing or expired")
+        expected_state = transaction.get("state")
+        verifier = transaction.get("verifier")
+        nonce = transaction.get("nonce")
+        next_path = transaction.get("next")
+        created_at = transaction.get("created_at")
+        now = int(time.time())
+        if (
+            not isinstance(expected_state, str)
+            or not isinstance(verifier, str)
+            or not isinstance(nonce, str)
+            or not isinstance(next_path, str)
+            or not isinstance(created_at, int)
+            or not hmac.compare_digest(expected_state, state)
+            or now < created_at
+            or now - created_at > LOGIN_TRANSACTION_SECONDS
+        ):
+            raise AuthTransactionError("The sign-in transaction is invalid or expired")
+        principal = self.client.exchange(
+            code=code, code_verifier=verifier, expected_nonce=nonce
+        )
+        issued = self.store.create_session(principal.subject, principal.email)
+        return principal, issued.token, next_path
 
     def set_session_cookie(self, response: RedirectResponse, token: str) -> None:
         response.set_cookie(
-            key=LOCAL_AUTH_COOKIE_NAME,
+            key=self.cookie_name,
             value=token,
             secure=self.cookie_secure,
             httponly=True,
             samesite="lax",
             path="/",
+            max_age=self.store.absolute_seconds,
         )
 
     def clear_session_cookie(self, response: RedirectResponse) -> None:
         response.delete_cookie(
-            key=LOCAL_AUTH_COOKIE_NAME,
+            key=self.cookie_name,
             secure=self.cookie_secure,
             httponly=True,
             samesite="lax",
@@ -205,16 +307,18 @@ class LocalAuthProvider:
         )
 
     def csrf_token(self, request: Request) -> str:
-        token = request.cookies.get(LOCAL_AUTH_COOKIE_NAME, "")
-        return csrf_token_for_session(token) if token else ""
+        token = request.cookies.get(self.cookie_name, "")
+        return self.store.csrf_token(token) if token else ""
 
 
-def build_auth_provider() -> AuthProvider:
+def build_auth_provider(
+    client_factory: type[CentralAuthClient] = CentralAuthClient,
+) -> AuthProvider:
     # Defaulting an existing installation to Elcano preserves its current
     # fail-closed behavior: without the signing key, no cookie can verify.
     mode = os.getenv("EXPLORER_AUTH_MODE", "elcano").strip().lower()
     if mode == "elcano":
         return ElcanoAuthProvider()
-    if mode == "local":
-        return LocalAuthProvider.from_env()
-    raise RuntimeError("EXPLORER_AUTH_MODE must be either 'elcano' or 'local'")
+    if mode == "central":
+        return CentralAuthProvider.from_env(client_factory)
+    raise RuntimeError("EXPLORER_AUTH_MODE must be either 'elcano' or 'central'")

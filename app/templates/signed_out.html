@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block header_title %}Explorer{% endblock %}
+{% block header_intro %}{% endblock %}
+{% block content %}
+<section class="card auth-card" aria-labelledby="signed-out-heading">
+  <div class="featured-head">
+    <p class="featured-kicker">Explorer</p>
+    <h2 id="signed-out-heading">Signed out</h2>
+  </div>
+  <p class="description">This Explorer session has ended.</p>
+  <p><a class="button" href="/auth/login">Sign in again</a></p>
+  <p class="subtle"><a href="{{ account_url }}">Manage your central account</a>.</p>
+</section>
+{% endblock %}

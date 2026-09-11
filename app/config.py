@@ -29,9 +29,10 @@ class Settings:
     email_s3_max_body_search_days: int
     email_search_header_fetch_bytes: int
     email_search_job_max_seconds: int
-    # Signs the ephemeral SessionMiddleware cookie that holds the per-browser
-    # search_owner_id. NOT an auth boundary — login is the elcano_auth cookie
-    # verified in app/auth.py against the auth service's Ed25519 public key.
+    # Signs the SessionMiddleware cookie holding per-browser search ownership
+    # and, in central mode, the short-lived state/nonce/PKCE transaction. The
+    # actual app login remains the verified Elcano cookie or opaque Explorer
+    # session handled in app/auth.py.
     session_secret: str
 
     @classmethod

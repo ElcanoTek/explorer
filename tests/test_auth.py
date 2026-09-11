@@ -128,8 +128,18 @@ def test_unknown_auth_mode_fails_configuration(monkeypatch):
         auth.build_auth_provider()
 
 
-def test_local_auth_rejects_insecure_cookie(monkeypatch):
-    monkeypatch.setenv("EXPLORER_AUTH_MODE", "local")
+def test_central_auth_rejects_insecure_cookie(monkeypatch):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "central")
     monkeypatch.setenv("EXPLORER_AUTH_COOKIE_SECURE", "0")
-    with pytest.raises(RuntimeError, match="Secure cookies"):
+    monkeypatch.delenv("AUTH_ALLOW_INSECURE_HTTP", raising=False)
+    with pytest.raises(RuntimeError, match="Secure app"):
+        auth.build_auth_provider()
+
+
+def test_central_auth_rejects_insecure_login_state_cookie(monkeypatch):
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "central")
+    monkeypatch.setenv("EXPLORER_AUTH_COOKIE_SECURE", "1")
+    monkeypatch.setenv("EXPLORER_UI_COOKIE_SECURE", "0")
+    monkeypatch.delenv("AUTH_ALLOW_INSECURE_HTTP", raising=False)
+    with pytest.raises(RuntimeError, match="UI cookies"):
         auth.build_auth_provider()

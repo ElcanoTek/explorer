@@ -38,9 +38,9 @@ and attachment download over the archive you already own.
 - **Prefix confinement.** Every S3 key Explorer touches must sit under the
   configured prefix; anything else is a 404 regardless of what the URL asks
   for.
-- **Deployment-selected authentication.** Keep an external Ed25519-signed
-  magic-link cookie, or use isolated local accounts with Argon2id passwords
-  and revocable server-side sessions.
+- **Deployment-selected authentication.** Keep Elcano's existing
+  Ed25519-signed magic-link cookie, or use the new central auth service with a
+  per-Explorer email access list and app-scoped revocable sessions.
 
 ## How it works
 
@@ -103,9 +103,9 @@ $EDITOR .env          # bucket, prefix, AWS credentials, authentication mode
 uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
-Then open <http://127.0.0.1:8080>. Elcano mode redirects to its external
-sign-in service. Local authentication requires an HTTPS reverse proxy because
-its host-only session cookie is always `Secure`. See
+Then open <http://127.0.0.1:8080>. Elcano mode redirects to its existing
+magic-link service. Central mode requires its configured public HTTPS origin
+because its app-scoped cookie is always `Secure`. See
 [Authentication](#authentication).
 
 Run the tests with `python -m pytest -q` and the linter with
@@ -137,16 +137,20 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `AWS_REGION` | no | `us-east-2` | Region of the archive bucket. |
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only key. Leave blank to use the ambient AWS credential chain (instance role, `~/.aws`, `AWS_PROFILE`). |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
-| `EXPLORER_AUTH_MODE` | no | `elcano` | Authentication provider: `elcano` or `local`. The default preserves existing deployments. |
+| `EXPLORER_AUTH_MODE` | no | `elcano` | Authentication provider: `elcano` or `central`. The default preserves existing deployments. |
 | `AUTH_SIGNING_PUBKEY` | Elcano mode | *(empty)* | Base64 Ed25519 **public** key of the auth service. Unset ⇒ every request redirects to sign-in. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are sent. Set this. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Name of the session cookie to verify. |
-| `EXPLORER_AUTH_DB` | local mode | `/var/lib/explorer/auth.db` | Deployment-local SQLite users, sessions, rate limits, and audit events. |
-| `EXPLORER_AUTH_COOKIE_SECURE` | local mode | `1` | Requires the local auth cookie to travel over HTTPS. Keep enabled in production. |
+| `AUTH_ISSUER_URL` | central mode | *(empty)* | HTTPS origin of the client's central auth service. |
+| `EXPLORER_PUBLIC_URL` | central mode | *(empty)* | Explorer's HTTPS origin; its registered callback is `<origin>/auth/callback`. |
+| `AUTH_CLIENT_ID` | central mode | `explorer` | Client ID registered at the auth service. |
+| `AUTH_CLIENT_SECRET` | central mode | *(empty)* | Per-deployment client secret, at least 32 bytes. |
+| `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | Deployment-local email access list and app sessions; contains no passwords. |
+| `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Requires the app-scoped cookie to travel over HTTPS. Keep enabled in production. |
 | `EXPLORER_UI_COOKIE_SECURE` | no | `1` | Requires the search/CSRF cookie to travel over HTTPS. Keep enabled in production. |
-| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Local session idle lifetime (60 minutes). |
-| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Local session absolute lifetime (12 hours). |
-| `EXPLORER_SESSION_SECRET` | local: **yes**; Elcano: recommended | a dev placeholder | Signs login CSRF state and the cookie scoping search jobs to one browser. Generate with `openssl rand -hex 32`. |
+| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Central-mode Explorer session idle lifetime (60 minutes). |
+| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Central-mode Explorer session absolute lifetime (12 hours). |
+| `EXPLORER_SESSION_SECRET` | central: **yes**; Elcano: recommended | a dev placeholder | Signs central login state and the cookie scoping search jobs to one browser. Generate with `openssl rand -hex 32`. |
 
 ### Authentication
 
@@ -175,32 +179,38 @@ would rather front Explorer with your own SSO, terminate it at your reverse
 proxy and keep Explorer on loopback. The verifier lives in `app/auth.py` and
 its tests in `tests/test_auth.py`.
 
-#### Local username/password mode
+#### Central auth mode
 
-`EXPLORER_AUTH_MODE=local` gives one Explorer deployment its own accounts. It
-stores salted Argon2id password hashes—not passwords—and only SHA-256 hashes
-of random 256-bit session identifiers in SQLite. The host-only
-`__Host-explorer_session` cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, and
-scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total.
-Passwords may contain spaces and Unicode, are normalized to NFC, and must be
-15–128 characters. Explorer applies no arbitrary character-class rules or
-periodic expiration.
+`EXPLORER_AUTH_MODE=central` removes passwords from Explorer. An anonymous
+browser starts an authorization-code flow at `AUTH_ISSUER_URL`; the request is
+bound with state, nonce, and PKCE. Explorer exchanges the short-lived,
+single-use code over a TLS backchannel authenticated with its client secret.
+The auth service returns the authenticated account ID and email—never its
+password or central session cookie.
 
-There is no public registration or forgot-password route. An operator creates
-or recovers an account and enters a password-manager-generated temporary
-password through hidden terminal prompts:
+Explorer then applies a deployment-local, default-deny email access list. An
+operator controls it without creating another credential:
 
 ```bash
-sudo explorer user add user@example.com
-sudo explorer user reset-password user@example.com
+sudo explorer access grant user@example.com
+sudo explorer access list
+sudo explorer access revoke user@example.com
 ```
 
-Explorer never prints or writes the temporary password.
+Allowed users receive a random 256-bit, app-only session. Only its SHA-256
+hash is stored in `/var/lib/explorer/access.db`; the host-only
+`__Host-explorer_session` cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, and
+scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total.
+Revoking an email immediately invalidates all of that email's Explorer
+sessions. Logout is CSRF-protected and revokes only the current Explorer
+session. Central login/logout or account disablement does not yet revoke an
+already-issued Explorer session; it lasts until its idle/absolute expiry or a
+local `explorer access revoke`. Back-channel revocation is a required follow-up
+if clients need immediate cross-service sign-out or disablement.
 
-The user must replace that password at sign-in. Password replacement, logout,
-account disablement, and `explorer user revoke-sessions` revoke server-side
-sessions immediately. Login errors are generic, attempts are rate-limited by
-account and IP, and state-changing forms require CSRF tokens.
+The auth service must register the exact client ID, secret, and callback URL.
+The expected `/authorize` and `/token` contract is documented in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-auth-service-contract).
 
 ### AWS IAM permissions
 
@@ -254,9 +264,9 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
 
 - **Explorer is a window into private correspondence.** Treat its URL as
   sensitive as the mailbox itself.
-- **Deny-by-default route gate.** Only `/health`, `/login`, and static assets
-  are public. Every existing or future data route passes through the global
-  authentication middleware.
+- **Deny-by-default route gate.** Only health/static content and the central
+  login/callback/signed-out routes are public. Every data route passes through
+  the global authentication middleware.
 - **Least-privilege AWS credentials.** Use the read-only policy above, on one
   prefix. An instance role beats a long-lived key.
 - **Prefix confinement.** `app/main.py::is_allowed_s3_key` rejects keys
@@ -269,7 +279,7 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
   systemd timer sweeps every 15 minutes; nothing is meant to persist on disk.
 - **Loopback plus a proxy.** Bind `127.0.0.1` and terminate TLS in front. In
   Elcano mode, use a hostname within the external cookie's configured domain.
-  Local mode uses a host-only cookie and does not share it with other apps.
+  Central mode uses a host-only app cookie and does not share it with other apps.
 - **Never commit a dotenv file.** All `.env*` variants except `.env.example`
   are gitignored. Report vulnerabilities per [SECURITY.md](SECURITY.md).
 
