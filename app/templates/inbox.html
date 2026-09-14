@@ -319,7 +319,7 @@
 {% endif %}
 
 <script src="/static/vendor/flatpickr/flatpickr.min.js"></script>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
   (function () {
     const form = document.getElementById("search-form");
     const submitButton = document.getElementById("search-submit");

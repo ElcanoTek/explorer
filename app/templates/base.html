@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ title or "Explorer" }}</title>
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       (function () {
         const storageKey = "flag-theme-preference";
         let preference = null;
@@ -58,7 +58,7 @@
       {% endblock %}
       <main class="page">{% block content %}{% endblock %}</main>
     </div>
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       (function () {
         const root = document.documentElement;
         const toggle = document.getElementById("toggleTheme");
