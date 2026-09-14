@@ -41,6 +41,7 @@ from app.central_auth import (
     CENTRAL_AUTH_COOKIE_NAME,
     LOGIN_TRANSACTION_SECONDS,
     AuthenticatedPrincipal,
+    AuthKeyResolver,
     AuthTransactionError,
     CentralAuthClient,
     CentralAuthStore,
@@ -186,6 +187,11 @@ class CentralAuthProvider:
         self.cookie_name = (
             CENTRAL_AUTH_COOKIE_NAME if cookie_secure else "explorer_session"
         )
+        # Static env keys plus Auth's published JWKS, so a signing-key
+        # rotation on Auth needs no env edit here.
+        self.key_resolver = AuthKeyResolver(
+            client.issuer_url, require_auth_signing_public_keys()
+        )
 
     @classmethod
     def from_env(
@@ -210,7 +216,6 @@ class CentralAuthProvider:
             raise RuntimeError(
                 "Central auth requires Secure app and UI cookies; insecure HTTP is only allowed for development"
             )
-        require_auth_signing_public_keys()
         client = client_factory.from_env()
         store = CentralAuthStore.from_env()
         return cls(

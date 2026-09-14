@@ -35,7 +35,6 @@ from app.central_auth import (
     AuthTransactionError,
     CentralAuthError,
     CodeExchangeRejectedError,
-    auth_signing_public_keys,
     verify_csrf_token,
     verify_logout_token,
 )
@@ -701,7 +700,7 @@ def auth_backchannel_logout(request: Request, logout_token: str = Form(...)):
             logout_token,
             issuer=provider.client.issuer_url,
             audience=provider.client.client_id,
-            public_keys=auth_signing_public_keys(),
+            public_keys=provider.key_resolver.keys_for_token(logout_token),
         )
     except CentralAuthError as exc:
         raise HTTPException(status_code=400, detail="Invalid logout token") from exc

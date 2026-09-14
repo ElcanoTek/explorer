@@ -83,3 +83,20 @@ class ASGITestClient:
 @pytest.fixture()
 def asgi_client():
     return ASGITestClient if sys.version_info >= (3, 14) else _NativeTestClient
+
+
+@pytest.fixture(autouse=True)
+def _no_network_jwks(monkeypatch):
+    """Tests never reach Auth's /jwks.json; the resolver falls back to env keys."""
+    import app.central_auth as central_auth
+
+    def refuse(url, timeout):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(central_auth, "_fetch_jwks", refuse)
+    monkeypatch.setattr(
+        central_auth.AuthKeyResolver.__init__.__defaults__[0].__class__,
+        "__name__",
+        "function",
+        raising=False,
+    )

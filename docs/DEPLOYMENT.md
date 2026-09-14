@@ -177,7 +177,7 @@ but lose to `.env`.
 | `AUTH_CLIENT_ID` | central mode | `explorer` | Client identifier registered at the auth service. |
 | `AUTH_CLIENT_SECRET` | central mode | *(empty)* | Unique per-deployment client secret, at least 32 bytes. |
 | `AUTH_HTTP_TIMEOUT_SECONDS` | no | `10` | Backchannel code-exchange timeout; must be greater than 0 and no more than 60 seconds. |
-| `AUTH_SIGNING_PREVIOUS_PUBKEYS` | no | *(empty)* | Comma-separated prior Ed25519 public keys accepted temporarily during Auth signing-key rotation. |
+| `AUTH_SIGNING_PREVIOUS_PUBKEYS` | no | *(empty)* | Comma-separated prior Ed25519 public keys. Rarely needed now: in central mode Explorer also reads Auth's published `/jwks.json` (cached 10 minutes, refreshed once when a token names an unknown key), so an Auth key rotation needs no env edit here. |
 | `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | SQLite email access list and Explorer session hashes. Keep it outside the application tree and mode `0600`. |
 | `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Controls `Secure` on `__Host-explorer_session`. Central mode refuses an insecure setting in production. |
 | `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
