@@ -200,7 +200,9 @@ sudo explorer access revoke user@example.com
 Allowed users receive a random 256-bit, app-only session. Only its SHA-256
 hash is stored in `/var/lib/explorer/access.db`; the host-only
 `__Host-explorer_session` cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, and
-scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total.
+scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total; the
+idle clock is refreshed at most once a minute (the Elcano convention for
+service sessions), so a session can end up to a minute early but never late.
 Revoking an email immediately invalidates all of that email's Explorer
 sessions. Logout is CSRF-protected and revokes only the current Explorer
 session. Auth's signed back-channel endpoint also revokes every local session

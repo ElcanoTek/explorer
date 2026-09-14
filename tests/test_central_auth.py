@@ -480,3 +480,29 @@ def test_replay_table_is_pruned_after_retention(store: CentralAuthStore) -> None
             for row in connection.execute("SELECT event_id FROM revocation_events")
         }
     assert ids == {"new-event"}
+
+
+def test_session_touch_is_rate_limited_to_one_write_per_minute(
+    store: CentralAuthStore,
+) -> None:
+    store.grant_access("alice@example.com", now=1_000)
+    issued = store.create_session("account-123", "alice@example.com", now=1_000)
+
+    def stamps():
+        with sqlite3.connect(store.path) as connection:
+            return connection.execute(
+                "SELECT last_seen_at, idle_expires_at FROM sessions WHERE token_hash = ?",
+                (issued.token_hash,),
+            ).fetchone()
+
+    assert stamps() == (1_000, 1_000 + store.idle_seconds)
+    # Inside the interval: validated, but no write.
+    assert store.get_identity(issued.token, now=1_030) is not None
+    assert store.get_identity(issued.token, now=1_059) is not None
+    assert stamps() == (1_000, 1_000 + store.idle_seconds)
+    # Past the interval: one write, idle clock moves forward from the request.
+    assert store.get_identity(issued.token, now=1_060) is not None
+    assert stamps() == (1_060, 1_060 + store.idle_seconds)
+    # The idle limit is enforced against the last touch, never longer than the
+    # limit: a request at exactly idle_expires_at is rejected.
+    assert store.get_identity(issued.token, now=1_060 + store.idle_seconds) is None

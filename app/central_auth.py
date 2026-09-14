@@ -33,6 +33,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 CENTRAL_AUTH_COOKIE_NAME = "__Host-explorer_session"
 DEFAULT_IDLE_SECONDS = 60 * 60
 DEFAULT_ABSOLUTE_SECONDS = 12 * 60 * 60
+# How often a validated session rewrites last_seen_at / idle_expires_at. Every
+# request reads the session; only a request more than this long after the
+# previous touch writes. The idle limit therefore behaves as "60 minutes minus
+# at most one minute", never longer, and a page's burst of requests costs one
+# SQLite write instead of one per request. One minute is the convention for
+# every Elcano service with its own sessions (Auth, Explorer, Lens, and
+# anything built later); keep it a constant, not a setting.
+SESSION_TOUCH_SECONDS = 60
 LOGIN_TRANSACTION_SECONDS = 10 * 60
 SCHEMA_VERSION = 2
 MAX_TOKEN_RESPONSE_BYTES = 64 * 1024
@@ -681,10 +689,11 @@ class CentralAuthStore:
             return None
         timestamp = int(time.time() if now is None else now)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            # Plain read first: most requests fall inside the touch interval
+            # and must not take the write lock.
             row = connection.execute(
                 """
-                SELECT s.subject, s.email, s.idle_expires_at,
+                SELECT s.subject, s.email, s.last_seen_at, s.idle_expires_at,
                        s.absolute_expires_at, a.enabled
                 FROM sessions AS s
                 JOIN access_entries AS a ON a.email = s.email
@@ -704,13 +713,17 @@ class CentralAuthStore:
                         (timestamp, token_hash),
                     )
                 return None
-            next_idle = min(
-                timestamp + self.idle_seconds, int(row["absolute_expires_at"])
-            )
-            connection.execute(
-                "UPDATE sessions SET last_seen_at = ?, idle_expires_at = ? WHERE token_hash = ?",
-                (timestamp, next_idle, token_hash),
-            )
+            if timestamp - int(row["last_seen_at"]) >= SESSION_TOUCH_SECONDS:
+                next_idle = min(
+                    timestamp + self.idle_seconds, int(row["absolute_expires_at"])
+                )
+                connection.execute(
+                    """
+                    UPDATE sessions SET last_seen_at = ?, idle_expires_at = ?
+                    WHERE token_hash = ? AND revoked_at IS NULL
+                    """,
+                    (timestamp, next_idle, token_hash),
+                )
         return CentralIdentity(subject=str(row["subject"]), email=str(row["email"]))
 
     def revoke_session(self, token: str | None, *, now: int | None = None) -> bool:
