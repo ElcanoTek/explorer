@@ -5,12 +5,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from dataclasses import replace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app import main
+from app.auth import CentralAuthProvider
 from app.central_auth import (
     CENTRAL_AUTH_COOKIE_NAME,
     AuthenticatedPrincipal,
@@ -25,6 +30,7 @@ class FakeAuthClient:
     exchange_error: Exception | None = None
     exchanged_codes: list[str] = []
     email = "alice@example.com"
+    signing_key: Ed25519PrivateKey | None = None
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -34,6 +40,7 @@ class FakeAuthClient:
         return cls()
 
     issuer_url = "https://auth.example.com"
+    client_id = "explorer"
 
     def authorization_url(self, *, state: str, code_challenge: str, nonce: str) -> str:
         query = (
@@ -60,6 +67,7 @@ def reset_fake_client() -> None:
     FakeAuthClient.exchange_error = None
     FakeAuthClient.exchanged_codes = []
     FakeAuthClient.email = "alice@example.com"
+    FakeAuthClient.signing_key = None
 
 
 @pytest.fixture()
@@ -75,6 +83,12 @@ def central_client(monkeypatch, tmp_path, asgi_client):
     monkeypatch.setenv("AUTH_CLIENT_ID", "explorer")
     monkeypatch.setenv(
         "AUTH_CLIENT_SECRET", "a-test-client-secret-with-at-least-32-bytes"
+    )
+    private_key = Ed25519PrivateKey.generate()
+    FakeAuthClient.signing_key = private_key
+    monkeypatch.setenv(
+        "AUTH_SIGNING_PUBKEY",
+        base64.b64encode(private_key.public_key().public_bytes_raw()).decode(),
     )
     monkeypatch.setattr(main, "CentralAuthClient", FakeAuthClient)
     monkeypatch.setattr(
@@ -264,9 +278,90 @@ def test_logout_requires_csrf_and_revokes_only_explorer_session(
     assert store.get_identity(raw_token) is None
 
 
+def test_signed_backchannel_logout_revokes_all_sessions_for_subject(
+    central_client,
+) -> None:
+    client, store = central_client
+    complete_login(client)
+    raw_token = client.cookies.get(CENTRAL_AUTH_COOKIE_NAME)
+    assert raw_token and FakeAuthClient.signing_key
+
+    public = FakeAuthClient.signing_key.public_key().public_bytes_raw()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
+        .rstrip(b"=")
+        .decode()
+    )
+
+    def encode(value):
+        return (
+            base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+
+    header = {"typ": "logout+jwt", "alg": "EdDSA", "kid": kid}
+    claims = {
+        "iss": "https://auth.example.com",
+        "sub": "account-123",
+        "aud": "explorer",
+        "iat": int(main.time.time()) if hasattr(main, "time") else 1_000,
+        "exp": 2_000_000_000,
+        "jti": "event-123",
+        "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
+    }
+    body = f"{encode(header)}.{encode(claims)}"
+    signature = (
+        base64.urlsafe_b64encode(FakeAuthClient.signing_key.sign(body.encode()))
+        .rstrip(b"=")
+        .decode()
+    )
+    raw_logout = f"{body}.{signature}"
+
+    response = client.post(
+        "/auth/backchannel-logout", data={"logout_token": raw_logout}
+    )
+
+    assert response.status_code == 204
+    assert store.get_identity(raw_token) is None
+    assert (
+        client.post(
+            "/auth/backchannel-logout", data={"logout_token": raw_logout}
+        ).status_code
+        == 204
+    )
+
+
 def test_auth_client_requires_https_and_a_strong_client_secret(monkeypatch) -> None:
     monkeypatch.setenv("AUTH_ISSUER_URL", "http://auth.example.com")
     monkeypatch.setenv("AUTH_CLIENT_SECRET", "short")
 
     with pytest.raises(RuntimeError, match="HTTPS"):
         CentralAuthClient.from_env()
+
+
+def test_backchannel_logout_rejects_oversized_request(central_client) -> None:
+    client, _store = central_client
+    response = client.post(
+        "/auth/backchannel-logout", data={"logout_token": "x" * 20_001}
+    )
+    assert response.status_code == 413
+
+
+def test_central_mode_refuses_to_start_without_the_auth_public_key(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("EXPLORER_AUTH_MODE", "central")
+    monkeypatch.setenv("EXPLORER_ACCESS_DB", str(tmp_path / "access.db"))
+    monkeypatch.setenv("AUTH_ISSUER_URL", "https://auth.example.com")
+    monkeypatch.setenv("EXPLORER_PUBLIC_URL", "https://explorer.example.com")
+    monkeypatch.setenv(
+        "AUTH_CLIENT_SECRET", "a-test-client-secret-with-at-least-32-bytes"
+    )
+    monkeypatch.setenv("AUTH_SIGNING_PUBKEY", "")
+    monkeypatch.delenv("AUTH_SIGNING_PREVIOUS_PUBKEYS", raising=False)
+    with pytest.raises(RuntimeError, match="AUTH_SIGNING_PUBKEY"):
+        CentralAuthProvider.from_env(FakeAuthClient)
+    monkeypatch.setenv("AUTH_SIGNING_PUBKEY", "not-32-bytes")
+    with pytest.raises(RuntimeError, match="AUTH_SIGNING_PUBKEY"):
+        CentralAuthProvider.from_env(FakeAuthClient)

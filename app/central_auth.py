@@ -12,6 +12,7 @@ issues an opaque cookie that is useful only to this Explorer instance.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -26,12 +27,17 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 CENTRAL_AUTH_COOKIE_NAME = "__Host-explorer_session"
 DEFAULT_IDLE_SECONDS = 60 * 60
 DEFAULT_ABSOLUTE_SECONDS = 12 * 60 * 60
 LOGIN_TRANSACTION_SECONDS = 10 * 60
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_TOKEN_RESPONSE_BYTES = 64 * 1024
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+REVOCATION_EVENT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -102,6 +108,143 @@ class AccessEntry:
 class IssuedSession:
     token: str
     token_hash: str
+
+
+@dataclass(frozen=True)
+class LogoutEvent:
+    event_id: str
+    subject: str
+    issuer: str
+    issued_at: int
+
+
+def _decode_b64url(segment: str) -> bytes:
+    if not segment or any(
+        char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        for char in segment
+    ):
+        raise CentralAuthError("The logout token was invalid")
+    try:
+        return base64.b64decode(
+            segment + "=" * (-len(segment) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, binascii.Error) as exc:
+        raise CentralAuthError("The logout token was invalid") from exc
+
+
+def verify_logout_token(
+    raw: str,
+    *,
+    issuer: str,
+    audience: str,
+    public_keys: list[str],
+    now: int | None = None,
+) -> LogoutEvent:
+    """Verify one OIDC back-channel logout token and return its replay key."""
+    if len(raw) > 16_384:
+        raise CentralAuthError("The logout token was invalid")
+    parts = raw.split(".")
+    if len(parts) != 3:
+        raise CentralAuthError("The logout token was invalid")
+    try:
+        header = json.loads(_decode_b64url(parts[0]))
+        claims = json.loads(_decode_b64url(parts[1]))
+        signature = _decode_b64url(parts[2])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CentralAuthError("The logout token was invalid") from exc
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise CentralAuthError("The logout token was invalid")
+    if header.get("typ") != "logout+jwt" or header.get("alg") != "EdDSA":
+        raise CentralAuthError("The logout token was invalid")
+
+    verified = False
+    for encoded_key in public_keys:
+        try:
+            raw_key = base64.b64decode(encoded_key.strip(), validate=True)
+            if len(raw_key) != 32:
+                continue
+            kid = (
+                base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest()[:16])
+                .rstrip(b"=")
+                .decode()
+            )
+            if not hmac.compare_digest(str(header.get("kid", "")), kid):
+                continue
+            Ed25519PublicKey.from_public_bytes(raw_key).verify(
+                signature, f"{parts[0]}.{parts[1]}".encode("ascii")
+            )
+            verified = True
+            break
+        except (ValueError, InvalidSignature, UnicodeEncodeError):
+            continue
+    if not verified:
+        raise CentralAuthError("The logout token was invalid")
+
+    timestamp = int(time.time() if now is None else now)
+    issued_at = claims.get("iat")
+    expires_at = claims.get("exp")
+    subject = claims.get("sub")
+    event_id = claims.get("jti")
+    token_issuer = claims.get("iss")
+    events = claims.get("events")
+    if (
+        isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or expires_at + CLOCK_SKEW_SECONDS <= timestamp
+        or not isinstance(token_issuer, str)
+        or token_issuer.rstrip("/") != issuer.rstrip("/")
+        or claims.get("aud") != audience
+        or not isinstance(subject, str)
+        or not subject
+        or len(subject) > 255
+        or not isinstance(event_id, str)
+        or not event_id
+        or len(event_id) > 255
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, int)
+        or issued_at <= 0
+        or issued_at > timestamp + CLOCK_SKEW_SECONDS
+        or not isinstance(events, dict)
+        or not isinstance(events.get(BACKCHANNEL_LOGOUT_EVENT), dict)
+        or "nonce" in claims
+    ):
+        raise CentralAuthError("The logout token was invalid")
+    return LogoutEvent(
+        event_id=event_id,
+        subject=subject,
+        issuer=issuer.rstrip("/"),
+        issued_at=issued_at,
+    )
+
+
+def auth_signing_public_keys() -> list[str]:
+    keys = [os.getenv("AUTH_SIGNING_PUBKEY", "")]
+    keys.extend(os.getenv("AUTH_SIGNING_PREVIOUS_PUBKEYS", "").split(","))
+    return [key.strip() for key in keys if key.strip()]
+
+
+def require_auth_signing_public_keys() -> list[str]:
+    """Fail at startup, not at the first logout event, when no usable key is set.
+
+    Central mode needs the auth service's Ed25519 public key to verify
+    back-channel logout tokens. Without it every revocation would be answered
+    400 and retried forever while sessions stayed alive.
+    """
+    keys = auth_signing_public_keys()
+    if not keys:
+        raise RuntimeError(
+            "AUTH_SIGNING_PUBKEY is required in central mode: run `auth pubkey` on the auth host"
+        )
+    for encoded in keys:
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise RuntimeError("AUTH_SIGNING_PUBKEY is not valid base64") from exc
+        if len(raw) != 32:
+            raise RuntimeError(
+                "AUTH_SIGNING_PUBKEY must decode to a 32-byte Ed25519 key"
+            )
+    return keys
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -382,6 +525,14 @@ class CentralAuthStore:
                 CREATE INDEX IF NOT EXISTS sessions_email_idx ON sessions(email);
                 CREATE INDEX IF NOT EXISTS sessions_expiry_idx
                     ON sessions(absolute_expires_at, idle_expires_at);
+
+                CREATE TABLE IF NOT EXISTS revocation_events (
+                    event_id TEXT PRIMARY KEY,
+                    issuer TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    issued_at INTEGER NOT NULL,
+                    received_at INTEGER NOT NULL
+                );
                 """
             )
             connection.execute(
@@ -391,10 +542,14 @@ class CentralAuthStore:
             row = connection.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
-            if row is None or int(row["value"]) != SCHEMA_VERSION:
+            if row is None or int(row["value"]) > SCHEMA_VERSION:
                 raise RuntimeError(
                     "Unsupported Explorer access database schema version"
                 )
+            connection.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                (str(SCHEMA_VERSION),),
+            )
         os.chmod(self.path, 0o600)
 
     def grant_access(self, email: str, *, now: int | None = None) -> AccessEntry:
@@ -571,6 +726,39 @@ class CentralAuthStore:
                 "UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
                 (timestamp, token_hash),
             )
+        return cursor.rowcount > 0
+
+    def consume_logout_event(
+        self,
+        event_id: str,
+        issuer: str,
+        subject: str,
+        issued_at: int,
+        *,
+        now: int | None = None,
+    ) -> bool:
+        timestamp = int(time.time() if now is None else now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # Replay protection only needs to outlive a token's acceptance
+            # window (exp plus skew, minutes). Keep a week for forensics.
+            connection.execute(
+                "DELETE FROM revocation_events WHERE received_at < ?",
+                (timestamp - REVOCATION_EVENT_RETENTION_SECONDS,),
+            )
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO revocation_events(
+                    event_id, issuer, subject, issued_at, received_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_id, issuer, subject, issued_at, timestamp),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE subject = ? AND revoked_at IS NULL",
+                    (timestamp, subject),
+                )
         return cursor.rowcount > 0
 
     @staticmethod

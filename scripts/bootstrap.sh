@@ -158,11 +158,10 @@ case "$EXPLORER_AUTH_MODE" in
 esac
 
 AUTH_SIGNING_PUBKEY="${AUTH_SIGNING_PUBKEY:-}"
-if [[ "$EXPLORER_AUTH_MODE" == "elcano" ]]; then
-  # Elcano mode verifies a shared magic-link cookie with the auth service's
-  # public key. It can verify but cannot mint sessions.
-  AUTH_SIGNING_PUBKEY="$(prompt AUTH_SIGNING_PUBKEY "auth service AUTH_SIGNING_PUBKEY, base64 (blank to set later)" "$AUTH_SIGNING_PUBKEY")"
-fi
+# Both modes need the auth service's public key: Elcano mode verifies the
+# shared session cookie with it; central mode verifies signed back-channel
+# logout tokens with it. Get it from `auth pubkey` on the auth host.
+AUTH_SIGNING_PUBKEY="$(prompt AUTH_SIGNING_PUBKEY "auth service AUTH_SIGNING_PUBKEY, base64 (run 'auth pubkey' on the auth host; blank to set later)" "$AUTH_SIGNING_PUBKEY")"
 
 EXPLORER_ACCESS_DB="${EXPLORER_ACCESS_DB:-/var/lib/explorer/access.db}"
 EXPLORER_SESSION_IDLE_SECONDS="${EXPLORER_SESSION_IDLE_SECONDS:-3600}"
@@ -431,8 +430,12 @@ if [[ "$EXPLORER_AUTH_MODE" == "central" ]]; then
 else
   say "  Sign-in     ${c_dim}via the external magic-link auth service — no local password${c_reset}"
 fi
-if [[ "$EXPLORER_AUTH_MODE" == "elcano" && -z "$AUTH_SIGNING_PUBKEY" ]]; then
-  printf '  %s! AUTH_SIGNING_PUBKEY is unset — every request will redirect to sign-in.%s\n' "$c_yellow" "$c_reset"
+if [[ -z "$AUTH_SIGNING_PUBKEY" ]]; then
+  if [[ "$EXPLORER_AUTH_MODE" == "elcano" ]]; then
+    printf '  %s! AUTH_SIGNING_PUBKEY is unset — every request will redirect to sign-in.%s\n' "$c_yellow" "$c_reset"
+  else
+    printf '  %s! AUTH_SIGNING_PUBKEY is unset — central mode refuses to start until it is set (back-channel logout needs it).%s\n' "$c_yellow" "$c_reset"
+  fi
   printf '  %s  Set it with: explorer env edit  (paste the auth service public key), then: explorer restart%s\n' "$c_yellow" "$c_reset"
 fi
 say

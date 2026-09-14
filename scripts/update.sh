@@ -122,20 +122,18 @@ else
 fi
 
 # ── 1b. external-auth public key ────────────────────────────────────────
-# Elcano mode verifies its session cookie with the auth service's public key.
-# Central mode does not need that key.
+# Elcano mode verifies its session cookie with the auth service's public key;
+# central mode verifies signed back-channel logout tokens with the same key.
 ensure_auth_pubkey() {
-  local found="" mode="" f v
+  local found="" f v
   for f in "$APP_DIR/.env.shared" "$APP_DIR/.env"; do
     [[ -f "$f" ]] || continue
-    v="$(sed -n 's/^[[:space:]]*EXPLORER_AUTH_MODE[[:space:]]*=[[:space:]]*//p' "$f" | tail -n1)"
-    v="${v%[\"\']}"; v="${v#[\"\']}"
-    [[ -n "$v" ]] && mode="${v,,}"
     v="$(sed -n 's/^[[:space:]]*AUTH_SIGNING_PUBKEY[[:space:]]*=[[:space:]]*//p' "$f" | tail -n1)"
     v="${v%[\"\']}"; v="${v#[\"\']}"
     [[ -n "$v" ]] && found="$v"
   done
-  [[ "${mode:-elcano}" != "elcano" ]] && return 0
+  # Every mode needs the key: Elcano verifies the cookie with it, central
+  # verifies back-channel logout tokens with it (and refuses to start without).
   [[ -n "$found" ]] && return 0
 
   warn "AUTH_SIGNING_PUBKEY is not set — Explorer can't verify the session"

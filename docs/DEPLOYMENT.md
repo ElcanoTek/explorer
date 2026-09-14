@@ -169,7 +169,7 @@ but lose to `.env`.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `EXPLORER_AUTH_MODE` | no | `elcano` | Selects exactly one provider. `elcano` preserves Elcano's external magic-link cookie; `central` delegates login to the new auth service. Any other value fails startup. |
-| `AUTH_SIGNING_PUBKEY` | Elcano mode | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Explorer verifies the session cookie's signature with it. Any parse failure is treated as "no key", which means "everyone is logged out". Safe to store in plaintext config — a public key cannot mint sessions. |
+| `AUTH_SIGNING_PUBKEY` | yes | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Elcano mode verifies the session cookie's signature with it (a parse failure means "everyone is logged out"). Central mode verifies signed back-channel logout tokens with it and refuses to start without a valid key. Safe to store in plaintext config — a public key cannot mint sessions. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are redirected, as `<url>/?return_to=<escaped current url>`. Set it to your own auth service. Trailing slashes are stripped. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Cookie the auth service mints. Must match. |
 | `AUTH_ISSUER_URL` | central mode | *(empty)* | HTTPS origin of the client's central auth service, without a path or query. |
@@ -177,6 +177,7 @@ but lose to `.env`.
 | `AUTH_CLIENT_ID` | central mode | `explorer` | Client identifier registered at the auth service. |
 | `AUTH_CLIENT_SECRET` | central mode | *(empty)* | Unique per-deployment client secret, at least 32 bytes. |
 | `AUTH_HTTP_TIMEOUT_SECONDS` | no | `10` | Backchannel code-exchange timeout; must be greater than 0 and no more than 60 seconds. |
+| `AUTH_SIGNING_PREVIOUS_PUBKEYS` | no | *(empty)* | Comma-separated prior Ed25519 public keys accepted temporarily during Auth signing-key rotation. |
 | `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | SQLite email access list and Explorer session hashes. Keep it outside the application tree and mode `0600`. |
 | `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Controls `Secure` on `__Host-explorer_session`. Central mode refuses an insecure setting in production. |
 | `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
@@ -214,16 +215,20 @@ redirect-URI matching, state, nonce, and S256 PKCE:
    `nonce`. Explorer requires the nonce to match before applying its local
    allowlist and issuing an app session. Errors must not return identity data.
 
-The central auth repository's authorization-code work must implement this
-contract before `central` mode can be deployed end to end.
+Auth can also deliver signed, durable back-channel logout events. Register this
+deployment's exact endpoint after creating the application:
 
-This first compatibility phase does not include back-channel logout or a
-central-session introspection call. Disabling an account or ending its central
-session prevents new authorization codes, but an Explorer session already
-issued to that user remains active until its 60-minute idle timeout, 12-hour
-absolute timeout, or `explorer access revoke`. Add back-channel revocation (or
-short-interval introspection) before promising immediate cross-service
-disablement.
+```bash
+auth app set-backchannel explorer \
+  https://explorer.example.com/auth/backchannel-logout
+```
+
+Explorer validates the token's Ed25519 signature, issuer, audience, event type,
+subject, and replay ID before revoking every local session for that central
+subject. Delivery is idempotent, so Auth can retry safely after outages.
+Account disablement, password replacement, and an explicit central
+sign-out-everywhere take effect without waiting for Explorer's idle timeout.
+Normal Explorer logout remains scoped to the current Explorer session.
 
 #### Replacing the removed local-password mode
 

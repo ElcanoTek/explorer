@@ -34,7 +34,9 @@ from app.central_auth import (
     AuthTransactionError,
     CentralAuthError,
     CodeExchangeRejectedError,
+    auth_signing_public_keys,
     verify_csrf_token,
+    verify_logout_token,
 )
 from app.config import settings
 from app.s3_email import S3EmailInbox, SearchCancelledError
@@ -103,8 +105,10 @@ PUBLIC_AUTH_PATHS = {
     "/login",
     "/auth/login",
     "/auth/callback",
+    "/auth/backchannel-logout",
     "/signed-out",
 }
+MAX_BACKCHANNEL_BODY_BYTES = 20_000
 
 
 def request_auth_provider(request: Request) -> AuthProvider:
@@ -115,6 +119,14 @@ def request_auth_provider(request: Request) -> AuthProvider:
 async def require_authentication(request: Request, call_next) -> Response:
     provider = request_auth_provider(request)
     path = request.url.path
+    if path == "/auth/backchannel-logout" and request.method == "POST":
+        content_length = request.headers.get("content-length")
+        if content_length is None:
+            return Response(status_code=411)
+        if not content_length.isdecimal():
+            return Response(status_code=400)
+        if int(content_length) > MAX_BACKCHANNEL_BODY_BYTES:
+            return Response(status_code=413)
     if path == "/health" or path.startswith("/static/"):
         request.state.identity = None
         return await call_next(request)
@@ -647,6 +659,29 @@ def signed_out(request: Request):
     return templates.TemplateResponse(
         request, "signed_out.html", {"account_url": account_url}
     )
+
+
+@app.post("/auth/backchannel-logout", status_code=204)
+def auth_backchannel_logout(request: Request, logout_token: str = Form(...)):
+    provider = request_auth_provider(request)
+    if not isinstance(provider, CentralAuthProvider):
+        raise HTTPException(status_code=404)
+    try:
+        event = verify_logout_token(
+            logout_token,
+            issuer=provider.client.issuer_url,
+            audience=provider.client.client_id,
+            public_keys=auth_signing_public_keys(),
+        )
+    except CentralAuthError as exc:
+        raise HTTPException(status_code=400, detail="Invalid logout token") from exc
+    provider.store.consume_logout_event(
+        event.event_id,
+        event.issuer,
+        event.subject,
+        event.issued_at,
+    )
+    return Response(status_code=204)
 
 
 @app.post("/logout")

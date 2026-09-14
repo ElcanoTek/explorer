@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -14,6 +15,7 @@ import urllib.error
 import urllib.parse
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.central_auth import (
     AccessDeniedError,
@@ -23,6 +25,7 @@ from app.central_auth import (
     CodeExchangeRejectedError,
     csrf_token_for_session,
     verify_csrf_token,
+    verify_logout_token,
 )
 
 
@@ -93,6 +96,92 @@ def test_logout_revokes_only_the_presented_session(store: CentralAuthStore) -> N
 
     assert store.get_identity(first.token, now=1_002) is None
     assert store.get_identity(second.token, now=1_002) is not None
+
+
+def test_backchannel_logout_is_idempotent_and_scoped_to_subject(
+    store: CentralAuthStore,
+) -> None:
+    store.grant_access("alice@example.com", now=1_000)
+    first = store.create_session("account-123", "alice@example.com", now=1_000)
+    second = store.create_session("account-456", "alice@example.com", now=1_000)
+
+    assert store.consume_logout_event(
+        "event-123", "https://auth.example.com", "account-123", 1_001, now=1_002
+    )
+    assert not store.consume_logout_event(
+        "event-123", "https://auth.example.com", "account-123", 1_001, now=1_003
+    )
+    assert store.get_identity(first.token, now=1_004) is None
+    assert store.get_identity(second.token, now=1_004) is not None
+
+
+def _mint_logout(
+    private_key, *, audience="explorer", issuer="https://auth.example.com", **overrides
+):
+    public = private_key.public_key().public_bytes_raw()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
+        .rstrip(b"=")
+        .decode()
+    )
+    header = {"typ": "logout+jwt", "alg": "EdDSA", "kid": kid}
+    payload = {
+        "iss": issuer,
+        "sub": "account-123",
+        "aud": audience,
+        "email": "alice@example.com",
+        "iat": 1_000,
+        "exp": 1_300,
+        "jti": "event-123",
+        "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
+    }
+    payload.update(overrides)
+
+    def encode(value):
+        return (
+            base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+
+    body = f"{encode(header)}.{encode(payload)}"
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(body.encode())).rstrip(b"=").decode()
+    )
+    return f"{body}.{signature}", base64.b64encode(public).decode()
+
+
+def test_logout_token_verification_checks_signature_issuer_and_audience() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    raw, public_key = _mint_logout(private_key)
+    event = verify_logout_token(
+        raw,
+        issuer="https://auth.example.com",
+        audience="explorer",
+        public_keys=[public_key],
+        now=1_010,
+    )
+    assert event.event_id == "event-123"
+    assert event.subject == "account-123"
+
+    with pytest.raises(CentralAuthError):
+        verify_logout_token(
+            raw,
+            issuer="https://auth.example.com",
+            audience="lens",
+            public_keys=[public_key],
+            now=1_010,
+        )
+
+    malformed_issuer, _ = _mint_logout(private_key, issuer=123)
+    with pytest.raises(CentralAuthError):
+        verify_logout_token(
+            malformed_issuer,
+            issuer="https://auth.example.com",
+            audience="explorer",
+            public_keys=[public_key],
+            now=1_010,
+        )
 
 
 def test_csrf_token_is_bound_to_the_app_session_secret() -> None:
@@ -330,3 +419,64 @@ def test_http_401_from_token_endpoint_is_an_outage_not_a_retry(monkeypatch) -> N
     with pytest.raises(CentralAuthError) as excinfo:
         _client().exchange(code="code", code_verifier="v" * 43, expected_nonce="n")
     assert not isinstance(excinfo.value, CodeExchangeRejectedError)
+
+
+@pytest.mark.parametrize("overrides", [{"exp": 1_000}, {"exp": "soon"}, {"exp": True}])
+def test_logout_token_requires_a_live_expiry(overrides) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    raw, public_key = _mint_logout(private_key, **overrides)
+    with pytest.raises(CentralAuthError):
+        verify_logout_token(
+            raw,
+            issuer="https://auth.example.com",
+            audience="explorer",
+            public_keys=[public_key],
+            now=1_200,
+        )
+
+
+def test_logout_token_missing_expiry_is_rejected() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    raw, public_key = _mint_logout(private_key)
+    # Strip exp by re-minting without it: overrides cannot delete, so build by hand.
+    header_b64, payload_b64, _sig = raw.split(".")
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+    del payload["exp"]
+    body = (
+        header_b64
+        + "."
+        + base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(body.encode())).rstrip(b"=").decode()
+    )
+    with pytest.raises(CentralAuthError):
+        verify_logout_token(
+            f"{body}.{signature}",
+            issuer="https://auth.example.com",
+            audience="explorer",
+            public_keys=[public_key],
+            now=1_010,
+        )
+
+
+def test_replay_table_is_pruned_after_retention(store: CentralAuthStore) -> None:
+    assert store.consume_logout_event(
+        "old-event", "https://auth.example.com", "account-1", 1_000, now=1_000
+    )
+    week = 7 * 24 * 60 * 60
+    assert store.consume_logout_event(
+        "new-event",
+        "https://auth.example.com",
+        "account-2",
+        1_000 + week,
+        now=1_000 + week + 1,
+    )
+    with sqlite3.connect(store.path) as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT event_id FROM revocation_events")
+        }
+    assert ids == {"new-event"}
