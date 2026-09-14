@@ -138,7 +138,7 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only key. Leave blank to use the ambient AWS credential chain (instance role, `~/.aws`, `AWS_PROFILE`). |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
 | `EXPLORER_AUTH_MODE` | no | `elcano` | Authentication provider: `elcano` or `central`. The default preserves existing deployments. |
-| `AUTH_SIGNING_PUBKEY` | Elcano mode | *(empty)* | Base64 Ed25519 **public** key of the auth service. Unset ⇒ every request redirects to sign-in. |
+| `AUTH_SIGNING_PUBKEY` | yes | *(empty)* | Base64 Ed25519 **public** key of the auth service. Elcano mode: unset ⇒ every request redirects to sign-in. Central mode: verifies back-channel logout tokens; startup refuses without it. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are sent. Set this. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Name of the session cookie to verify. |
 | `AUTH_ISSUER_URL` | central mode | *(empty)* | HTTPS origin of the client's central auth service. |
@@ -203,12 +203,13 @@ hash is stored in `/var/lib/explorer/access.db`; the host-only
 scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total.
 Revoking an email immediately invalidates all of that email's Explorer
 sessions. Logout is CSRF-protected and revokes only the current Explorer
-session. Central login/logout or account disablement does not yet revoke an
-already-issued Explorer session; it lasts until its idle/absolute expiry or a
-local `explorer access revoke`. Back-channel revocation is a required follow-up
-if clients need immediate cross-service sign-out or disablement.
+session. Auth's signed back-channel endpoint also revokes every local session
+for the affected central subject after account disablement, password
+replacement, or explicit sign-out-everywhere. Events have durable retry and
+replay protection, so temporary Explorer outages do not lose revocations.
 
-The auth service must register the exact client ID, secret, and callback URL.
+The auth service must register the exact client ID, secret, callback URL, and
+`https://<explorer-host>/auth/backchannel-logout` endpoint.
 The expected `/authorize` and `/token` contract is documented in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#central-auth-service-contract).
 

@@ -45,6 +45,7 @@ from app.central_auth import (
     CentralAuthClient,
     CentralAuthStore,
     CentralIdentity,
+    require_auth_signing_public_keys,
 )
 
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "elcano_auth")
@@ -209,6 +210,7 @@ class CentralAuthProvider:
             raise RuntimeError(
                 "Central auth requires Secure app and UI cookies; insecure HTTP is only allowed for development"
             )
+        require_auth_signing_public_keys()
         client = client_factory.from_env()
         store = CentralAuthStore.from_env()
         return cls(
