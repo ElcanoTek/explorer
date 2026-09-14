@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.central_auth import (
     AccessDeniedError,
+    AuthKeyResolver,
     CentralAuthClient,
     CentralAuthError,
     CentralAuthStore,
@@ -506,3 +507,111 @@ def test_session_touch_is_rate_limited_to_one_write_per_minute(
     # The idle limit is enforced against the last touch, never longer than the
     # limit: a request at exactly idle_expires_at is rejected.
     assert store.get_identity(issued.token, now=1_060 + store.idle_seconds) is None
+
+
+def _jwks_for(*public_keys_b64: str) -> bytes:
+    keys = []
+    for encoded in public_keys_b64:
+        raw = base64.b64decode(encoded)
+        keys.append(
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "use": "sig",
+                "alg": "EdDSA",
+                "kid": base64.urlsafe_b64encode(hashlib.sha256(raw).digest()[:16])
+                .rstrip(b"=")
+                .decode(),
+                "x": base64.urlsafe_b64encode(raw).rstrip(b"=").decode(),
+            }
+        )
+    return json.dumps({"keys": keys}).encode()
+
+
+def test_key_resolver_merges_static_and_published_keys_and_survives_fetch_failure() -> (
+    None
+):
+    old_key = Ed25519PrivateKey.generate()
+    new_key = Ed25519PrivateKey.generate()
+    old_b64 = base64.b64encode(old_key.public_key().public_bytes_raw()).decode()
+    new_b64 = base64.b64encode(new_key.public_key().public_bytes_raw()).decode()
+    clock = {"now": 1_000.0}
+    calls = {"n": 0, "fail": False}
+
+    def fetch(url, timeout):
+        calls["n"] += 1
+        assert url == "https://auth.example.com/jwks.json"
+        if calls["fail"]:
+            raise OSError("auth unreachable")
+        return _jwks_for(new_b64)
+
+    resolver = AuthKeyResolver(
+        "https://auth.example.com/", [old_b64], fetch=fetch, now=lambda: clock["now"]
+    )
+    assert resolver.public_keys() == [old_b64, new_b64]
+    assert calls["n"] == 1
+    # Cached: no second fetch inside the TTL.
+    assert resolver.public_keys() == [old_b64, new_b64]
+    assert calls["n"] == 1
+    # A fetch failure after the TTL keeps the cached keys.
+    clock["now"] += 11 * 60
+    calls["fail"] = True
+    assert resolver.public_keys() == [old_b64, new_b64]
+    assert calls["n"] == 2
+
+    # A token signed by a key that only exists in a newer JWKS triggers one
+    # refresh, rate-limited to once a minute.
+    rotated_key = Ed25519PrivateKey.generate()
+    rotated_b64 = base64.b64encode(rotated_key.public_key().public_bytes_raw()).decode()
+    raw, _ = _mint_logout(rotated_key)
+    calls["fail"] = False
+    responses = {"body": _jwks_for(new_b64, rotated_b64)}
+    resolver._fetch = lambda url, timeout: responses["body"]
+    clock["now"] += 61
+    assert rotated_b64 in resolver.keys_for_token(raw)
+    fetched_after = calls["n"]
+    # Unknown kid again inside the minute: no extra fetch.
+    unknown_key = Ed25519PrivateKey.generate()
+    unknown_raw, _ = _mint_logout(unknown_key)
+    resolver.keys_for_token(unknown_raw)
+    assert calls["n"] == fetched_after
+
+
+def test_key_resolver_ignores_malformed_jwks_entries() -> None:
+    good = Ed25519PrivateKey.generate()
+    good_b64 = base64.b64encode(good.public_key().public_bytes_raw()).decode()
+    document = json.loads(_jwks_for(good_b64))
+    document["keys"].extend(
+        [
+            {"kty": "RSA", "n": "x", "e": "AQAB"},
+            {"kty": "OKP", "crv": "Ed25519", "x": "dG9vLXNob3J0"},
+            "not-a-key",
+        ]
+    )
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [],
+        fetch=lambda url, timeout: json.dumps(document).encode(),
+        now=lambda: 1_000.0,
+    )
+    assert resolver.public_keys() == [good_b64]
+
+
+def test_logout_token_verifies_against_a_key_only_published_in_jwks() -> None:
+    signer = Ed25519PrivateKey.generate()
+    signer_b64 = base64.b64encode(signer.public_key().public_bytes_raw()).decode()
+    raw, _ = _mint_logout(signer)
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [],
+        fetch=lambda url, timeout: _jwks_for(signer_b64),
+        now=lambda: 1_000.0,
+    )
+    event = verify_logout_token(
+        raw,
+        issuer="https://auth.example.com",
+        audience="explorer",
+        public_keys=resolver.keys_for_token(raw),
+        now=1_010,
+    )
+    assert event.subject == "account-123"

@@ -226,9 +226,161 @@ def verify_logout_token(
 
 
 def auth_signing_public_keys() -> list[str]:
+    """Statically configured keys: AUTH_SIGNING_PUBKEY plus previous keys."""
     keys = [os.getenv("AUTH_SIGNING_PUBKEY", "")]
     keys.extend(os.getenv("AUTH_SIGNING_PREVIOUS_PUBKEYS", "").split(","))
     return [key.strip() for key in keys if key.strip()]
+
+
+JWKS_CACHE_SECONDS = 10 * 60
+JWKS_MIN_REFRESH_SECONDS = 60
+MAX_JWKS_BYTES = 64 * 1024
+
+
+def _fetch_jwks(url: str, timeout: float) -> bytes:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.build_opener(_NoRedirect).open(
+        request, timeout=timeout
+    ) as response:
+        raw = response.read(MAX_JWKS_BYTES + 1)
+    if len(raw) > MAX_JWKS_BYTES:
+        raise CentralAuthError("The JWKS document was too large")
+    return raw
+
+
+class AuthKeyResolver:
+    """Auth's Ed25519 public keys: static env keys plus Auth's published JWKS.
+
+    Auth rotates its signing key by publishing the new key alongside the old
+    one at /jwks.json. Reading that document here makes rotation a one-sided
+    change on Auth instead of an env edit on every application host. Static
+    keys stay as the bootstrap and offline fallback: the resolver never
+    depends on Auth being reachable to verify a token whose key is already
+    known, and a fetch failure keeps whatever was cached.
+
+    Keys are returned in the base64 form verify_logout_token expects.
+    """
+
+    def __init__(
+        self,
+        issuer_url: str,
+        static_keys: list[str],
+        *,
+        fetch=None,
+        timeout_seconds: float = 5,
+        now=time.time,
+    ) -> None:
+        self.jwks_url = issuer_url.rstrip("/") + "/jwks.json"
+        self.static_keys = list(static_keys)
+        # Looked up at call time when None so tests can replace the module
+        # function and production never captures a stale reference.
+        self._fetch = fetch
+        self._timeout = timeout_seconds
+        self._now = now
+        self._remote_keys: list[str] = []
+        self._fetched_at: float | None = None
+        self._last_attempt: float | None = None
+
+    def public_keys(self) -> list[str]:
+        if (
+            self._fetched_at is None
+            or self._now() - self._fetched_at > JWKS_CACHE_SECONDS
+        ):
+            self.refresh()
+        seen: set[str] = set()
+        out: list[str] = []
+        for key in self.static_keys + self._remote_keys:
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+        return out
+
+    def refresh(self, *, force: bool = False) -> bool:
+        """Fetch the JWKS; returns True when the cache was updated.
+
+        Rate-limited so a flood of tokens with unknown kids cannot turn this
+        into a request amplifier against Auth.
+        """
+        now = self._now()
+        if (
+            not force
+            and self._last_attempt is not None
+            and now - self._last_attempt < JWKS_MIN_REFRESH_SECONDS
+        ):
+            return False
+        self._last_attempt = now
+        fetcher = self._fetch if self._fetch is not None else _fetch_jwks
+        try:
+            raw = fetcher(self.jwks_url, self._timeout)
+            document = json.loads(raw)
+        except (
+            CentralAuthError,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+        ):
+            return False
+        keys = document.get("keys") if isinstance(document, dict) else None
+        if not isinstance(keys, list):
+            return False
+        parsed: list[str] = []
+        for entry in keys:
+            if not isinstance(entry, dict):
+                continue
+            if (
+                entry.get("kty") != "OKP"
+                or entry.get("crv") != "Ed25519"
+                or not isinstance(entry.get("x"), str)
+            ):
+                continue
+            try:
+                raw_key = base64.urlsafe_b64decode(
+                    entry["x"] + "=" * (-len(entry["x"]) % 4)
+                )
+            except (ValueError, binascii.Error):
+                continue
+            if len(raw_key) != 32:
+                continue
+            parsed.append(base64.b64encode(raw_key).decode("ascii"))
+        self._remote_keys = parsed
+        self._fetched_at = now
+        return True
+
+    def keys_for_token(self, raw_token: str) -> list[str]:
+        """Keys to try for one token: refresh once if its kid is unknown."""
+        keys = self.public_keys()
+        kid = _token_kid(raw_token)
+        if kid is not None and not any(_kid_for_key(key) == kid for key in keys):
+            if self.refresh():
+                keys = self.public_keys()
+        return keys
+
+
+def _token_kid(raw_token: str) -> str | None:
+    parts = raw_token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        header = json.loads(_decode_b64url(parts[0]))
+    except (CentralAuthError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    kid = header.get("kid") if isinstance(header, dict) else None
+    return kid if isinstance(kid, str) else None
+
+
+def _kid_for_key(encoded_key: str) -> str | None:
+    try:
+        raw_key = base64.b64decode(encoded_key.strip(), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(raw_key) != 32:
+        return None
+    return (
+        base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest()[:16])
+        .rstrip(b"=")
+        .decode()
+    )
 
 
 def require_auth_signing_public_keys() -> list[str]:
@@ -241,7 +393,9 @@ def require_auth_signing_public_keys() -> list[str]:
     keys = auth_signing_public_keys()
     if not keys:
         raise RuntimeError(
-            "AUTH_SIGNING_PUBKEY is required in central mode: run `auth pubkey` on the auth host"
+            "AUTH_SIGNING_PUBKEY is required in central mode: run `auth pubkey` on the auth host. "
+            "Rotation keys are fetched from Auth's /jwks.json at runtime, but one static key "
+            "is needed so verification works even when Auth is unreachable at startup."
         )
     for encoded in keys:
         try:
