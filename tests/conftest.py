@@ -94,9 +94,3 @@ def _no_network_jwks(monkeypatch):
         raise OSError("no network in tests")
 
     monkeypatch.setattr(central_auth, "_fetch_jwks", refuse)
-    monkeypatch.setattr(
-        central_auth.AuthKeyResolver.__init__.__defaults__[0].__class__,
-        "__name__",
-        "function",
-        raising=False,
-    )
