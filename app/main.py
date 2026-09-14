@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -147,11 +148,40 @@ def is_allowed_s3_key(key: str) -> bool:
     return key.startswith(ALLOWED_S3_KEY_ROOTS)
 
 
+# Content-Security-Policy. Pages carry a handful of inline <script> blocks
+# (theme bootstrap, loading bar, inbox and detail behaviour); each gets this
+# response's nonce, and everything else loads from this origin. Scripts are
+# the strict part: no inline handlers, no eval, no other origins, so injected
+# markup cannot run script. Styles are 'self' only: the templates have no
+# inline styles, and the sanitizer in s3_email.py strips style attributes and
+# <style> blocks from email bodies before they are rendered. Email bodies may
+# reference remote images, so img-src allows https: and data: (cid: images
+# never resolve and are harmless). No form-action: Elcano-mode logout is a
+# form POST that redirects to the auth host, and browsers apply form-action
+# to that redirect. frame-ancestors 'none' mirrors X-Frame-Options: DENY.
+CSP_NON_PAGE = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+
+
+def csp_for_page(nonce: str) -> str:
+    return (
+        f"default-src 'self'; script-src 'self' 'nonce-{nonce}'; style-src 'self'; "
+        "img-src 'self' data: https:; font-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next) -> Response:
     # Caddy sets these too; keeping them here covers the legacy nginx path
     # and direct loopback access.
+    request.state.csp_nonce = secrets.token_urlsafe(16)
     response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Content-Security-Policy"] = csp_for_page(
+            request.state.csp_nonce
+        )
+    else:
+        response.headers.setdefault("Content-Security-Policy", CSP_NON_PAGE)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")

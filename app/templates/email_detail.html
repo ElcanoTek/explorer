@@ -86,7 +86,7 @@
   </article>
 </section>
 
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
   (function () {
     const formatDates = () => {
       const formatter = new Intl.DateTimeFormat(undefined, {

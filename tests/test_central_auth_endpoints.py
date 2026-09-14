@@ -365,3 +365,33 @@ def test_central_mode_refuses_to_start_without_the_auth_public_key(
     monkeypatch.setenv("AUTH_SIGNING_PUBKEY", "not-32-bytes")
     with pytest.raises(RuntimeError, match="AUTH_SIGNING_PUBKEY"):
         CentralAuthProvider.from_env(FakeAuthClient)
+
+
+def test_pages_carry_nonce_csp_and_other_responses_a_closed_one(central_client) -> None:
+    import re
+
+    client, _store = central_client
+    complete_login(client)
+
+    page = client.get("/", follow_redirects=False)
+    assert page.status_code == 200
+    csp = page.headers["content-security-policy"]
+    match = re.search(r"script-src 'self' 'nonce-([A-Za-z0-9_-]+)'", csp)
+    assert match, csp
+    nonce = match.group(1)
+    assert "default-src 'self'" in csp
+    assert "style-src 'self';" in csp
+    assert "img-src 'self' data: https:" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "form-action" not in csp
+    body = page.text
+    assert "<script>" not in body
+    assert body.count(f'<script nonce="{nonce}">') >= 1
+    assert not re.search(r' on[a-z]+="', body)
+    assert ' style="' not in body
+
+    second = client.get("/", follow_redirects=False)
+    assert second.headers["content-security-policy"] != csp
+
+    health = client.get("/health")
+    assert health.headers["content-security-policy"] == main.CSP_NON_PAGE
