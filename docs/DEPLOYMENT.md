@@ -180,8 +180,8 @@ but lose to `.env`.
 | `AUTH_SIGNING_PREVIOUS_PUBKEYS` | no | *(empty)* | Comma-separated prior Ed25519 public keys. Rarely needed now: in central mode Explorer also reads Auth's published `/jwks.json` (cached 10 minutes, refreshed once when a token names an unknown key), so an Auth key rotation needs no env edit here. |
 | `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | SQLite email access list and Explorer session hashes. Keep it outside the application tree and mode `0600`. |
 | `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Controls `Secure` on `__Host-explorer_session`. Central mode refuses an insecure setting in production. |
-| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
-| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Explorer app-session absolute lifetime. |
+| `EXPLORER_SESSION_IDLE_SECONDS` | no | `43200` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
+| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `86400` | Explorer app-session absolute lifetime. |
 
 Central mode owns no passwords. Manage only the local authorization list:
 

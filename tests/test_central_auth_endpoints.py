@@ -166,7 +166,7 @@ def test_callback_issues_app_scoped_cookie_for_allowlisted_email(
     assert "Secure" in cookie
     assert "SameSite=lax" in cookie
     assert "Path=/" in cookie
-    assert "Max-Age=43200" in cookie
+    assert "Max-Age=86400" in cookie
     assert "Domain=" not in cookie
 
 
