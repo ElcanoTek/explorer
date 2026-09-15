@@ -148,8 +148,8 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `EXPLORER_ACCESS_DB` | central mode | `/var/lib/explorer/access.db` | Deployment-local email access list and app sessions; contains no passwords. |
 | `EXPLORER_AUTH_COOKIE_SECURE` | central mode | `1` | Requires the app-scoped cookie to travel over HTTPS. Keep enabled in production. |
 | `EXPLORER_UI_COOKIE_SECURE` | no | `1` | Requires the search/CSRF cookie to travel over HTTPS. Keep enabled in production. |
-| `EXPLORER_SESSION_IDLE_SECONDS` | no | `3600` | Central-mode Explorer session idle lifetime (60 minutes). |
-| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `43200` | Central-mode Explorer session absolute lifetime (12 hours). |
+| `EXPLORER_SESSION_IDLE_SECONDS` | no | `43200` | Central-mode Explorer session idle lifetime (12 hours). |
+| `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `86400` | Central-mode Explorer session absolute lifetime (24 hours). |
 | `EXPLORER_SESSION_SECRET` | central: **yes**; Elcano: recommended | a dev placeholder | Signs central login state and the cookie scoping search jobs to one browser. Generate with `openssl rand -hex 32`. |
 
 ### Authentication
@@ -200,9 +200,12 @@ sudo explorer access revoke user@example.com
 Allowed users receive a random 256-bit, app-only session. Only its SHA-256
 hash is stored in `/var/lib/explorer/access.db`; the host-only
 `__Host-explorer_session` cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, and
-scoped to `/`. Sessions expire after 60 minutes idle or 12 hours total; the
+scoped to `/`. Sessions expire after 12 hours idle or 24 hours total; the
 idle clock is refreshed at most once a minute (the Elcano convention for
 service sessions), so a session can end up to a minute early but never late.
+Expiry costs the user only a redirect: while their central Auth session (30
+days) is live, the handoff signs them back in without a prompt. The short
+app limit bounds a stolen cookie and re-checks the account with Auth daily.
 Revoking an email immediately invalidates all of that email's Explorer
 sessions. Logout is CSRF-protected and revokes only the current Explorer
 session. Auth's signed back-channel endpoint also revokes every local session

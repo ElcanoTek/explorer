@@ -31,11 +31,18 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 CENTRAL_AUTH_COOKIE_NAME = "__Host-explorer_session"
-DEFAULT_IDLE_SECONDS = 60 * 60
-DEFAULT_ABSOLUTE_SECONDS = 12 * 60 * 60
+# Application sessions are deliberately short. Expiry costs the user only a
+# redirect: the code handoff signs them back in silently while the 30-day
+# central Auth session is live. The short limit bounds a stolen Explorer
+# cookie and forces a daily re-check with Auth that the account is still
+# enabled. One day absolute, 12 hours idle is the Elcano convention for every
+# application session (owner decision 2026-09-15; see Auth's
+# docs/AUTH_V2_IMPLEMENTATION.md "Application session conventions").
+DEFAULT_IDLE_SECONDS = 12 * 60 * 60
+DEFAULT_ABSOLUTE_SECONDS = 24 * 60 * 60
 # How often a validated session rewrites last_seen_at / idle_expires_at. Every
 # request reads the session; only a request more than this long after the
-# previous touch writes. The idle limit therefore behaves as "60 minutes minus
+# previous touch writes. The idle limit therefore behaves as "12 hours minus
 # at most one minute", never longer, and a page's burst of requests costs one
 # SQLite write instead of one per request. One minute is the convention for
 # every Elcano service with its own sessions (Auth, Explorer, Lens, and
