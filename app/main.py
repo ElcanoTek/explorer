@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -726,7 +726,15 @@ def logout(request: Request, csrf_token: str | None = Form(default=None)):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
     provider.store.revoke_session(raw_token)
     request.session.clear()
-    response = RedirectResponse(url="/signed-out", status_code=303)
+    # Logging out means signing out of every Elcano app: hand the browser to
+    # Auth's RP-initiated logout, which ends the central session, fans a
+    # back-channel logout out to every registered application (this one
+    # included, harmlessly), and lands on Auth's login page. /signed-out
+    # remains for direct visits.
+    response = RedirectResponse(
+        url=f"{provider.client.issuer_url}/logout?client_id={quote(provider.client.client_id, safe='')}",
+        status_code=303,
+    )
     provider.clear_session_cookie(response)
     return response
 

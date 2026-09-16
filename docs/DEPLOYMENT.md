@@ -228,7 +228,11 @@ subject, and replay ID before revoking every local session for that central
 subject. Delivery is idempotent, so Auth can retry safely after outages.
 Account disablement, password replacement, and an explicit central
 sign-out-everywhere take effect without waiting for Explorer's idle timeout.
-Normal Explorer logout remains scoped to the current Explorer session.
+Explorer's own logout is that sign-out-everywhere: it revokes the local
+session, clears the cookie, and redirects to
+`<AUTH_ISSUER_URL>/logout?client_id=<AUTH_CLIENT_ID>`, where Auth ends every
+central session of the account and fans the logout out to every application.
+The browser lands on Auth's login page.
 
 #### Replacing the removed local-password mode
 
