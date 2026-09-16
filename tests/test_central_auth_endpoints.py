@@ -261,7 +261,7 @@ def test_central_mode_rejects_legacy_and_old_local_cookies(central_client) -> No
     assert response.headers["location"].startswith("/auth/login?next=")
 
 
-def test_logout_requires_csrf_and_revokes_only_explorer_session(
+def test_logout_requires_csrf_then_signs_out_everywhere_via_auth(
     central_client,
 ) -> None:
     client, store = central_client
@@ -282,6 +282,12 @@ def test_logout_requires_csrf_and_revokes_only_explorer_session(
         == "https://auth.example.com/logout?client_id=explorer"
     )
     assert store.get_identity(raw_token) is None
+    deleted = [
+        value
+        for value in response.headers.get_list("set-cookie")
+        if value.startswith(f"{CENTRAL_AUTH_COOKIE_NAME}=") and "Max-Age=0" in value
+    ]
+    assert deleted, response.headers.get_list("set-cookie")
 
 
 def test_signed_backchannel_logout_revokes_all_sessions_for_subject(
