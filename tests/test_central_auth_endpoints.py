@@ -274,7 +274,13 @@ def test_logout_requires_csrf_and_revokes_only_explorer_session(
     response = client.post("/logout", data={"csrf_token": csrf}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/signed-out"
+    # Logout hands the browser to Auth's RP-initiated logout so the central
+    # session (and every other app session) ends too; otherwise the next
+    # visit would silently sign the user straight back in.
+    assert (
+        response.headers["location"]
+        == "https://auth.example.com/logout?client_id=explorer"
+    )
     assert store.get_identity(raw_token) is None
 
 
