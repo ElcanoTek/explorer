@@ -133,7 +133,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   if id -u "$APP_USER" >/dev/null 2>&1; then
     chown "$APP_USER:$APP_USER" "$ENV_FILE"
   fi
-  chmod 0640 "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
   info "created empty $ENV_FILE — bootstrap.sh will fill in the rest"
 fi
 
@@ -179,7 +179,7 @@ managed_block+=("$MARKER_END")
   for l in "${managed_block[@]}"; do printf '%s\n' "$l"; done
 } >> "$ENV_FILE"
 
-chmod 0640 "$ENV_FILE"
+chmod 0600 "$ENV_FILE"
 if id -u "$APP_USER" >/dev/null 2>&1; then
   chown "$APP_USER:$APP_USER" "$ENV_FILE" 2>/dev/null || true
 fi

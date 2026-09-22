@@ -144,7 +144,7 @@ ensure_auth_pubkey() {
     if [[ -n "$pubkey_in" ]]; then
       [[ -f "$APP_DIR/.env" ]] || install -o "$APP_USER" -g "$APP_USER" -m 0640 /dev/null "$APP_DIR/.env"
       printf 'AUTH_SIGNING_PUBKEY="%s"\n' "$pubkey_in" >> "$APP_DIR/.env"
-      chown "$APP_USER:$APP_USER" "$APP_DIR/.env"; chmod 0640 "$APP_DIR/.env"
+      chown "$APP_USER:$APP_USER" "$APP_DIR/.env"; chmod 0600 "$APP_DIR/.env"
       ok "AUTH_SIGNING_PUBKEY written to $APP_DIR/.env"
     else
       warn "skipped — set it later with: explorer env edit   (then: explorer restart)"
@@ -171,8 +171,11 @@ chown -R "$APP_USER:$APP_USER" "$STAGING"
 
 # Build the new venv under $STAGING/.venv so a failed resolve leaves
 # the live /opt/explorer/.venv untouched.
-runuser -u "$APP_USER" -- uv venv "$STAGING/.venv" >/dev/null
-runuser -u "$APP_USER" -- uv pip install --python "$STAGING/.venv/bin/python" \
+# Same reason as bootstrap.sh: uv walks up from the working directory for a
+# uv.toml, and an update started from /root (mode 0550) would fail as the
+# service user. Build from the staging directory with config discovery off.
+runuser -u "$APP_USER" -- env -C "$STAGING" UV_NO_CONFIG=1 uv venv "$STAGING/.venv" >/dev/null
+runuser -u "$APP_USER" -- env -C "$STAGING" UV_NO_CONFIG=1 uv pip install --python "$STAGING/.venv/bin/python" \
   --reinstall -r "$STAGING/requirements.txt" \
   || die "uv pip install failed — live install untouched"
 ok "staging venv ready"

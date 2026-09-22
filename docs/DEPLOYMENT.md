@@ -67,7 +67,7 @@ missing. In order it:
 4. Builds `/opt/explorer/.venv` with `uv` and installs `requirements.txt`.
 5. Prompts for an authentication mode and its required values, a TLS hostname,
    `EMAIL_S3_BUCKET`, and `AWS_REGION`; generates
-   `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0640`, owned
+   `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0600`, owned
    by `explorer`.
 6. Installs the systemd units, the tmpfiles rule and
    `/usr/local/bin/explorer`.
@@ -131,7 +131,7 @@ present, bootstrap silently skips this step.
 | `/opt/explorer` | `explorer:explorer` | The running install (rsynced from the checkout, minus `.git`). |
 | `/opt/explorer/.venv` | `explorer:explorer` | Virtualenv built by `uv`. |
 | `/opt/explorer/.venv.old` | `explorer:explorer` | Previous venv, kept for one successful update cycle as a rollback window. |
-| `/opt/explorer/.env` | `explorer:explorer`, `0640` | Configuration and secrets. Never overwritten by an update. |
+| `/opt/explorer/.env` | `explorer:explorer`, `0600` | Configuration and secrets. Never overwritten by an update. |
 | `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Writable scratch space for attachments in flight. |
 | `/var/lib/explorer/access.db` | `explorer:explorer`, `0600` | Central-mode email access list and app-scoped session hashes. Contains no passwords. |
 | `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
@@ -154,7 +154,7 @@ reverse proxy, which is intentional; see
 
 ## Environment variables
 
-Written to `/opt/explorer/.env` (mode `0640`). Edit with `sudo explorer env
+Written to `/opt/explorer/.env` (mode `0600`). Edit with `sudo explorer env
 edit`, then `sudo explorer restart` — values are read once at import.
 `sudo explorer env` prints the file with anything matching
 `TOKEN|KEY|SECRET|PASSWORD` redacted.
@@ -732,7 +732,7 @@ sudo chown -R explorer:explorer /opt/explorer
 sudo -u explorer python3 -m venv /opt/explorer/.venv
 sudo -u explorer /opt/explorer/.venv/bin/pip install -r /opt/explorer/requirements.txt
 
-sudo install -o explorer -g explorer -m 0640 /dev/null /opt/explorer/.env
+sudo install -o explorer -g explorer -m 0600 /dev/null /opt/explorer/.env
 sudo "$EDITOR" /opt/explorer/.env          # see .env.example
 
 sudo install -m 0644 /opt/explorer/deploy/systemd/explorer.service /etc/systemd/system/
