@@ -3,14 +3,19 @@
 """Read-only, bounded deployment diagnostics; never import the Explorer app."""
 
 import argparse
+import base64
 import datetime
+import fnmatch
 import json
 import os
 import platform
 import pwd
+import re
 import shutil
+import stat
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 if sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb":
@@ -34,63 +39,207 @@ def run(*args, timeout=15, cwd=None):
         return 127, ""
 
 
-def inspect_env(app):
-    # Parse with the application's dotenv implementation, never source secrets
-    # as shell commands. .env.shared is read first and .env overrides it,
-    # matching app/config.py. Return key names and booleans, never values.
-    return run(
-        str(app / ".venv/bin/python"),
-        "-c",
-        """
-import base64, json, sys
-from dotenv import dotenv_values
-v = {}
-for f in ('.env.shared', '.env'):
-    v.update(dotenv_values(f, interpolate=False) or {})
-mode = v.get('EXPLORER_AUTH_MODE', 'elcano')
-required = ['AUTH_SIGNING_PUBKEY']
-missing = [k for k in required if not v.get(k)]
-central_missing = []
-if mode == 'central':
-    central_missing = [k for k in ('AUTH_ISSUER_URL', 'EXPLORER_PUBLIC_URL',
-                                   'AUTH_CLIENT_ID', 'AUTH_CLIENT_SECRET')
-                       if not v.get(k)]
-try:
-    key_ok = len(base64.b64decode(v.get('AUTH_SIGNING_PUBKEY', ''), validate=True)) == 32
-except (ValueError, TypeError):
-    key_ok = False
-print(json.dumps({'missing': missing, 'central_missing': central_missing,
-                  'key_ok': key_ok, 'mode': mode,
-                  'mode_ok': mode in ('elcano', 'central'),
-                  'session_len': len(v.get('EXPLORER_SESSION_SECRET') or ''),
-                  's3_bucket': bool(v.get('EMAIL_S3_BUCKET')),
-                  'aws_key': bool(v.get('AWS_ACCESS_KEY_ID')),
-                  'aws_secret': bool(v.get('AWS_SECRET_ACCESS_KEY'))}))
-""",
-        cwd=app,
-    )
+# ── dotenv parsing ──────────────────────────────────────────────────────────
+# app/config.py loads .env.shared then .env via python-dotenv (interpolation
+# on, .env overriding). Doctor mirrors that with an in-process parser: the
+# venv's interpreter is service-writable and must never be executed by a
+# root-run check, so the probe cannot borrow the app's own dotenv. This is
+# the supported subset of python-dotenv semantics: comments, optional
+# `export`, whitespace around =, single/double quoting with the common
+# escapes, and ${VAR} / ${VAR:-default} interpolation resolved against the
+# ambient environment, earlier files, and this file's own values (file
+# values win, as python-dotenv's new_values do).
+
+_ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*(.*))?$")
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_ENV_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+    "$": "$",
+}
 
 
-def caddy_site_host():
-    """Hostname of the installed Explorer Caddy site block, if there is one."""
-    for snippet in (
-        "/etc/caddy/conf.d/explorer.caddy",
-        "/etc/caddy/Caddyfile.d/explorer.caddyfile",
-    ):
-        path = Path(snippet)
-        if not path.is_file():
+def _parse_dotenv(text, base):
+    values = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
             continue
+        match = _ENV_LINE.match(raw)
+        if not match:
+            continue
+        key, val = match.group(1), match.group(2)
+        if val is None:
+            values[key] = ""
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            inner = val[1:-1]
+            values[key] = re.sub(
+                r"\\(.)",
+                lambda m: _ENV_ESCAPES.get(m.group(1), m.group(1)),
+                inner,
+            )
+        elif len(val) >= 2 and val[0] == "'" and val[-1] == "'":
+            values[key] = val[1:-1]
+        else:
+            # Unquoted: a comment starts only at whitespace-then-#.
+            values[key] = re.sub(r"\s+#.*$", "", val).rstrip()
+
+    def repl(match):
+        name, default = match.group(1), match.group(2)
+        if name in values:
+            return values[name]
+        if name in base:
+            return base[name]
+        return default or ""
+
+    return {key: _ENV_REF.sub(repl, val) for key, val in values.items()}
+
+
+def load_dotenv_pair(app):
+    """Merged .env.shared + .env view, mirroring app/config.py precedence.
+
+    lstat, never stat: a secrets file must not be probed through a symlink.
+    Missing files contribute nothing; a damaged file contributes what
+    parsed before the fault. Values stay inside this process — only key
+    names, lengths and booleans ever reach the report.
+    """
+    merged = {}
+    for name in (".env.shared", ".env"):
+        path = app / name
         try:
-            for line in path.read_text().splitlines():
-                stripped = line.strip()
-                if (
-                    stripped
-                    and not stripped.startswith(("#", "import", "}"))
-                    and stripped.endswith("{")
-                ):
-                    return snippet, stripped[:-1].strip().rstrip("{").strip()
+            st = path.lstat()
         except OSError:
             continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        merged.update(_parse_dotenv(text, {**os.environ, **merged}))
+    return merged
+
+
+# ── Caddy site resolution ───────────────────────────────────────────────────
+# Port of scripts/lib/caddy-site.sh: follow the import globs the installed
+# /etc/caddy/Caddyfile actually loads (sites-enabled/*.caddy, Caddyfile.d,
+# conf.d, ...) instead of guessing conventional filenames — a supported
+# install under any imported wildcard must still be found.
+
+_CADDY_MARKER = "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via"
+_IMPORT_LINE = re.compile(r"^\s*import\s+(.+?)\s*$")
+
+
+def _caddy_imports(caddyfile):
+    patterns = []
+    try:
+        lines = Path(caddyfile).read_text().splitlines()
+    except OSError:
+        return patterns
+    for line in lines:
+        match = _IMPORT_LINE.match(line)
+        if not match:
+            continue
+        rest = match.group(1).strip()
+        if not rest:
+            continue
+        if rest[0] in "\"'":
+            quote = rest[0]
+            end = rest.find(quote, 1)
+            if end < 0:
+                continue
+            pattern = rest[1:end]
+            tail = rest[end + 1 :]
+            if tail.strip() and not tail.strip().startswith("#"):
+                continue
+        else:
+            pattern = rest.split()[0]
+        if pattern:
+            patterns.append(pattern)
+    return patterns
+
+
+def _caddy_candidate(caddyfile, pattern):
+    directory, _, glob = pattern.rpartition("/")
+    if not glob:
+        return None
+    if any(c in directory for c in "*?["):
+        return None
+    if not any(c in glob for c in "*?["):
+        return None
+    if not directory.startswith("/"):
+        directory = os.path.join(os.path.dirname(caddyfile), directory)
+    directory = os.path.realpath(directory)
+    name = glob.replace("*", "explorer").replace("?", "x")
+    if glob == "*":
+        name = "explorer.caddy"
+    if not fnmatch.fnmatchcase(name, glob):
+        return None
+    return os.path.join(directory, name)
+
+
+def _caddy_is_ours(path):
+    try:
+        st = Path(path).lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            first = handle.readline().rstrip("\n")
+    except OSError:
+        return False
+    return first == _CADDY_MARKER
+
+
+def caddy_site_host(caddyfile=None):
+    """Resolve the installed Explorer Caddy site exactly like caddy-site.sh.
+
+    Returns (snippet_path, hostname) or (None, None) when no Explorer block
+    is installed under any imported path.
+    """
+    caddyfile = caddyfile or os.environ.get(
+        "EXPLORER_CADDYFILE", "/etc/caddy/Caddyfile"
+    )
+    candidates = []
+    for pattern in _caddy_imports(caddyfile):
+        candidate = _caddy_candidate(caddyfile, pattern)
+        if candidate:
+            candidates.append(candidate)
+    target = None
+    for candidate in candidates:
+        if _caddy_is_ours(candidate):
+            target = candidate
+            break
+    if target is None:
+        for candidate in candidates:
+            if not os.path.lexists(candidate):
+                target = candidate
+                break
+    if target is None:
+        fallback = os.path.join(os.path.dirname(caddyfile), "conf.d/explorer.caddy")
+        if not os.path.lexists(fallback) or _caddy_is_ours(fallback):
+            target = fallback
+    if target is None or not _caddy_is_ours(target):
+        return None, None
+    try:
+        for line in Path(target).read_text().splitlines():
+            stripped = line.strip()
+            if (
+                stripped
+                and not stripped.startswith(("#", "import", "}"))
+                and stripped.endswith("{")
+            ):
+                return target, stripped[:-1].strip().rstrip("{").strip()
+    except OSError:
+        pass
     return None, None
 
 
@@ -111,21 +260,31 @@ def diagnose(app, src, user):
     for name in ("git", "curl", "rsync", "uv", "systemctl"):
         add(name, shutil.which(name), "installed", "Run bootstrap to install " + name)
     python = app / ".venv/bin/python"
-    code, version = run(str(python), "--version")
+    # The venv interpreter is service-writable, so a root-run doctor must
+    # never execute it (scripts/lib/layout.sh keeps only the venv writable).
+    # pyvenv.cfg carries the version; uv pip check below reads metadata
+    # without executing anything from the venv.
+    version = ""
+    try:
+        for line in (app / ".venv/pyvenv.cfg").read_text().splitlines():
+            if line.strip().startswith("version ="):
+                version = line.split("=", 1)[1].strip()
+                break
+    except OSError:
+        version = ""
     good = False
-    if code == 0 and version.startswith("Python "):
+    if version:
         try:
-            major, minor = (int(p) for p in version.split()[1].split(".")[:2])
-            good = (major, minor) >= (3, 11)
-        except (ValueError, IndexError):
+            good = tuple(int(p) for p in version.split(".")[:2]) >= (3, 11)
+        except ValueError:
             good = False
     add(
         "python",
         good,
-        version,
-        "Need Python >= 3.11; run explorer rebuild to rebuild the venv",
+        f"venv Python {version}",
+        "Need Python >= 3.11 in the venv; run explorer rebuild",
     )
-    if code == 0:
+    if good:
         code, _ = run("uv", "pip", "check", "--python", str(python), timeout=60)
         add(
             "dependencies",
@@ -135,99 +294,192 @@ def diagnose(app, src, user):
         )
     else:
         add("dependencies", False, "", "venv missing; run explorer rebuild")
-    env_file = app / ".env"
-    try:
-        stat = env_file.stat()
-        mode = stat.st_mode & 0o777
-        owner = pwd.getpwuid(stat.st_uid).pw_name
-        add(
-            "env-permissions",
-            mode == 0o600 and owner == user,
-            f"{owner}-owned 0600",
-            f"chown {user}:{user} {env_file} && chmod 600 {env_file} "
-            "(it holds the session secret, the auth client secret and any AWS keys)",
-        )
-        code, data = inspect_env(app)
-        env = json.loads(data) if code == 0 else {}
-        missing = env.get("missing", []) + env.get("central_missing", [])
-        # Only the failures that are THIS check's to name: absent keys, a key
-        # that is present but malformed, a bad auth mode. The session secret
-        # length belongs to the dedicated session-secret check below — naming
-        # it here too used to fail the box twice for one fault.
-        good = bool(env) and not missing and env["key_ok"] and env["mode_ok"]
+    # Permissions on every dotenv the app loads (lstat: never through a
+    # symlink — layout.sh requires a regular file, one link, owner-only).
+    texts = {}
+    for name, check_name in (
+        (".env", "env-permissions"),
+        (".env.shared", "env-shared-permissions"),
+    ):
+        env_path = app / name
+        try:
+            st = env_path.lstat()
+        except OSError:
+            if name == ".env":
+                add(
+                    check_name,
+                    False,
+                    "",
+                    f"{env_path} missing — run bootstrap.sh",
+                )
+            continue
+        is_link = stat.S_ISLNK(st.st_mode)
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            owner = str(st.st_uid)
+        mode = stat.S_IMODE(st.st_mode)
+        good = not is_link and mode == 0o600 and owner == user
         problems = []
-        if not env:
-            problems.append(
-                "could not parse .env; run doctor with sudo or restore .env"
-            )
-        else:
-            if missing:
-                problems.append("missing: " + ", ".join(missing))
-            if not env["key_ok"] and "AUTH_SIGNING_PUBKEY" not in missing:
-                problems.append(
-                    "AUTH_SIGNING_PUBKEY is set but is not a 32-byte base64 Ed25519 key"
-                )
-            if not env["mode_ok"]:
-                problems.append(
-                    f"EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got {env['mode']!r})"
-                )
+        if is_link:
+            problems.append(f"{env_path} is a symlink — replace it with a regular file")
+        if mode != 0o600:
+            problems.append(f"chmod 600 {env_path}")
+        if owner != user:
+            problems.append(f"chown {user}:{user} {env_path}")
+        problems.append("(it holds secrets; the installed layout is owner-only)")
         add(
-            "configuration",
+            check_name,
             good,
-            "auth signing key and auth mode configured",
+            f"{owner}-owned 0600",
             "; ".join(problems),
         )
-        if env:
-            session_len = env.get("session_len", 0)
-            if session_len < 32:
-                add(
-                    "session-secret",
-                    False,
-                    "",
-                    f"EXPLORER_SESSION_SECRET got {session_len} chars, need >= 32 "
-                    "— generate: openssl rand -hex 32, then: explorer env edit && explorer restart",
+        # Read whatever parsed regardless of the verdict above: a
+        # permissions fault must not hide a configuration fault (and root
+        # can read the file anyway). Symlinks are still never followed.
+        if not is_link:
+            try:
+                texts[name] = env_path.read_text()
+            except OSError:
+                pass
+    merged = {}
+    for name in (".env.shared", ".env"):
+        if name in texts:
+            merged.update(_parse_dotenv(texts[name], {**os.environ, **merged}))
+    dotenv_ok = ".env" in texts
+    mode = (merged.get("EXPLORER_AUTH_MODE") or "elcano").strip()
+    missing = [k for k in ("AUTH_SIGNING_PUBKEY",) if not merged.get(k)]
+    if mode == "central":
+        missing += [
+            k
+            for k in (
+                "AUTH_ISSUER_URL",
+                "EXPLORER_PUBLIC_URL",
+                "AUTH_CLIENT_ID",
+                "AUTH_CLIENT_SECRET",
+            )
+            if not merged.get(k)
+        ]
+    try:
+        key_ok = (
+            len(base64.b64decode(merged.get("AUTH_SIGNING_PUBKEY", ""), validate=True))
+            == 32
+        )
+    except (ValueError, TypeError):
+        key_ok = False
+    mode_ok = mode in ("elcano", "central")
+    # Mirror CentralAuthClient's value validation (app/central_auth.py): a
+    # restart would refuse to start on these, so doctor must not call the
+    # box healthy while the old process keeps running. Lengths and rule
+    # names only — never values.
+    central_problems = []
+    if mode == "central":
+
+        def origin_ok(raw):
+            parsed = urllib.parse.urlsplit(raw.strip())
+            return (
+                parsed.scheme == "https"
+                and bool(parsed.netloc)
+                and not parsed.username
+                and not parsed.password
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.path in ("", "/")
+            )
+
+        for key in ("AUTH_ISSUER_URL", "EXPLORER_PUBLIC_URL"):
+            if merged.get(key) and not origin_ok(merged[key]):
+                central_problems.append(
+                    f"{key} must be an https origin without a path, query "
+                    "or embedded credentials"
                 )
-            else:
-                add("session-secret", True, "session secret >= 32 chars")
+        client_id = (merged.get("AUTH_CLIENT_ID") or "").strip()
+        if client_id and (":" in client_id or len(client_id) > 128):
+            central_problems.append(
+                "AUTH_CLIENT_ID must be 1-128 characters without ':'"
+            )
+        secret = merged.get("AUTH_CLIENT_SECRET") or ""
+        if secret:
+            secret_bytes = len(secret.encode("utf-8"))
+            if secret_bytes < 32:
+                central_problems.append(
+                    f"AUTH_CLIENT_SECRET must contain at least 32 bytes (got {secret_bytes})"
+                )
+            elif len(secret) > 256 or ":" in secret:
+                central_problems.append(
+                    "AUTH_CLIENT_SECRET must be at most 256 characters without ':'"
+                )
+    # Only the failures that are THIS check's to name: absent keys, a key
+    # that is present but malformed, a bad auth mode, invalid central-mode
+    # values. The session secret length belongs to the dedicated
+    # session-secret check below — naming it here too used to fail the box
+    # twice for one fault.
+    good = dotenv_ok and not missing and key_ok and mode_ok and not central_problems
+    problems = []
+    if not dotenv_ok:
+        problems.append("could not parse .env; run doctor with sudo or restore .env")
+    else:
+        if missing:
+            problems.append("missing: " + ", ".join(missing))
+        if not key_ok and "AUTH_SIGNING_PUBKEY" not in missing:
+            problems.append(
+                "AUTH_SIGNING_PUBKEY is set but is not a 32-byte base64 Ed25519 key"
+            )
+        if not mode_ok:
+            problems.append(
+                f"EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got {mode!r})"
+            )
+        problems.extend(central_problems)
+    add(
+        "configuration",
+        good,
+        "auth signing key and auth mode configured",
+        "; ".join(problems),
+    )
+    if dotenv_ok:
+        session_len = len(merged.get("EXPLORER_SESSION_SECRET") or "")
+        if session_len < 32:
             add(
-                "s3-archive",
-                env["s3_bucket"],
-                "EMAIL_S3_BUCKET set",
-                "EMAIL_S3_BUCKET unset — every S3-backed feature errors; set it with: "
-                "explorer env edit && explorer restart",
+                "session-secret",
+                False,
+                "",
+                f"EXPLORER_SESSION_SECRET got {session_len} chars, need >= 32 "
+                "— generate: openssl rand -hex 32, then: explorer env edit && explorer restart",
+            )
+        else:
+            add("session-secret", True, "session secret >= 32 chars")
+        add(
+            "s3-archive",
+            bool(merged.get("EMAIL_S3_BUCKET")),
+            "EMAIL_S3_BUCKET set",
+            "EMAIL_S3_BUCKET unset — every S3-backed feature errors; set it with: "
+            "explorer env edit && explorer restart",
+            warning=True,
+        )
+        aws_key, aws_secret = (
+            bool(merged.get("AWS_ACCESS_KEY_ID")),
+            bool(merged.get("AWS_SECRET_ACCESS_KEY")),
+        )
+        if aws_key != aws_secret:
+            add(
+                "aws-credentials",
+                False,
+                "",
+                "Only one of AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY is set — "
+                "fix both or clear both (the ambient credential chain is used when blank)",
                 warning=True,
             )
-            if env["aws_key"] != env["aws_secret"]:
-                add(
-                    "aws-credentials",
-                    False,
-                    "",
-                    "Only one of AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY is set — "
-                    "fix both or clear both (the ambient credential chain is used when blank)",
-                    warning=True,
-                )
-            elif not env["aws_key"]:
-                add(
-                    "aws-credentials",
-                    False,
-                    "",
-                    "No static AWS keys — relying on the ambient credential chain "
-                    "(instance role, ~/.aws, AWS_PROFILE); ignore if that is intended",
-                    warning=True,
-                )
-            else:
-                add("aws-credentials", True, "static AWS credentials configured")
-    except (OSError, KeyError, ValueError):
-        # Replace, never append: if the fault happened after the main
-        # 'configuration' check was already added, appending here would
-        # report the same fault twice under the same name.
-        checks[:] = [c for c in checks if c["name"] != "configuration"]
-        add(
-            "configuration",
-            False,
-            "",
-            f"Cannot read {env_file}; run doctor with sudo or restore .env",
-        )
+        elif not aws_key:
+            add(
+                "aws-credentials",
+                False,
+                "",
+                "No static AWS keys — relying on the ambient credential chain "
+                "(instance role, ~/.aws, AWS_PROFILE); ignore if that is intended",
+                warning=True,
+            )
+        else:
+            add("aws-credentials", True, "static AWS credentials configured")
     code, _ = run("systemctl", "is-active", "--quiet", "explorer.service")
     add(
         "service",
@@ -235,6 +487,18 @@ def diagnose(app, src, user):
         "explorer.service active",
         "Inspect explorer logs; then explorer restart",
     )
+    if code == 0:
+        # Active only tells half the story: a manually disabled unit stays
+        # up until the next reboot and never comes back.
+        code, _ = run("systemctl", "is-enabled", "--quiet", "explorer.service")
+        add(
+            "service-enabled",
+            code == 0,
+            "explorer.service enabled",
+            "explorer.service is active but DISABLED — it will not start on "
+            "boot: systemctl enable explorer.service",
+            warning=True,
+        )
     code, status = run(
         "curl",
         "-sS",
@@ -322,76 +586,99 @@ def diagnose(app, src, user):
                         "timer enabled + active, no failed run recorded",
                     )
     snippet, host = caddy_site_host()
-    if snippet and shutil.which("caddy"):
-        code, _ = run("systemctl", "is-active", "--quiet", "caddy.service")
-        add("caddy", code == 0, "caddy.service active", "Inspect journalctl -u caddy")
-        code, _ = run(
-            "caddy",
-            "validate",
-            "--config",
-            "/etc/caddy/Caddyfile",
-            "--adapter",
-            "caddyfile",
-        )
-        add(
-            "caddy-config",
-            code == 0,
-            "/etc/caddy/Caddyfile validates",
-            "Caddy configuration invalid — run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile",
-        )
-        if host:
-            # s_client expects EOF on stdin to close the connection after the
-            # handshake; pipe its (PEM) stdout into x509 ourselves.
-            expiry = None
-            try:
-                s_client = subprocess.run(
-                    [
-                        "openssl",
-                        "s_client",
-                        "-servername",
-                        host,
-                        "-connect",
-                        f"{host}:443",
-                    ],
-                    input="",
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if s_client.returncode == 0:
-                    x509 = subprocess.run(
-                        ["openssl", "x509", "-noout", "-enddate"],
-                        input=s_client.stdout,
+    if snippet:
+        if not shutil.which("caddy"):
+            # A configured site block with no binary is an outage in
+            # waiting, not something to skip silently.
+            add(
+                "caddy",
+                False,
+                "",
+                f"Explorer Caddy site block is installed at {snippet} but the "
+                "caddy binary is missing — dnf install caddy, then rerun bootstrap",
+            )
+        else:
+            code, _ = run("systemctl", "is-active", "--quiet", "caddy.service")
+            add(
+                "caddy",
+                code == 0,
+                "caddy.service active",
+                "Inspect journalctl -u caddy",
+            )
+            code, _ = run(
+                "caddy",
+                "validate",
+                "--config",
+                "/etc/caddy/Caddyfile",
+                "--adapter",
+                "caddyfile",
+            )
+            add(
+                "caddy-config",
+                code == 0,
+                "/etc/caddy/Caddyfile validates",
+                "Caddy configuration invalid — run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile",
+            )
+            if host:
+                # s_client expects EOF on stdin to close the connection
+                # after the handshake. -verify_hostname + -verify_return_error
+                # make a wrong-host or unverifiable certificate fail the
+                # command instead of merely printing the served leaf.
+                expiry = None
+                try:
+                    s_client = subprocess.run(
+                        [
+                            "openssl",
+                            "s_client",
+                            "-servername",
+                            host,
+                            "-verify_hostname",
+                            host,
+                            "-verify_return_error",
+                            "-connect",
+                            f"{host}:443",
+                        ],
+                        input="",
                         capture_output=True,
                         text=True,
-                        timeout=10,
+                        timeout=15,
                     )
-                    if x509.returncode == 0 and x509.stdout.strip().startswith(
-                        "notAfter="
-                    ):
-                        expiry = datetime.datetime.strptime(
-                            x509.stdout.strip().split("=", 1)[1].strip(),
-                            "%b %d %H:%M:%S %Y %Z",
-                        ).date()
-            except (OSError, subprocess.TimeoutExpired):
-                expiry = None
-            if expiry is None:
-                add(
-                    "tls-cert",
-                    False,
-                    "",
-                    f"could not read the certificate for {host} — check DNS + firewall",
-                    warning=True,
-                )
-            else:
-                days = (expiry - datetime.date.today()).days
-                add(
-                    "tls-cert",
-                    days > 30,
-                    f"{host} cert expires {expiry.isoformat()} ({days} days)",
-                    f"certificate for {host} expired or expires within 30 days ({expiry.isoformat()})",
-                    warning=0 < days <= 30,
-                )
+                    if s_client.returncode == 0:
+                        x509 = subprocess.run(
+                            ["openssl", "x509", "-noout", "-enddate"],
+                            input=s_client.stdout,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        if x509.returncode == 0 and x509.stdout.strip().startswith(
+                            "notAfter="
+                        ):
+                            expiry = datetime.datetime.strptime(
+                                x509.stdout.strip().split("=", 1)[1].strip(),
+                                "%b %d %H:%M:%S %Y %Z",
+                            ).date()
+                except (OSError, subprocess.TimeoutExpired):
+                    expiry = None
+                if expiry is None:
+                    add(
+                        "tls-cert",
+                        False,
+                        "",
+                        f"could not verify the certificate for {host} — TLS "
+                        "verification failed or the host is unreachable; check "
+                        "DNS, firewall and the served certificate",
+                        warning=True,
+                    )
+                else:
+                    days = (expiry - datetime.date.today()).days
+                    add(
+                        "tls-cert",
+                        days > 30,
+                        f"{host} cert expires {expiry.isoformat()} ({days} days)",
+                        f"certificate for {host} expired or expires within 30 days ({expiry.isoformat()})",
+                        warning=0 < days <= 30,
+                    )
     for unit in (
         "explorer.service",
         "explorer-attachment-cleanup.service",
@@ -416,7 +703,17 @@ def diagnose(app, src, user):
             )
     cli = Path("/usr/local/bin/explorer")
     shipped_cli = app / "deploy/explorer-cli"
-    if shipped_cli.is_file() and cli.is_file():
+    if not shipped_cli.is_file() or not cli.is_file():
+        # Missing either side is drift: the CLI is how operators restart,
+        # update and grant access, so its absence is a fault, not a skip.
+        add(
+            "operator-cli",
+            False,
+            "",
+            f"operator CLI missing ({cli} or {shipped_cli}) — rerun bootstrap.sh "
+            "or explorer update",
+        )
+    else:
         same = run("cmp", "-s", str(shipped_cli), str(cli))[0] == 0
         add(
             "operator-cli",
@@ -536,8 +833,9 @@ def diagnose(app, src, user):
     # tier gets its say (each bounded at 10s so a hung dnf cannot hang
     # doctor). A single "yes" wins over any number of "no" (tiers can
     # disagree when one is stale), unanimity of "no" passes, and only when
-    # NO tier could answer is the verdict unknown. A 'reboot' line therefore
-    # always appears — never a silent skip when needs-restarting is absent.
+    # NO tier could answer is the verdict unknown. Exit codes other than
+    # 0/1 — including run()'s 127 for a timeout or execution error — mean
+    # "this tier cannot say": never treated as "no reboot pending".
     answers = []
     if shutil.which("needs-restarting"):
         code, _ = run("needs-restarting", "-r", timeout=10)
@@ -594,10 +892,16 @@ def diagnose(app, src, user):
                 warning=True,
             )
         else:
-            # Compare only after a successful fetch: without it, a stale
-            # remote-tracking ref reports a weeks-behind checkout as current.
-            code, _ = run(*git, "fetch", "--quiet", "origin", "main", timeout=10)
-            if code != 0:
+            # Compare against the live remote. A fetch is forbidden here:
+            # it writes FETCH_HEAD and remote refs, and a read-only check
+            # must never mutate the checkout it diagnoses. ls-remote reads
+            # only. The count comes from the local tracking ref only when
+            # that ref already matches the live remote; otherwise we say
+            # "behind" without inventing a number.
+            code, head = run(*git, "rev-parse", "HEAD")
+            code2, remote = run(*git, "ls-remote", "origin", "main", timeout=10)
+            remote_sha = remote.split()[0] if code2 == 0 and remote else ""
+            if code != 0 or not remote_sha:
                 add(
                     "branch",
                     False,
@@ -606,18 +910,21 @@ def diagnose(app, src, user):
                     "check network or remote credentials",
                     warning=True,
                 )
+            elif head == remote_sha:
+                add("branch", True, "on main, up to date with origin")
             else:
-                code2, behind = run(*git, "rev-list", "--count", "HEAD..origin/main")
-                if code2 == 0 and behind.isdigit() and int(behind) > 0:
-                    add(
-                        "branch",
-                        False,
-                        "",
-                        f"checkout is {behind} commit(s) behind origin/main — run explorer update",
-                        warning=True,
+                code3, local_ref = run(*git, "rev-parse", "origin/main")
+                detail = "checkout is behind origin/main — run explorer update"
+                if code3 == 0 and local_ref == remote_sha:
+                    code4, behind = run(
+                        *git, "rev-list", "--count", "HEAD..origin/main"
                     )
-                else:
-                    add("branch", True, "on main, up to date with origin")
+                    if code4 == 0 and behind.isdigit() and int(behind) > 0:
+                        detail = (
+                            f"checkout is {behind} commit(s) behind "
+                            "origin/main — run explorer update"
+                        )
+                add("branch", False, "", detail, warning=True)
     else:
         add(
             "checkout",

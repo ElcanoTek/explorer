@@ -11,6 +11,9 @@ environment file whose mode silently loosened on update.
 
 from __future__ import annotations
 
+import base64
+import getpass
+import importlib.util
 import json
 import re
 import subprocess
@@ -399,20 +402,29 @@ def test_doctor_py_never_imports_the_app():
 
     app/config.py reads the environment at import time, and the whole point
     of doctor is diagnosing a box where that environment is wrong. Secrets
-    are parsed with dotenv and only key names/booleans ever leave the probe.
+    are parsed in-process and only key names/booleans/lengths ever leave it.
+    The venv's python-dotenv is deliberately NOT used: that interpreter is
+    service-writable and a root-run doctor must never execute it, so the
+    parser mirrors python-dotenv's supported semantics in stdlib code.
     """
     text = (SCRIPTS / "doctor.py").read_text()
     assert "SPDX-License-Identifier: BUSL-1.1" in text
     for banned in ("import app", "from app", "import main", "uvicorn"):
         assert banned not in text, f"doctor.py imports the application: {banned}"
-    assert "dotenv_values" in text, "doctor.py no longer parses .env with dotenv"
+    assert "dotenv_values" not in text, (
+        "doctor.py must not execute the service-owned venv interpreter for parsing"
+    )
+    assert "_parse_dotenv" in text, "doctor.py no longer carries its dotenv parser"
 
 
 def test_operator_cli_dispatches_doctor():
-    """`explorer doctor` must reach scripts/doctor.sh in the source checkout."""
+    """`explorer doctor` must reach scripts/doctor.sh (src preferred, app fallback)."""
     text = (REPO_ROOT / "deploy/explorer-cli").read_text()
     assert "doctor)" in text
-    assert 'exec sudo bash "$SRC_DIR/scripts/doctor.sh" "$@"' in text
+    assert (
+        'exec sudo env EXPLORER_SRC_DIR="$SRC_DIR" APP_DIR="$APP_DIR" bash "$doctor_script" "$@"'
+        in text
+    )
     assert "doctor [--json] [--strict]" in text
 
 
@@ -456,7 +468,11 @@ def test_doctor_py_json_smoke_on_a_bare_box(tmp_path: Path):
 
 
 def _run_doctor_json(
-    tmp_path: Path, app_dir: Path, src_dir: Path, path: str = "/usr/bin:/bin"
+    tmp_path: Path,
+    app_dir: Path,
+    src_dir: Path,
+    path: str = "/usr/bin:/bin",
+    extra_env: dict | None = None,
 ) -> dict:
     """Run doctor.py --json against scratch dirs with a caller-chosen PATH.
 
@@ -466,9 +482,13 @@ def _run_doctor_json(
     env = {
         "APP_DIR": str(app_dir),
         "EXPLORER_SRC_DIR": str(src_dir),
-        "APP_USER": "explorer",
+        # The invoking user owns fixture files; only the reboot/service
+        # stubs care about the value itself.
+        "APP_USER": getpass.getuser(),
         "PATH": path,
     }
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         ["python3", str(SCRIPTS / "doctor.py"), "--json"],
         capture_output=True,
@@ -485,50 +505,53 @@ def _checks_by_name(report: dict) -> dict:
     return {check["name"]: check for check in report["checks"]}
 
 
-def _make_fake_app(tmp_path: Path) -> Path:
-    """A scratch APP_DIR whose venv python impersonates the env probe.
+_VALID_PUBKEY = base64.b64encode(bytes(range(32))).decode()
 
-    The stub answers --version like an interpreter and the -c dotenv probe
-    by echoing .probe.json from the app dir, so each test scripts the exact
-    configuration shape it wants (fully-configured static AWS credentials by
-    default).
+
+def _healthy_dotenv() -> str:
+    return (
+        f'EXPLORER_SESSION_SECRET="{"s" * 48}"\n'
+        "EMAIL_S3_BUCKET=archive\n"
+        "AWS_ACCESS_KEY_ID=AKIAEXAMPLE\n"
+        "AWS_SECRET_ACCESS_KEY=example-secret\n"
+        "EXPLORER_AUTH_MODE=elcano\n"
+        f"AUTH_SIGNING_PUBKEY={_VALID_PUBKEY}\n"
+    )
+
+
+def _make_fake_app(tmp_path: Path) -> Path:
+    """A scratch APP_DIR with a venv stand-in and a healthy .env.
+
+    pyvenv.cfg stands in for the venv — the python check reads it because a
+    root-run doctor must never execute the service-writable venv
+    interpreter. Each test rewrites .env (and optionally .env.shared) with
+    real dotenv text, so parsing is exercised end to end.
     """
     app = tmp_path / "app"
-    venv_python = app / ".venv/bin/python"
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text(
-        """#!/usr/bin/env python3
-import json
-import sys
-
-if sys.argv[1:2] == ["--version"]:
-    print("Python 3.11.9")
-else:
-    print(json.dumps(json.load(open(".probe.json"))))
-"""
+    (app / ".venv").mkdir(parents=True)
+    (app / ".venv/pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.9\n"
     )
-    venv_python.chmod(0o755)
-    (app / ".env").write_text("AWS_ACCESS_KEY_ID=...\nAWS_SECRET_ACCESS_KEY=...\n")
-    (app / ".env").chmod(0o600)
-    _write_probe(app, session_len=48)
+    _write_dotenv(app, _healthy_dotenv())
     return app
 
 
-def _write_probe(app: Path, **overrides) -> None:
-    """Script the env-probe report the fake venv python will echo back."""
-    probe = {
-        "missing": [],
-        "central_missing": [],
-        "key_ok": True,
-        "mode": "elcano",
-        "mode_ok": True,
-        "session_len": 48,
-        "s3_bucket": True,
-        "aws_key": True,
-        "aws_secret": True,
-    }
-    probe.update(overrides)
-    (app / ".probe.json").write_text(json.dumps(probe))
+def _write_dotenv(app: Path, local: str, shared: str = "") -> None:
+    (app / ".env").write_text(local)
+    (app / ".env").chmod(0o600)
+    shared_path = app / ".env.shared"
+    if shared:
+        shared_path.write_text(shared)
+        shared_path.chmod(0o600)
+    else:
+        shared_path.unlink(missing_ok=True)
+
+
+def _drop_lines(text: str, *prefixes: str) -> str:
+    return (
+        "\n".join(line for line in text.splitlines() if not line.startswith(prefixes))
+        + "\n"
+    )
 
 
 def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
@@ -539,9 +562,11 @@ def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
     """
     app = _make_fake_app(tmp_path)
     report = _run_doctor_json(tmp_path, app, tmp_path / "src")
-    aws = _checks_by_name(report)["aws-credentials"]
+    checks = _checks_by_name(report)
+    aws = checks["aws-credentials"]
     assert aws["status"] == "ok", aws
     assert aws["detail"] == "static AWS credentials configured"
+    assert checks["python"]["status"] == "ok", checks["python"]
 
 
 def test_doctor_short_session_secret_reported_once(tmp_path: Path):
@@ -553,7 +578,9 @@ def test_doctor_short_session_secret_reported_once(tmp_path: Path):
     length.
     """
     app = _make_fake_app(tmp_path)
-    _write_probe(app, session_len=26)
+    _write_dotenv(
+        app, _healthy_dotenv().replace('"' + "s" * 48 + '"', '"' + "s" * 26 + '"')
+    )
     report = _run_doctor_json(tmp_path, app, tmp_path / "src")
     checks = _checks_by_name(report)
     assert checks["configuration"]["status"] == "ok", checks["configuration"]
@@ -567,7 +594,7 @@ def test_doctor_short_session_secret_reported_once(tmp_path: Path):
 
 def test_doctor_configuration_remedy_names_missing_keys(tmp_path: Path):
     app = _make_fake_app(tmp_path)
-    _write_probe(app, missing=["AUTH_SIGNING_PUBKEY"], key_ok=False)
+    _write_dotenv(app, _drop_lines(_healthy_dotenv(), "AUTH_SIGNING_PUBKEY"))
     report = _run_doctor_json(tmp_path, app, tmp_path / "src")
     config = _checks_by_name(report)["configuration"]
     assert config["status"] == "fail", config
@@ -578,7 +605,12 @@ def test_doctor_configuration_remedy_names_missing_keys(tmp_path: Path):
 
 def test_doctor_configuration_remedy_names_bad_key_shape(tmp_path: Path):
     app = _make_fake_app(tmp_path)
-    _write_probe(app, key_ok=False)  # present, but not a 32-byte base64 key
+    _write_dotenv(
+        app,
+        _healthy_dotenv().replace(
+            f"AUTH_SIGNING_PUBKEY={_VALID_PUBKEY}", "AUTH_SIGNING_PUBKEY=not!!base64"
+        ),
+    )
     report = _run_doctor_json(tmp_path, app, tmp_path / "src")
     config = _checks_by_name(report)["configuration"]
     assert config["status"] == "fail", config
@@ -588,21 +620,148 @@ def test_doctor_configuration_remedy_names_bad_key_shape(tmp_path: Path):
     ), config
 
 
-def test_doctor_configuration_remedy_names_bad_mode_and_central_gap(tmp_path: Path):
+def test_doctor_configuration_remedy_names_bad_mode(tmp_path: Path):
     app = _make_fake_app(tmp_path)
-    _write_probe(
+    _write_dotenv(
         app,
-        mode="ldap",
-        mode_ok=False,
-        central_missing=["AUTH_ISSUER_URL", "AUTH_CLIENT_SECRET"],
+        _healthy_dotenv().replace(
+            "EXPLORER_AUTH_MODE=elcano", "EXPLORER_AUTH_MODE=ldap"
+        ),
     )
     report = _run_doctor_json(tmp_path, app, tmp_path / "src")
     config = _checks_by_name(report)["configuration"]
     assert config["status"] == "fail", config
-    assert config["detail"] == (
-        "missing: AUTH_ISSUER_URL, AUTH_CLIENT_SECRET; "
-        "EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got 'ldap')"
+    assert (
+        config["detail"]
+        == "EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got 'ldap')"
     ), config
+
+
+def test_doctor_configuration_names_missing_central_keys(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    local = _healthy_dotenv().replace(
+        "EXPLORER_AUTH_MODE=elcano", "EXPLORER_AUTH_MODE=central"
+    )
+    local += "AUTH_ISSUER_URL=https://auth.example.com\nAUTH_CLIENT_ID=explorer\n"
+    _write_dotenv(app, local)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert config["detail"] == "missing: EXPLORER_PUBLIC_URL, AUTH_CLIENT_SECRET", (
+        config
+    )
+
+
+@pytest.mark.parametrize(
+    ("bad_line", "expected"),
+    [
+        (
+            "AUTH_CLIENT_SECRET=short",
+            "AUTH_CLIENT_SECRET must contain at least 32 bytes (got 5)",
+        ),
+        (
+            "AUTH_ISSUER_URL=http://auth.example.com",
+            "AUTH_ISSUER_URL must be an https origin without a path, query or embedded credentials",
+        ),
+        (
+            "AUTH_ISSUER_URL=https://auth.example.com/some/path",
+            "AUTH_ISSUER_URL must be an https origin without a path, query or embedded credentials",
+        ),
+        (
+            'AUTH_CLIENT_ID="bad:id"',
+            "AUTH_CLIENT_ID must be 1-128 characters without ':'",
+        ),
+    ],
+)
+def test_doctor_configuration_validates_central_values(
+    tmp_path: Path, bad_line: str, expected: str
+):
+    """Mirror CentralAuthClient's rules: a restart would refuse to start.
+
+    Presence-only validation reported configuration OK while the next
+    restart would die — the old process keeps serving, so the lie surfaces
+    only at the worst moment.
+    """
+    app = _make_fake_app(tmp_path)
+    key = bad_line.split("=")[0]
+    local = _drop_lines(_healthy_dotenv(), "EXPLORER_AUTH_MODE", "AUTH_SIGNING_PUBKEY")
+    local += (
+        "EXPLORER_AUTH_MODE=central\n"
+        "AUTH_SIGNING_PUBKEY="
+        + _VALID_PUBKEY
+        + "\n"
+        + "AUTH_ISSUER_URL=https://auth.example.com\n"
+        + "EXPLORER_PUBLIC_URL=https://explorer.example.com\n"
+        + "AUTH_CLIENT_ID=explorer\n"
+        + "AUTH_CLIENT_SECRET="
+        + "x" * 40
+        + "\n"
+    )
+    lines = [bad_line if line.startswith(key) else line for line in local.splitlines()]
+    _write_dotenv(app, "\n".join(lines) + "\n")
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert expected in config["detail"], config
+    assert "secret-value" not in config["detail"].lower()
+
+
+def test_doctor_dotenv_interpolation_matches_the_app(tmp_path: Path):
+    """${VAR} references across .env.shared/.env resolve like app/config.py.
+
+    The app loads .env.shared then .env with interpolation on; a placeholder
+    for a key defined in the shared file is valid there and must be valid
+    here. ${VAR:-default} must work too.
+    """
+    app = _make_fake_app(tmp_path)
+    local = _healthy_dotenv().replace(
+        f"AUTH_SIGNING_PUBKEY={_VALID_PUBKEY}", "AUTH_SIGNING_PUBKEY=${SHARED_KEY}"
+    )
+    _write_dotenv(app, local, shared=f"SHARED_KEY={_VALID_PUBKEY}\n")
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    checks = _checks_by_name(report)
+    assert checks["configuration"]["status"] == "ok", checks["configuration"]
+
+    local = _healthy_dotenv().replace(
+        f"AUTH_SIGNING_PUBKEY={_VALID_PUBKEY}",
+        "AUTH_SIGNING_PUBKEY=${MISSING:-" + _VALID_PUBKEY + "}",
+    )
+    _write_dotenv(app, local)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    assert _checks_by_name(report)["configuration"]["status"] == "ok"
+
+
+def test_doctor_dotenv_local_overrides_shared(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_dotenv(app, _healthy_dotenv(), shared="AUTH_SIGNING_PUBKEY=garbage!!\n")
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    assert _checks_by_name(report)["configuration"]["status"] == "ok"
+
+
+def test_doctor_env_shared_permissions_checked(tmp_path: Path):
+    """A group-readable .env.shared exposes secrets while .env looks clean."""
+    app = _make_fake_app(tmp_path)
+    shared = app / ".env.shared"
+    shared.write_text("AWS_SECRET_ACCESS_KEY=shared-secret\n")
+    shared.chmod(0o644)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    checks = _checks_by_name(report)
+    assert checks["env-permissions"]["status"] == "ok", checks["env-permissions"]
+    shared_check = checks["env-shared-permissions"]
+    assert shared_check["status"] == "fail", shared_check
+    assert "chmod 600" in shared_check["detail"], shared_check
+
+
+def test_doctor_env_symlink_is_not_followed(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    target = app / "real.env"
+    target.write_text(_healthy_dotenv())
+    (app / ".env").unlink()
+    (app / ".env").symlink_to(target)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    perms = _checks_by_name(report)["env-permissions"]
+    assert perms["status"] == "fail", perms
+    assert "symlink" in perms["detail"], perms
 
 
 def _make_clone_behind_origin(tmp_path: Path) -> tuple[Path, Path]:
@@ -649,10 +808,12 @@ def _git(cwd: Path, *args: str) -> None:
 
 
 def test_doctor_branch_warns_when_behind_origin(tmp_path: Path):
-    """Without a fetch, a stale remote-tracking ref reports 'up to date'.
+    """A stale local origin/main must not read as current (Codex #28 d).
 
-    Push commits to origin AFTER cloning, then demand the branch check
-    fetches first and counts HEAD..origin/main — it must WARN, not pass.
+    The check compares HEAD against the LIVE remote (git ls-remote) — no
+    fetch, which would mutate the checkout from a read-only run. When the
+    local tracking ref is itself stale the report says 'behind' without
+    inventing a commit count.
     """
     origin, clone = _make_clone_behind_origin(tmp_path)
     seed = tmp_path / "seed"
@@ -666,15 +827,51 @@ def test_doctor_branch_warns_when_behind_origin(tmp_path: Path):
     branch = _checks_by_name(report)["branch"]
     assert branch["status"] == "warn", branch
     assert branch["detail"] == (
-        "checkout is 1 commit(s) behind origin/main — run explorer update"
+        "checkout is behind origin/main — run explorer update"
     ), branch
 
 
-def test_doctor_branch_honest_when_fetch_fails(tmp_path: Path):
+def test_doctor_branch_up_to_date_against_live_remote(tmp_path: Path):
+    """HEAD == live remote sha passes — only ls-remote can prove that."""
+    _, clone = _make_clone_behind_origin(tmp_path)
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "ok", branch
+    assert branch["detail"] == "on main, up to date with origin", branch
+
+
+def test_doctor_branch_check_never_mutates_the_checkout(tmp_path: Path):
+    """Read-only means read-only: no FETCH_HEAD, no ref movement (lead req).
+
+    ls-remote contacts the remote without writing anything; assert both the
+    tracking ref and FETCH_HEAD are untouched after a full doctor run.
+    """
+    _, clone = _make_clone_behind_origin(tmp_path)
+    before = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "origin/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert not (clone / ".git" / "FETCH_HEAD").exists()
+    _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    after = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "origin/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert after == before, "doctor moved origin/main"
+    assert not (clone / ".git" / "FETCH_HEAD").exists(), (
+        "doctor wrote FETCH_HEAD — a fetch leaked into the read-only path"
+    )
+
+
+def test_doctor_branch_honest_when_remote_unreachable(tmp_path: Path):
     """An unreachable origin must never read as 'up to date'.
 
-    Point the clone's origin at a path that does not exist: the fetch fails,
-    and the check has to say it could not compare — not claim current.
+    Point the clone's origin at a path that does not exist: ls-remote
+    fails, and the check has to say it could not compare — not claim current.
     """
     _, clone = _make_clone_behind_origin(tmp_path)
     _git(clone, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
@@ -822,3 +1019,162 @@ def test_doctor_reboot_unknown_when_rpm_fails(tmp_path: Path):
     reboot = _checks_by_name(report)["reboot"]
     assert reboot["status"] == "warn", reboot
     assert reboot["detail"] == REBOOT_UNKNOWN, reboot
+
+
+STUB_NEEDS_RESTARTING_ERRORS = "#!/bin/bash\nexit 2\n"
+
+STUB_SYSTEMCTL_ACTIVE_BUT_DISABLED = """#!/bin/bash
+# stub systemctl: the service runs but was disabled; timer absent
+cmd="${1:-}"
+case "$cmd" in
+  is-active) exit 0 ;;
+  is-enabled) exit 1 ;;
+  cat) exit 1 ;;
+  show) echo 0; exit 0 ;;
+esac
+exit 1
+"""
+
+
+def test_doctor_reboot_tier_error_is_unknown_not_ok(tmp_path: Path):
+    """Codex #28 k: an errored tier (exit 2, or run()'s 127) is not a 'no'.
+
+    Only a successful zero exit may produce OK; everything else leaves the
+    tier unable to answer, and with no answering tier the verdict is the
+    unknown advisory.
+    """
+    path = _hermetic_path(tmp_path, {"needs-restarting": STUB_NEEDS_RESTARTING_ERRORS})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_UNKNOWN, reboot
+
+
+def test_doctor_service_active_but_disabled_warns(tmp_path: Path):
+    """Codex #28 m: active only means up; enabled means it survives reboot."""
+    path = _hermetic_path(tmp_path, {"systemctl": STUB_SYSTEMCTL_ACTIVE_BUT_DISABLED})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    assert checks["service"]["status"] == "ok", checks["service"]
+    enabled = checks["service-enabled"]
+    assert enabled["status"] == "warn", enabled
+    assert "DISABLED" in enabled["detail"], enabled
+
+
+def test_doctor_operator_cli_missing_is_a_failure(tmp_path: Path):
+    """Codex #28 j: a deleted /usr/local/bin/explorer must fail, not vanish.
+
+    The fixture app ships no deploy/explorer-cli, so the check must report
+    the missing side regardless of whether the real CLI exists on the host.
+    """
+    app = _make_fake_app(tmp_path)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    cli = _checks_by_name(report)["operator-cli"]
+    assert cli["status"] == "fail", cli
+    assert "missing" in cli["detail"], cli
+
+
+def _caddy_fixture(tmp_path: Path, import_line: str, block_name: str) -> Path:
+    """A scratch /etc/caddy layout with an installed Explorer site block."""
+    root = tmp_path / "caddy"
+    confd = root / "conf.d"
+    confd.mkdir(parents=True)
+    (root / "Caddyfile").write_text(import_line + "\n")
+    (confd / block_name).write_text(
+        "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via\n"
+        "# `import conf.d/*.caddy`\n"
+        "explorer.example {\n"
+        "\treverse_proxy 127.0.0.1:8080\n"
+        "}\n"
+    )
+    return root / "Caddyfile"
+
+
+def test_caddy_probe_follows_installed_import_path(tmp_path: Path):
+    """Codex #28 a: find the block under whatever glob the Caddyfile loads."""
+    doctor = _load_doctor()
+    caddyfile = _caddy_fixture(tmp_path, "import conf.d/*.caddy", "explorer.caddy")
+    snippet, host = doctor.caddy_site_host(str(caddyfile))
+    assert snippet == str(tmp_path / "caddy/conf.d/explorer.caddy"), snippet
+    assert host == "explorer.example", host
+
+
+def test_caddy_probe_synthesizes_name_for_unconventional_glob(tmp_path: Path):
+    """sites-enabled/*.caddy must resolve to sites-enabled/explorer.caddy."""
+    doctor = _load_doctor()
+    root = tmp_path / "caddy"
+    sites = root / "sites-enabled"
+    sites.mkdir(parents=True)
+    (root / "Caddyfile").write_text("import sites-enabled/*.caddy\n")
+    (sites / "explorer.caddy").write_text(
+        "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via\n"
+        "explorer.example {\n}\n"
+    )
+    snippet, host = doctor.caddy_site_host(str(root / "Caddyfile"))
+    assert snippet == str(sites / "explorer.caddy"), snippet
+    assert host == "explorer.example", host
+
+
+def test_caddy_probe_returns_none_without_installed_block(tmp_path: Path):
+    doctor = _load_doctor()
+    caddyfile = _caddy_fixture(tmp_path, "import conf.d/*.caddy", "other.caddy")
+    assert doctor.caddy_site_host(str(caddyfile)) == (None, None)
+
+
+def test_doctor_missing_caddy_binary_fails(tmp_path: Path):
+    """Codex #28 b: an installed site block with no caddy binary is a FAIL.
+
+    The loopback readiness can pass while the public endpoint is dead — a
+    missing binary must not silently skip the Caddy checks.
+    """
+    caddyfile = _caddy_fixture(tmp_path, "import conf.d/*.caddy", "explorer.caddy")
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(
+        tmp_path,
+        tmp_path / "app",
+        tmp_path / "src",
+        path=path,
+        extra_env={"EXPLORER_CADDYFILE": str(caddyfile)},
+    )
+    caddy = _checks_by_name(report)["caddy"]
+    assert caddy["status"] == "fail", caddy
+    assert "caddy binary is missing" in caddy["detail"], caddy
+
+
+def test_doctor_tls_probe_verifies_hostname_and_chain():
+    """Codex #28 e + lead TLS rule: wrong-host/untrusted certs must fail."""
+    text = (SCRIPTS / "doctor.py").read_text()
+    assert '"-verify_hostname"' in text, "s_client lost hostname verification"
+    assert '"-verify_return_error"' in text, "s_client lost chain verification"
+
+
+def _load_doctor():
+    spec = importlib.util.spec_from_file_location(
+        "explorer_doctor", SCRIPTS / "doctor.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_operator_cli_doctor_dispatch_is_sudo_env_safe():
+    """Codex #28 c+i: forward the source path through sudo, survive .git loss."""
+    text = (REPO_ROOT / "deploy/explorer-cli").read_text()
+    assert "sudo env EXPLORER_SRC_DIR=" in text, (
+        "doctor dispatch loses a custom EXPLORER_SRC_DIR across sudo's env reset"
+    )
+    assert '"$APP_DIR/scripts/doctor.sh"' in text, (
+        "doctor dispatch has no fallback for a damaged source checkout"
+    )
+
+
+def test_install_sh_cleans_partial_clone():
+    """Codex #28 h: an interrupted clone must not poison every retry."""
+    text = (REPO_ROOT / "install.sh").read_text()
+    assert "mktemp -d" in text, "install.sh no longer clones to a temp dir"
+    assert "trap" in text and 'rm -rf "$tmp"' in text, (
+        "install.sh no longer removes a partial clone on failure"
+    )
+    assert 'mv "$tmp/repo" "$src"' in text, (
+        "install.sh does not move the finished clone into place"
+    )

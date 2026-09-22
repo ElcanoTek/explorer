@@ -18,7 +18,17 @@ main() {
     exit 1
   fi
   dnf install -y git ca-certificates
-  git clone --branch main --single-branch https://github.com/ElcanoTek/explorer.git "$src"
+  # Clone beside the target (same filesystem, so the final mv is atomic)
+  # and clean the partial clone up on failure: otherwise an interrupted
+  # first run leaves $src behind and every retry stops at the existence
+  # check, recommending an `explorer update` that was never installed.
+  local tmp
+  tmp="$(mktemp -d "$(dirname -- "$src")/.explorer-install.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+  git clone --branch main --single-branch https://github.com/ElcanoTek/explorer.git "$tmp/repo"
+  mv "$tmp/repo" "$src"
+  rmdir "$tmp"
+  trap - EXIT
   exec bash "$src/scripts/bootstrap.sh"
 }
 main "$@"
