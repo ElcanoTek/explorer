@@ -264,27 +264,48 @@ def diagnose(app, src, user):
     # never execute it (scripts/lib/layout.sh keeps only the venv writable).
     # pyvenv.cfg carries the version; uv pip check below reads metadata
     # without executing anything from the venv.
-    version = ""
-    try:
-        for line in (app / ".venv/pyvenv.cfg").read_text().splitlines():
-            if line.strip().startswith("version ="):
-                version = line.split("=", 1)[1].strip()
-                break
-    except OSError:
-        version = ""
-    good = False
-    if version:
+    if not python.exists():
+        add("python", False, "", "venv missing — run explorer rebuild")
+        add("dependencies", False, "", "venv missing — run explorer rebuild")
+    else:
+        # Parse pyvenv.cfg as key=value lines. uv writes version_info where
+        # stdlib venv writes version — accept either, exact key match, and
+        # ignore everything else in the file.
+        version_text = None
         try:
-            good = tuple(int(p) for p in version.split(".")[:2]) >= (3, 11)
-        except ValueError:
-            good = False
-    add(
-        "python",
-        good,
-        f"venv Python {version}",
-        "Need Python >= 3.11 in the venv; run explorer rebuild",
-    )
-    if good:
+            for line in (app / ".venv/pyvenv.cfg").read_text().splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip() in ("version", "version_info"):
+                    version_text = value.strip()
+                    break
+        except OSError:
+            version_text = None
+        version = None
+        if version_text:
+            try:
+                version = tuple(int(p) for p in version_text.split(".")[:2])
+            except ValueError:
+                version = None
+        if version is None:
+            # Unreadable version is not a broken venv: the interpreter
+            # exists, only the metadata could not be parsed. Warn, never
+            # fail, and do not gate the dependencies check on it.
+            add(
+                "python",
+                False,
+                "",
+                "could not read venv Python version",
+                warning=True,
+            )
+        elif version >= (3, 11):
+            add("python", True, f"venv Python {version[0]}.{version[1]}")
+        else:
+            add(
+                "python",
+                False,
+                "",
+                "Need Python >= 3.11 in the venv; run explorer rebuild",
+            )
         code, _ = run("uv", "pip", "check", "--python", str(python), timeout=60)
         add(
             "dependencies",
@@ -292,8 +313,6 @@ def diagnose(app, src, user):
             "locked dependencies consistent",
             "Run explorer rebuild; Python dependencies are broken",
         )
-    else:
-        add("dependencies", False, "", "venv missing; run explorer rebuild")
     # Permissions on every dotenv the app loads (lstat: never through a
     # symlink — layout.sh requires a regular file, one link, owner-only).
     texts = {}

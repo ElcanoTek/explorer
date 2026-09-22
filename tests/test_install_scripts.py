@@ -524,11 +524,14 @@ def _make_fake_app(tmp_path: Path) -> Path:
 
     pyvenv.cfg stands in for the venv — the python check reads it because a
     root-run doctor must never execute the service-writable venv
-    interpreter. Each test rewrites .env (and optionally .env.shared) with
-    real dotenv text, so parsing is exercised end to end.
+    interpreter. .venv/bin/python is a stub: doctor only checks that it
+    exists, never runs it. Each test rewrites .env (and optionally
+    .env.shared) with real dotenv text, so parsing is exercised end to end.
     """
     app = tmp_path / "app"
-    (app / ".venv").mkdir(parents=True)
+    (app / ".venv/bin").mkdir(parents=True)
+    (app / ".venv/bin/python").write_text("#!/bin/sh\nexit 0\n")
+    (app / ".venv/bin/python").chmod(0o755)
     (app / ".venv/pyvenv.cfg").write_text(
         "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.9\n"
     )
@@ -567,6 +570,90 @@ def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
     assert aws["status"] == "ok", aws
     assert aws["detail"] == "static AWS credentials configured"
     assert checks["python"]["status"] == "ok", checks["python"]
+
+
+UV_STYLE_PYVENV_CFG = """home = /usr/bin
+implementation = CPython
+uv = 0.11.18
+version_info = 3.14.5
+include-system-site-packages = false
+"""
+
+STUB_UV_OK = "#!/bin/bash\nexit 0\n"
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        UV_STYLE_PYVENV_CFG,
+        "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.9\n",
+    ],
+    ids=["uv-style version_info", "stdlib version"],
+)
+def test_doctor_pyvenv_cfg_version_keys_accepted(tmp_path: Path, cfg: str):
+    """Real-box bug: uv writes version_info, stdlib venv writes version.
+
+    Doctor must accept either key (exact match, other keys ignored) and
+    report the venv healthy. The uv stub proves 'uv pip check' ran against
+    the existing interpreter.
+    """
+    app = _make_fake_app(tmp_path)
+    (app / ".venv/pyvenv.cfg").write_text(cfg)
+    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    assert checks["python"]["status"] == "ok", checks["python"]
+    assert checks["python"]["detail"].startswith("venv Python 3."), checks["python"]
+    assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        "home = /usr/bin\n",  # no version key at all
+        "home = /usr/bin\nversion_info = not.a.version\n",  # unparseable
+    ],
+    ids=["missing key", "unparseable value"],
+)
+def test_doctor_unreadable_venv_version_warns_not_fails(tmp_path: Path, cfg: str):
+    """A venv whose version metadata can't be read is not a missing venv.
+
+    The interpreter exists, so: python check is a WARN (not a FAIL), and
+    'uv pip check' still runs against it (the uv stub proves it) instead of
+    being gated on the version parse.
+    """
+    app = _make_fake_app(tmp_path)
+    (app / ".venv/pyvenv.cfg").write_text(cfg)
+    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    python = checks["python"]
+    assert python["status"] == "warn", python
+    assert python["detail"] == "could not read venv Python version", python
+    assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
+
+
+def test_doctor_venv_python_floor_still_enforced(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    (app / ".venv/pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.10.9\n")
+    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    python = checks["python"]
+    assert python["status"] == "fail", python
+    assert "Need Python >= 3.11" in python["detail"], python
+    assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
+
+
+def test_doctor_missing_venv_is_the_only_venv_missing_failure(tmp_path: Path):
+    """No .venv/bin/python at all: python AND dependencies FAIL as missing."""
+    app = tmp_path / "app"
+    app.mkdir()
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    checks = _checks_by_name(report)
+    assert checks["python"]["status"] == "fail", checks["python"]
+    assert "venv missing" in checks["python"]["detail"], checks["python"]
+    assert checks["dependencies"]["status"] == "fail", checks["dependencies"]
 
 
 def test_doctor_short_session_secret_reported_once(tmp_path: Path):
