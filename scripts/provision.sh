@@ -21,6 +21,13 @@
 
 set -euo pipefail
 
+# Every file this script writes carries secrets or sits beside them: the
+# decrypted bundle, the passphrase cache, and the rewritten .env, which is
+# built as a temporary copy and moved into place. Born-private is the only
+# safe order; a chmod after the fact leaves a window, and leaves the file
+# readable for good if the run dies in between.
+umask 077
+
 if [[ ! -t 0 && -t 1 ]]; then exec </dev/tty; fi
 
 APP_DIR="${APP_DIR:-/opt/explorer}"
@@ -133,7 +140,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   if id -u "$APP_USER" >/dev/null 2>&1; then
     chown "$APP_USER:$APP_USER" "$ENV_FILE"
   fi
-  chmod 0640 "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
   info "created empty $ENV_FILE — bootstrap.sh will fill in the rest"
 fi
 
@@ -179,7 +186,7 @@ managed_block+=("$MARKER_END")
   for l in "${managed_block[@]}"; do printf '%s\n' "$l"; done
 } >> "$ENV_FILE"
 
-chmod 0640 "$ENV_FILE"
+chmod 0600 "$ENV_FILE"
 if id -u "$APP_USER" >/dev/null 2>&1; then
   chown "$APP_USER:$APP_USER" "$ENV_FILE" 2>/dev/null || true
 fi

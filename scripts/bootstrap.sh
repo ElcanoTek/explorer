@@ -131,8 +131,13 @@ step "3/7  Building venv + installing Python deps via uv"
 # uv-only: the chat deploy lessons learned apply here too — pip on
 # modern Fedora hits PEP 668 and resolution-depth walls with these
 # transitive graphs. uv is in the Fedora repos.
-runuser -u "$APP_USER" -- uv venv "$APP_DIR/.venv" >/dev/null
-runuser -u "$APP_USER" -- uv pip install --python "$APP_DIR/.venv/bin/python" \
+# uv looks for a uv.toml in the working directory and every parent. The
+# installer is normally started from /root, which is mode 0550, so the service
+# user cannot even stat /root/uv.toml and uv fails the build with a permission
+# error instead of finding no config. Run it from the application directory,
+# with config discovery off so no stray uv.toml anywhere can change the build.
+runuser -u "$APP_USER" -- env -C "$APP_DIR" UV_NO_CONFIG=1 uv venv "$APP_DIR/.venv" >/dev/null
+runuser -u "$APP_USER" -- env -C "$APP_DIR" UV_NO_CONFIG=1 uv pip install --python "$APP_DIR/.venv/bin/python" \
   --reinstall -r "$APP_DIR/requirements.txt" \
   || die "uv pip install failed — service will not boot"
 ok "venv + deps ready at $APP_DIR/.venv"
@@ -238,7 +243,7 @@ EOF
 chown "$APP_USER:$APP_USER" "$ENV_FILE"
 # Owner-only: this file carries the session secret, the central-auth client
 # secret, and any AWS keys.
-chmod 0600 "$ENV_FILE"
+chmod 0600 "$ENV_FILE"  # owner only: it holds the auth client secret and the AWS keys
 ok "env seeded at $ENV_FILE"
 
 # ── step 4b: optional encrypted config bundle ───────────────────────────
