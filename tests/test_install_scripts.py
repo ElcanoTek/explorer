@@ -1487,7 +1487,18 @@ def test_doctor_branch_ahead_is_never_called_behind(tmp_path: Path):
     _, clone = _make_clone_behind_origin(tmp_path)
     (clone / "local.txt").write_text("local work\n")
     _git(clone, "add", ".")
-    _git(clone, "commit", "-m", "local commit")
+    # CI runners have no global git identity; the clone doesn't inherit
+    # the seed's local user.* config.
+    _git(
+        clone,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "-m",
+        "local commit",
+    )
 
     report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
     branch = _checks_by_name(report)["branch"]
@@ -1504,7 +1515,18 @@ def test_doctor_branch_diverged_gets_neutral_warning(tmp_path: Path):
     _, clone = _make_clone_behind_origin(tmp_path)
     (clone / "local.txt").write_text("local work\n")
     _git(clone, "add", ".")
-    _git(clone, "commit", "-m", "local commit")
+    # CI runners have no global git identity; the clone doesn't inherit
+    # the seed's local user.* config.
+    _git(
+        clone,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "-m",
+        "local commit",
+    )
     seed = tmp_path / "seed"
     (seed / "file.txt").write_text("one\ntwo\n")
     _git(seed, "add", ".")
