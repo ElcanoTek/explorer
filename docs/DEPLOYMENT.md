@@ -127,12 +127,13 @@ present, bootstrap silently skips this step.
 
 | Path | Owner | What it is |
 |---|---|---|
-| `/opt/explorer-src` | root | Git checkout. `explorer update` fetches here. |
-| `/opt/explorer` | `explorer:explorer` | The running install (rsynced from the checkout, minus `.git`). |
-| `/opt/explorer/.venv` | `explorer:explorer` | Virtualenv built by `uv`. |
-| `/opt/explorer/.venv.old` | `explorer:explorer` | Previous venv, kept for one successful update cycle as a rollback window. |
+| `/opt/explorer-src` | `root:root`, not group/other-writable | Trusted Git checkout. `explorer update` fetches here. Root refuses symlinks or non-root-owned content before running its scripts. |
+| `/opt/explorer` | `root:root`, `0755` | Running source tree. Code is readable by the service but not writable by it. |
+| `/opt/explorer/.explorer-revision` | `root:root`, `0644` | Commit installed in the running tree; prevents a rolled-back install being mistaken for current. |
+| `/opt/explorer/.venv` | `explorer:explorer` | Virtualenv built by `uv` as the service account. Root never installs privileged files from it. |
 | `/opt/explorer/.env` | `explorer:explorer`, `0600` | Configuration and secrets. Never overwritten by an update. |
 | `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Writable scratch space for attachments in flight. |
+| `/var/cache/explorer-build` | `explorer:explorer`, `0700` | Home and `uv` cache used only for dependency builds. |
 | `/var/lib/explorer/access.db` | `explorer:explorer`, `0600` | Central-mode email access list and app-scoped session hashes. Contains no passwords. |
 | `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
 | `/etc/tmpfiles.d/explorer.conf` | root | Creates the attachment dir on boot. |
@@ -479,27 +480,34 @@ sudo explorer update                      # shows incoming commits, asks to conf
 sudo EXPLORER_UPDATE_YES=1 explorer update  # unattended
 ```
 
-`scripts/update.sh` is a **staged** update — the live service keeps serving
-on the old revision if the build fails:
+`scripts/update.sh` is a **staged, automatically rolled-back** update. It
+first verifies that `/opt/explorer-src`, all of its ancestors and every file
+inside it are root-owned, not group/other-writable and symlink-free. Do not
+run bootstrap, update or provision from a checkout writable by the service
+account.
 
 1. `git fetch` in `/opt/explorer-src`, resolve the target branch (following
-   the attached branch; recovering or defaulting to `origin/HEAD` if HEAD is
-   detached), print the incoming commits, and confirm. Fast-forward only — a
+   the attached branch or defaulting to `origin/HEAD` if HEAD is detached),
+   print the incoming commits, and confirm. Fast-forward only — a
    diverged branch aborts rather than merging. HEAD is never detached.
-2. If this update changed `update.sh` itself, re-exec the new copy in
-   rebuild-only mode, because the running shell still holds the old inode.
-3. In Elcano mode, verify `AUTH_SIGNING_PUBKEY` is set in `.env.shared` or
-   `.env`, offering to paste it if not. Central mode skips this check.
-4. Build a fresh venv in `/opt/explorer.staging.XXXXXX` (deliberately beside
+2. If the update machinery changed, re-verify the checkout and re-exec its
+   new copy in rebuild-only mode, because the running shell holds the old
+   inode.
+3. Parse `.env.shared` and `.env` as allow-listed data (never shell source)
+   and verify `AUTH_SIGNING_PUBKEY` is present.
+4. Copy root-owned source into `/opt/.explorer-build.XXXXXX` and build only
+   its `.venv` as `explorer` (deliberately beside
    `/opt/explorer`, not in `/tmp`: a venv built under `/tmp` keeps its
    SELinux `tmp_t` label after `mv` and systemd refuses to exec it with
    `203/EXEC`). A failed `uv pip install` aborts here, untouched live install.
-5. Stop the service, rsync the staged tree in (preserving `.env`, `.tmp`,
-   `.git`), move the old `.venv` aside to `.venv.old`, move the new one into
-   place, reinstall the units, CLI and motd, `restorecon`, `daemon-reload`,
-   start.
-6. Health check `http://127.0.0.1:8080/` for up to 10s. On success, delete
-   `.venv.old`. On failure, print the rollback command and exit non-zero.
+5. Snapshot the installed source, venv, units, CLI, tmpfiles rule and MOTD in
+   a root-private directory. Stop the service, sync source directly from the
+   trusted checkout as `root:root`, move in the new venv, and install every
+   privileged file directly from that same checkout.
+6. Health check `http://127.0.0.1:8080/health` for up to 10s and verify the
+   ownership layout. Any failure after the swap restores the snapshot and
+   restarts the previous version; an incomplete restore preserves the path
+   to the root-only backup in the error output.
 
 ### Rollback
 
@@ -512,16 +520,6 @@ cd /opt/explorer-src
 git log --oneline -5
 sudo git checkout -B rollback <previous-sha>
 sudo explorer rebuild
-```
-
-If the venv itself is the problem and `.venv.old` still exists — it survives
-until the next *successful* health check:
-
-```bash
-sudo systemctl stop explorer.service
-sudo rm -rf /opt/explorer/.venv
-sudo mv /opt/explorer/.venv.old /opt/explorer/.venv
-sudo systemctl start explorer.service
 ```
 
 `/opt/explorer/.env` is excluded from every rsync, so no update or rollback
@@ -723,22 +721,24 @@ On a non-dnf distribution, reproduce what bootstrap does:
 ```bash
 sudo useradd --system --home-dir /opt/explorer --shell /usr/sbin/nologin explorer
 sudo git clone https://github.com/ElcanoTek/explorer.git /opt/explorer-src
-sudo rsync -a --exclude='/.git' /opt/explorer-src/ /opt/explorer/
-sudo mkdir -p /opt/explorer/.tmp/email_attachments
+sudo install -d -o root -g root -m 0755 /opt/explorer
+sudo rsync -a --chown=root:root --chmod=go-w --exclude='/.git' /opt/explorer-src/ /opt/explorer/
+sudo install -d -o explorer -g explorer -m 0750 /opt/explorer/.tmp/email_attachments
 sudo install -d -m 0700 -o explorer -g explorer /var/lib/explorer
-sudo chown -R explorer:explorer /opt/explorer
 
-sudo -u explorer python3 -m venv /opt/explorer/.venv
-sudo -u explorer /opt/explorer/.venv/bin/pip install -r /opt/explorer/requirements.txt
+sudo install -d -o explorer -g explorer -m 0755 /opt/explorer/.venv
+sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv venv /opt/explorer/.venv
+sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv pip install \
+  --python /opt/explorer/.venv/bin/python -r /opt/explorer/requirements.txt
 
 sudo install -o explorer -g explorer -m 0600 /dev/null /opt/explorer/.env
 sudo "$EDITOR" /opt/explorer/.env          # see .env.example
 
-sudo install -m 0644 /opt/explorer/deploy/systemd/explorer.service /etc/systemd/system/
-sudo install -m 0644 /opt/explorer/deploy/systemd/explorer-attachment-cleanup.service /etc/systemd/system/
-sudo install -m 0644 /opt/explorer/deploy/systemd/explorer-attachment-cleanup.timer /etc/systemd/system/
-sudo install -m 0644 /opt/explorer/deploy/systemd/explorer.tmpfiles.conf /etc/tmpfiles.d/explorer.conf
-sudo install -m 0755 /opt/explorer/deploy/explorer-cli /usr/local/bin/explorer
+sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer.service /etc/systemd/system/
+sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer-attachment-cleanup.service /etc/systemd/system/
+sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer-attachment-cleanup.timer /etc/systemd/system/
+sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer.tmpfiles.conf /etc/tmpfiles.d/explorer.conf
+sudo install -m 0755 /opt/explorer-src/deploy/explorer-cli /usr/local/bin/explorer
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now explorer.service explorer-attachment-cleanup.timer
