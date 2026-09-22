@@ -485,7 +485,7 @@ else
   say "  URL         ${c_bold}http://127.0.0.1:8080${c_reset}  (front with your reverse proxy for HTTPS)"
 fi
 say "  Logs        ${c_dim}explorer logs${c_reset}"
-say "  CLI         ${c_dim}explorer start|stop|restart|status|update|env|tls|access${c_reset}"
+say "  CLI         ${c_dim}explorer start|stop|restart|status|update|doctor|env|tls|access${c_reset}"
 say
 if [[ "$EXPLORER_AUTH_MODE" == "central" ]]; then
   say "  Sign-in     ${c_dim}central auth + app-scoped Explorer session (${EXPLORER_SESSION_IDLE_SECONDS}s idle, ${EXPLORER_SESSION_ABSOLUTE_SECONDS}s absolute)${c_reset}"

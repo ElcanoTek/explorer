@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -352,3 +353,472 @@ def test_tls_failure_is_fatal():
     assert "explorer_caddy_adapted_has_site" in text, (
         "bootstrap.sh does not confirm the site block is actually loaded"
     )
+
+
+REPO_ROOT = SCRIPTS.parent
+
+
+def test_install_sh_is_a_thin_clone_entrypoint():
+    """The public one-liner downloads and pipes this to root bash.
+
+    Same contract as the other Elcano services: parse-guarded function,
+    root + dnf required, refuses to clobber an existing checkout, clones
+    main and hands off to bootstrap.sh.
+    """
+    text = (REPO_ROOT / "install.sh").read_text()
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    assert "set -euo pipefail" in text
+    assert (
+        "git clone --branch main --single-branch https://github.com/ElcanoTek/explorer.git"
+        in text
+    )
+    assert 'exec bash "$src/scripts/bootstrap.sh"' in text
+    assert "command -v dnf" in text, "install.sh lost its Fedora/RHEL detection"
+    assert "[[ $EUID == 0 ]]" in text, "install.sh no longer demands root"
+    assert "already exists. Use explorer update" in text, (
+        "install.sh would overwrite an existing /opt/explorer-src"
+    )
+
+
+def test_doctor_wrapper_dispatches_to_sibling_doctor_py():
+    """scripts/doctor.sh is a trampoline so `explorer doctor` has one home.
+
+    It must resolve doctor.py next to itself (not via PATH or cwd), so the
+    command behaves identically from any directory.
+    """
+    text = (SCRIPTS / "doctor.sh").read_text()
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    assert 'exec python3 "$(dirname "${BASH_SOURCE[0]}")/doctor.py" "$@"' in text, (
+        "doctor.sh no longer execs the sibling doctor.py"
+    )
+
+
+def test_doctor_py_never_imports_the_app():
+    """doctor.py must run on a broken box — importing app/ would crash it.
+
+    app/config.py reads the environment at import time, and the whole point
+    of doctor is diagnosing a box where that environment is wrong. Secrets
+    are parsed with dotenv and only key names/booleans ever leave the probe.
+    """
+    text = (SCRIPTS / "doctor.py").read_text()
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    for banned in ("import app", "from app", "import main", "uvicorn"):
+        assert banned not in text, f"doctor.py imports the application: {banned}"
+    assert "dotenv_values" in text, "doctor.py no longer parses .env with dotenv"
+
+
+def test_operator_cli_dispatches_doctor():
+    """`explorer doctor` must reach scripts/doctor.sh in the source checkout."""
+    text = (REPO_ROOT / "deploy/explorer-cli").read_text()
+    assert "doctor)" in text
+    assert 'exec sudo bash "$SRC_DIR/scripts/doctor.sh" "$@"' in text
+    assert "doctor [--json] [--strict]" in text
+
+
+def test_doctor_py_json_smoke_on_a_bare_box(tmp_path: Path):
+    """doctor.py --json must emit a well-formed report and exit 1 when broken.
+
+    Pointed at an empty APP_DIR/SRC_DIR (no venv, no units, no git) every
+    probe degrades to a check line instead of an exception — that is the
+    contract a real broken box relies on.
+    """
+    for flag in ("--help",):
+        result = subprocess.run(
+            ["python3", str(SCRIPTS / "doctor.py"), flag],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    env = {
+        "APP_DIR": str(tmp_path / "app"),
+        "EXPLORER_SRC_DIR": str(tmp_path / "src"),
+        "APP_USER": "explorer",
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        ["python3", str(SCRIPTS / "doctor.py"), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    checks = report["checks"]
+    assert len(checks) > 5
+    for check in checks:
+        assert set(check) == {"name", "status", "detail"}, check
+        assert check["status"] in ("ok", "warn", "fail"), check
+
+
+def _run_doctor_json(
+    tmp_path: Path, app_dir: Path, src_dir: Path, path: str = "/usr/bin:/bin"
+) -> dict:
+    """Run doctor.py --json against scratch dirs with a caller-chosen PATH.
+
+    The default keeps the host tools (fast, degrades offline); reboot-chain
+    tests pass a stub-only PATH so they decide which tier runs.
+    """
+    env = {
+        "APP_DIR": str(app_dir),
+        "EXPLORER_SRC_DIR": str(src_dir),
+        "APP_USER": "explorer",
+        "PATH": path,
+    }
+    result = subprocess.run(
+        ["python3", str(SCRIPTS / "doctor.py"), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout
+    return json.loads(result.stdout)
+
+
+def _checks_by_name(report: dict) -> dict:
+    return {check["name"]: check for check in report["checks"]}
+
+
+def _make_fake_app(tmp_path: Path) -> Path:
+    """A scratch APP_DIR whose venv python impersonates the env probe.
+
+    The stub answers --version like an interpreter and the -c dotenv probe
+    by echoing .probe.json from the app dir, so each test scripts the exact
+    configuration shape it wants (fully-configured static AWS credentials by
+    default).
+    """
+    app = tmp_path / "app"
+    venv_python = app / ".venv/bin/python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1:2] == ["--version"]:
+    print("Python 3.11.9")
+else:
+    print(json.dumps(json.load(open(".probe.json"))))
+"""
+    )
+    venv_python.chmod(0o755)
+    (app / ".env").write_text("AWS_ACCESS_KEY_ID=...\nAWS_SECRET_ACCESS_KEY=...\n")
+    (app / ".env").chmod(0o600)
+    _write_probe(app, session_len=48)
+    return app
+
+
+def _write_probe(app: Path, **overrides) -> None:
+    """Script the env-probe report the fake venv python will echo back."""
+    probe = {
+        "missing": [],
+        "central_missing": [],
+        "key_ok": True,
+        "mode": "elcano",
+        "mode_ok": True,
+        "session_len": 48,
+        "s3_bucket": True,
+        "aws_key": True,
+        "aws_secret": True,
+    }
+    probe.update(overrides)
+    (app / ".probe.json").write_text(json.dumps(probe))
+
+
+def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
+    """The static-credentials OK line used to omit the remedy argument.
+
+    add() took remedy positionally, so a box with AWS keys set (a healthy
+    box!) crashed doctor with TypeError instead of getting a clean report.
+    """
+    app = _make_fake_app(tmp_path)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    aws = _checks_by_name(report)["aws-credentials"]
+    assert aws["status"] == "ok", aws
+    assert aws["detail"] == "static AWS credentials configured"
+
+
+def test_doctor_short_session_secret_reported_once(tmp_path: Path):
+    """The real-box case: pubkey fine, session secret 26 chars.
+
+    The old remedy always named BOTH keys, and the one fault failed the box
+    twice ('configuration' and 'session-secret'). Now configuration passes —
+    the secret is not its concern — and the single FAIL names the actual
+    length.
+    """
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, session_len=26)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    checks = _checks_by_name(report)
+    assert checks["configuration"]["status"] == "ok", checks["configuration"]
+    secret = checks["session-secret"]
+    assert secret["status"] == "fail", secret
+    assert "got 26 chars, need >= 32" in secret["detail"], secret
+    assert "SESSION_SECRET" not in checks["configuration"]["detail"]
+    names = [check["name"] for check in report["checks"]]
+    assert names.count("session-secret") == 1, names
+
+
+def test_doctor_configuration_remedy_names_missing_keys(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, missing=["AUTH_SIGNING_PUBKEY"], key_ok=False)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert config["detail"] == "missing: AUTH_SIGNING_PUBKEY", config
+    # a missing key is named once — not repeated as a shape problem
+    assert "32-byte" not in config["detail"]
+
+
+def test_doctor_configuration_remedy_names_bad_key_shape(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, key_ok=False)  # present, but not a 32-byte base64 key
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert (
+        config["detail"]
+        == "AUTH_SIGNING_PUBKEY is set but is not a 32-byte base64 Ed25519 key"
+    ), config
+
+
+def test_doctor_configuration_remedy_names_bad_mode_and_central_gap(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(
+        app,
+        mode="ldap",
+        mode_ok=False,
+        central_missing=["AUTH_ISSUER_URL", "AUTH_CLIENT_SECRET"],
+    )
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert config["detail"] == (
+        "missing: AUTH_ISSUER_URL, AUTH_CLIENT_SECRET; "
+        "EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got 'ldap')"
+    ), config
+
+
+def _make_clone_behind_origin(tmp_path: Path) -> tuple[Path, Path]:
+    """A local clone of a local origin, with N commits pushed after cloning."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(origin)],
+        capture_output=True,
+        check=True,
+    )
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    for cmd in (
+        ["git", "init", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(cmd, cwd=seed, capture_output=True, check=True)
+    (seed / "file.txt").write_text("one\n")
+    subprocess.run(["git", "add", "."], cwd=seed, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "one"], cwd=seed, capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(origin)],
+        cwd=seed,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", "main"], cwd=seed, capture_output=True, check=True
+    )
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", str(origin), str(clone)],
+        capture_output=True,
+        check=True,
+    )
+    return origin, clone
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, check=True)
+
+
+def test_doctor_branch_warns_when_behind_origin(tmp_path: Path):
+    """Without a fetch, a stale remote-tracking ref reports 'up to date'.
+
+    Push commits to origin AFTER cloning, then demand the branch check
+    fetches first and counts HEAD..origin/main — it must WARN, not pass.
+    """
+    origin, clone = _make_clone_behind_origin(tmp_path)
+    seed = tmp_path / "seed"
+    (seed / "file.txt").write_text("one\ntwo\nthree\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "two")
+    _git(seed, "push", "origin", "main")
+    assert origin.is_dir() and clone.is_dir()
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert branch["detail"] == (
+        "checkout is 1 commit(s) behind origin/main — run explorer update"
+    ), branch
+
+
+def test_doctor_branch_honest_when_fetch_fails(tmp_path: Path):
+    """An unreachable origin must never read as 'up to date'.
+
+    Point the clone's origin at a path that does not exist: the fetch fails,
+    and the check has to say it could not compare — not claim current.
+    """
+    _, clone = _make_clone_behind_origin(tmp_path)
+    _git(clone, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert "could not reach origin" in branch["detail"], branch
+    assert "up to date" not in branch["detail"], branch
+
+
+REBOOT_WARN = "kernel or core libraries updated — reboot the host when convenient"
+REBOOT_UNKNOWN = (
+    "could not determine reboot status — needs-restarting, dnf "
+    "needs-restarting and rpm/uname all unavailable or failed"
+)
+
+# The running kernel every stub below agrees on.
+RUNNING_KERNEL = "6.9.1-1.fc40.x86_64"
+
+STUB_NEEDS_REBOOT = "#!/bin/bash\nexit 1\n"
+STUB_DNF_REBOOT = """#!/bin/bash
+# stub dnf: check-update reports current; needs-restarting demands a reboot
+if [[ "${1:-}" == "needs-restarting" ]]; then exit 1; fi
+exit 0
+"""
+STUB_DNF_NO_REBOOT = """#!/bin/bash
+# stub dnf: every subcommand, including needs-restarting, says all is fine
+exit 0
+"""
+STUB_UNAME = f"#!/bin/bash\necho {RUNNING_KERNEL}\n"
+STUB_RPM_NEWER_KERNEL = """#!/bin/bash
+# rpm -q kernel --last, newest first; newer than the running kernel
+echo "kernel-6.10.0-1.fc40.x86_64    Wed 01 Jan 2025 12:00:00 AM UTC"
+echo "kernel-6.9.1-1.fc40.x86_64     Tue 01 Jan 2025 12:00:00 AM UTC"
+"""
+STUB_RPM_RUNNING_NEWEST = """#!/bin/bash
+# the running kernel is the newest installed
+echo "kernel-6.9.1-1.fc40.x86_64     Tue 01 Jan 2025 12:00:00 AM UTC"
+echo "kernel-6.8.0-1.fc40.x86_64     Mon 01 Jan 2025 12:00:00 AM UTC"
+"""
+STUB_RPM_FAILS = """#!/bin/bash
+echo "error: no package found" >&2
+exit 1
+"""
+
+
+def _hermetic_path(tmp_path: Path, stubs: dict[str, str]) -> str:
+    """A PATH holding only python3 plus the given command stubs.
+
+    Stubs are bash scripts with a /bin/bash shebang so they run without
+    /usr/bin on PATH. Everything else doctor probes for (needs-restarting,
+    dnf, uname, rpm, ...) is genuinely absent, so the fallback chain under
+    test is decided by which stubs exist — not by the host the suite runs on.
+    """
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    py_dir = tmp_path / "stub-py"
+    py_dir.mkdir(exist_ok=True)
+    (py_dir / "python3").symlink_to(Path(sys.executable).resolve())
+    for name, script in stubs.items():
+        path = bin_dir / name
+        path.write_text(script)
+        path.chmod(0o755)
+    return f"{bin_dir}:{py_dir}"
+
+
+def test_doctor_reboot_needs_restarting_tier_decides(tmp_path: Path):
+    """Tier 1: needs-restarting present -> its verdict feeds the chain."""
+    path = _hermetic_path(tmp_path, {"needs-restarting": STUB_NEEDS_REBOOT})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_f44_scenario_dnf_plugin_decides(tmp_path: Path):
+    """F44: needs-restarting binary absent, dnf plugin answers -> verdict.
+
+    This is the silent-skip scenario from the box review: the chain must
+    still produce a 'reboot' line (a verdict, not nothing) when only the
+    dnf plugin can speak.
+    """
+    path = _hermetic_path(tmp_path, {"dnf": STUB_DNF_REBOOT})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_line_always_present(tmp_path: Path):
+    """No tier installed at all: the check still emits its unknown advisory.
+
+    The lookup itself is the guard — a silently skipped 'reboot' check would
+    KeyError here, which is exactly the failure mode the box review found.
+    """
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_UNKNOWN, reboot
+
+
+def test_doctor_reboot_any_yes_wins_across_tiers(tmp_path: Path):
+    """The whole chain is walked: dnf says no but rpm proves a newer kernel.
+
+    Under the old short-circuit the first 'no' skipped the remaining tiers
+    and reported OK — a stale tier could outvote a current one. Now a single
+    'yes' wins.
+    """
+    path = _hermetic_path(
+        tmp_path,
+        {"dnf": STUB_DNF_NO_REBOOT, "uname": STUB_UNAME, "rpm": STUB_RPM_NEWER_KERNEL},
+    )
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_uname_rpm_tier_newer_kernel_installed(tmp_path: Path):
+    """Tier 3: both tools absent; uname runs an older kernel than rpm lists."""
+    path = _hermetic_path(tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_NEWER_KERNEL})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_uname_rpm_tier_running_newest(tmp_path: Path):
+    """Tier 3 the other way: running kernel is the newest installed -> OK."""
+    path = _hermetic_path(
+        tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_RUNNING_NEWEST}
+    )
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "ok", reboot
+    assert reboot["detail"] == "no reboot pending", reboot
+
+
+def test_doctor_reboot_unknown_when_rpm_fails(tmp_path: Path):
+    """Tier 3 with rpm erroring: honest advisory, no crash, no guessed verdict."""
+    path = _hermetic_path(tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_FAILS})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_UNKNOWN, reboot
