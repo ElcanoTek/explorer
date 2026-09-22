@@ -574,8 +574,9 @@ def test_doctor_short_session_secret_reported_once(tmp_path: Path):
 
     The old remedy always named BOTH keys, and the one fault failed the box
     twice ('configuration' and 'session-secret'). Now configuration passes —
-    the secret is not its concern — and the single FAIL names the actual
-    length.
+    the secret is not its concern — and the single FAIL names the fault.
+    Boolean phrasing only: no measurement derived from the secret value may
+    reach the report (CodeQL clear-text-logging-sensitive-data).
     """
     app = _make_fake_app(tmp_path)
     _write_dotenv(
@@ -586,7 +587,9 @@ def test_doctor_short_session_secret_reported_once(tmp_path: Path):
     assert checks["configuration"]["status"] == "ok", checks["configuration"]
     secret = checks["session-secret"]
     assert secret["status"] == "fail", secret
-    assert "got 26 chars, need >= 32" in secret["detail"], secret
+    assert "shorter than 32 bytes" in secret["detail"], secret
+    # 26 is the secret's length: it must appear nowhere in the output
+    assert not re.search(r"\b26\b", secret["detail"]), secret
     assert "SESSION_SECRET" not in checks["configuration"]["detail"]
     names = [check["name"] for check in report["checks"]]
     assert names.count("session-secret") == 1, names
@@ -657,7 +660,7 @@ def test_doctor_configuration_names_missing_central_keys(tmp_path: Path):
     [
         (
             "AUTH_CLIENT_SECRET=short",
-            "AUTH_CLIENT_SECRET must contain at least 32 bytes (got 5)",
+            "AUTH_CLIENT_SECRET is shorter than 32 bytes",
         ),
         (
             "AUTH_ISSUER_URL=http://auth.example.com",
@@ -704,6 +707,11 @@ def test_doctor_configuration_validates_central_values(
     assert config["status"] == "fail", config
     assert expected in config["detail"], config
     assert "secret-value" not in config["detail"].lower()
+    # No measurement of the bad value may leak into the report: for the
+    # 5-char secret case that means the digit 5 as a standalone word
+    # (the literal thresholds 32/256/128 are constants, not measurements).
+    if bad_line.startswith("AUTH_CLIENT_SECRET"):
+        assert not re.search(r"\b5\b", config["detail"]), config
 
 
 def test_doctor_dotenv_interpolation_matches_the_app(tmp_path: Path):

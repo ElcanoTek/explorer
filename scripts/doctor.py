@@ -400,14 +400,11 @@ def diagnose(app, src, user):
             )
         secret = merged.get("AUTH_CLIENT_SECRET") or ""
         if secret:
-            secret_bytes = len(secret.encode("utf-8"))
-            if secret_bytes < 32:
-                central_problems.append(
-                    f"AUTH_CLIENT_SECRET must contain at least 32 bytes (got {secret_bytes})"
-                )
+            if len(secret.encode("utf-8")) < 32:
+                central_problems.append("AUTH_CLIENT_SECRET is shorter than 32 bytes")
             elif len(secret) > 256 or ":" in secret:
                 central_problems.append(
-                    "AUTH_CLIENT_SECRET must be at most 256 characters without ':'"
+                    "AUTH_CLIENT_SECRET is longer than 256 characters or contains ':'"
                 )
     # Only the failures that are THIS check's to name: absent keys, a key
     # that is present but malformed, a bad auth mode, invalid central-mode
@@ -437,14 +434,13 @@ def diagnose(app, src, user):
         "; ".join(problems),
     )
     if dotenv_ok:
-        session_len = len(merged.get("EXPLORER_SESSION_SECRET") or "")
-        if session_len < 32:
+        if len(merged.get("EXPLORER_SESSION_SECRET") or "") < 32:
             add(
                 "session-secret",
                 False,
                 "",
-                f"EXPLORER_SESSION_SECRET got {session_len} chars, need >= 32 "
-                "— generate: openssl rand -hex 32, then: explorer env edit && explorer restart",
+                "EXPLORER_SESSION_SECRET is shorter than 32 bytes — generate a "
+                "longer one: openssl rand -hex 32, then: explorer env edit && explorer restart",
             )
         else:
             add("session-secret", True, "session secret >= 32 chars")
