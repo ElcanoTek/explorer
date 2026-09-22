@@ -66,7 +66,29 @@ def test_environment_file_is_owner_only_everywhere():
     for script in ("bootstrap.sh", "update.sh", "provision.sh"):
         text = (SCRIPTS / script).read_text()
         for line in text.splitlines():
-            if "chmod" in line and (".env" in line or "ENV_FILE" in line):
+            names_env = ".env" in line or "ENV_FILE" in line
+            sets_mode = "chmod" in line or "install " in line
+            if names_env and sets_mode:
                 assert "0640" not in line, (
                     f"{script}: env file left group-readable: {line.strip()}"
                 )
+
+
+def test_provision_creates_every_file_private():
+    """provision.sh rewrites the env file through a temporary copy.
+
+    Without a umask at the top, that copy is born 0644 under root's usual
+    umask and `mv` puts a world-readable secret file in place; a failure
+    before the closing chmod leaves it that way. The umask has to be set
+    before anything is written, not inside a branch.
+    """
+    lines = (SCRIPTS / "provision.sh").read_text().splitlines()
+    top_level = [i for i, line in enumerate(lines) if line == "umask 077"]
+    assert top_level, "provision.sh does not set a top-level umask 077"
+    first_write = next(
+        (i for i, line in enumerate(lines) if ">" in line and "ENV_FILE" in line),
+        len(lines),
+    )
+    assert top_level[0] < first_write, (
+        "provision.sh writes before its umask takes effect"
+    )

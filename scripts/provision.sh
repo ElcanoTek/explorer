@@ -21,6 +21,13 @@
 
 set -euo pipefail
 
+# Every file this script writes carries secrets or sits beside them: the
+# decrypted bundle, the passphrase cache, and the rewritten .env, which is
+# built as a temporary copy and moved into place. Born-private is the only
+# safe order; a chmod after the fact leaves a window, and leaves the file
+# readable for good if the run dies in between.
+umask 077
+
 if [[ ! -t 0 && -t 1 ]]; then exec </dev/tty; fi
 
 APP_DIR="${APP_DIR:-/opt/explorer}"
