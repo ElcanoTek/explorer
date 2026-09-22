@@ -70,10 +70,23 @@ case "$cmd" in
     exec sudo env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 bash "$SRC_DIR/scripts/update.sh"
     ;;
   doctor)
-    # Read-only diagnostics; never touches the install. Runs from the
-    # source checkout so fixes to doctor.py apply on the next update.
-    [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
-    exec sudo bash "$SRC_DIR/scripts/doctor.sh" "$@"
+    # Read-only diagnostics; never touches the install. Prefers the source
+    # checkout (so fixes apply on the next update) but falls back to the
+    # installed copy: with a missing or damaged .git this must still run —
+    # the checkout check inside doctor is what reports the damage.
+    # EXPLORER_SRC_DIR/APP_DIR are forwarded through sudo env because a
+    # custom source path is otherwise lost to sudo's environment reset.
+    doctor_script=""
+    if [[ -f "$SRC_DIR/scripts/doctor.sh" ]]; then
+      doctor_script="$SRC_DIR/scripts/doctor.sh"
+    elif [[ -f "$APP_DIR/scripts/doctor.sh" ]]; then
+      doctor_script="$APP_DIR/scripts/doctor.sh"
+    fi
+    [[ -n "$doctor_script" ]] || {
+      echo "no doctor script in $SRC_DIR or $APP_DIR — restore the checkout" >&2
+      exit 1
+    }
+    exec sudo env EXPLORER_SRC_DIR="$SRC_DIR" APP_DIR="$APP_DIR" bash "$doctor_script" "$@"
     ;;
   access)
     [[ -x "$APP_DIR/.venv/bin/python" ]] || { echo "Explorer venv missing at $APP_DIR/.venv" >&2; exit 1; }
