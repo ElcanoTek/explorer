@@ -209,15 +209,17 @@ def test_caddy_plan_preserves_loaded_manual_copy_and_removes_only_owned_orphan(
     assert unrelated.exists()
 
 
-def test_caddy_cleanup_never_removes_unmarked_or_other_host(tmp_path: Path):
+def test_caddy_cleanup_removes_owned_old_hostname_but_not_unmarked_file(
+    tmp_path: Path,
+):
     caddyfile = tmp_path / "Caddyfile"
     caddyfile.write_text("import Caddyfile.d/*.caddyfile\n")
     directory = tmp_path / "conf.d"
     directory.mkdir()
     unmarked = directory / "explorer.caddy"
-    other_host = directory / "old.caddy"
+    old_hostname = directory / "old.caddy"
     unmarked.write_text("explorer.example {\n}\n")
-    other_host.write_text(
+    old_hostname.write_text(
         "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via\nother.example {\n}\n"
     )
     result = _caddy_helper(
@@ -225,7 +227,8 @@ def test_caddy_cleanup_never_removes_unmarked_or_other_host(tmp_path: Path):
         str(caddyfile),
     )
     assert result.returncode == 0, result.stderr
-    assert unmarked.exists() and other_host.exists()
+    assert unmarked.exists()
+    assert not old_hostname.exists()
 
 
 def test_caddy_adapted_check_requires_host_matcher_and_explorer_proxy(tmp_path: Path):

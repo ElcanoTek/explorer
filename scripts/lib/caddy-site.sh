@@ -10,10 +10,10 @@
 EXPLORER_CADDY_MARKER='# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via'
 
 explorer_caddy_is_ours() {
-  local path=$1 host=$2 first
+  local path=$1 first
   [[ -f $path && ! -L $path ]] || return 1
   IFS= read -r first < "$path" || true
-  [[ $first == "$EXPLORER_CADDY_MARKER" ]] && grep -Fxq -- "$host {" "$path"
+  [[ $first == "$EXPLORER_CADDY_MARKER" ]]
 }
 
 explorer_caddy_imports() {
