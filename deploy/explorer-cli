@@ -17,6 +17,33 @@ APP_DIR="${EXPLORER_APP_DIR:-/opt/explorer}"
 ENV_FILE="$APP_DIR/.env"
 SERVICE="explorer.service"
 
+# update/provision are root operations. Refuse the hand-off unless the script
+# tree is already exclusively root-controlled; checking after sudo would be
+# too late because bash would already have opened the requested script.
+require_trusted_checkout() {
+  local dir=$1 path owner mode stray
+  [[ -d $dir && ! -L $dir ]] || return 1
+  path=$(readlink -f -- "$dir") || return 1
+  while :; do
+    owner=$(stat -c %U "$path") || return 1
+    mode=$(stat -c %a "$path") || return 1
+    [[ $owner == root ]] || return 1
+    (( (8#$mode & 8#022) == 0 )) || return 1
+    [[ $path == / ]] && break
+    path=$(dirname -- "$path")
+  done
+  stray=$(find "$(readlink -f -- "$dir")" \
+    \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) \
+    -print -quit 2>/dev/null)
+  [[ -z $stray ]]
+}
+trusted_source_or_die() {
+  require_trusted_checkout "$SRC_DIR" || {
+    echo "$SRC_DIR is not an exclusively root-owned, non-writable, symlink-free checkout" >&2
+    exit 1
+  }
+}
+
 cmd="${1:-}"
 shift || true
 
@@ -31,6 +58,7 @@ case "$cmd" in
     ;;
   update)
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    trusted_source_or_die
     exec sudo bash "$SRC_DIR/scripts/update.sh" "$@"
     ;;
   rebuild)
@@ -38,6 +66,7 @@ case "$cmd" in
     # fetching or fast-forwarding the branch.  Useful after a manual
     # rollback or when you know the checkout is already correct.
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    trusted_source_or_die
     exec sudo env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 bash "$SRC_DIR/scripts/update.sh"
     ;;
   access)
@@ -50,6 +79,7 @@ case "$cmd" in
     # /opt/explorer/.env. Pass --client=NAME to select a bundle and
     # --no-restart to skip the systemctl restart. See provision/README.md.
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    trusted_source_or_die
     exec sudo bash "$SRC_DIR/scripts/provision.sh" "$@"
     ;;
   env)
@@ -64,8 +94,14 @@ case "$cmd" in
         ' "$ENV_FILE"
         ;;
       edit)
-        if ! sudo test -f "$ENV_FILE"; then
-          sudo install -o explorer -g explorer -m 0640 /dev/null "$ENV_FILE"
+        if sudo test -e "$ENV_FILE" || sudo test -L "$ENV_FILE"; then
+          if ! sudo test -f "$ENV_FILE" || sudo test -L "$ENV_FILE" \
+            || [[ $(sudo stat -c %h "$ENV_FILE") -ne 1 ]]; then
+            echo "$ENV_FILE must be a single-link regular file" >&2
+            exit 1
+          fi
+        else
+          sudo install -o explorer -g explorer -m 0600 /dev/null "$ENV_FILE"
         fi
         editor="${EDITOR:-${VISUAL:-vi}}"
         exec sudo "$editor" "$ENV_FILE"
@@ -80,13 +116,20 @@ EOF
     ;;
   tls)
     sub="${1:-status}"; shift || true
-    snippet="/etc/caddy/conf.d/explorer.caddy"
+    snippet=""
+    marker="# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via"
+    for candidate in /etc/caddy/Caddyfile.d/explorer.caddyfile /etc/caddy/conf.d/explorer.caddy; do
+      if [[ -f $candidate ]] && IFS= read -r first < "$candidate" && [[ $first == "$marker" ]]; then
+        snippet=$candidate
+        break
+      fi
+    done
     if ! command -v caddy >/dev/null 2>&1; then
       echo "Caddy not installed — re-run bootstrap with a hostname to set up TLS" >&2; exit 1
     fi
     case "$sub" in
       status)
-        if [[ -f "$snippet" ]]; then
+        if [[ -n $snippet ]]; then
           host=$(awk '/^[^[:space:]{}#]/ && /{/ {sub(" {",""); print; exit}' "$snippet" 2>/dev/null)
           echo "Host: ${host:-<unconfigured>}"
           if [[ -n "$host" ]]; then
@@ -95,7 +138,7 @@ EOF
               || echo "(could not reach ${host}:443 — check DNS + firewall)"
           fi
         else
-          echo "No Caddy site block at $snippet"
+          echo "No marker-owned Explorer Caddy site block found"
         fi
         sudo systemctl is-active caddy.service 2>&1 || true
         ;;

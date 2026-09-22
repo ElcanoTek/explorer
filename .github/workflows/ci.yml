@@ -51,3 +51,6 @@ jobs:
         # Auth cookie verifier, date parsing, S3 inbox layer (fake S3
         # client), and the FastAPI endpoints via TestClient.
         run: python -m pytest -q
+
+      - name: Test privileged install lifecycle
+        run: sudo env PATH="$PATH" bash scripts/test/layout_test.sh

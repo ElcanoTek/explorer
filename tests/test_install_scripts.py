@@ -39,8 +39,7 @@ def _lines_invoking_uv(text: str) -> list[str]:
     return found
 
 
-@pytest.mark.parametrize("script", ["bootstrap.sh", "update.sh"])
-def test_uv_runs_in_a_directory_the_service_user_can_read(script: str):
+def test_uv_runs_with_an_isolated_home_and_no_config_discovery():
     """uv searches the working directory and its parents for a uv.toml.
 
     Started from /root (mode 0550) the unprivileged service user cannot stat
@@ -48,15 +47,67 @@ def test_uv_runs_in_a_directory_the_service_user_can_read(script: str):
     invocation therefore sets its own working directory and turns config
     discovery off.
     """
-    lines = _lines_invoking_uv((SCRIPTS / script).read_text())
+    script = "lib/layout.sh"
+    text = (SCRIPTS / script).read_text()
+    lines = _lines_invoking_uv(text.replace('"$uv_bin"', "uv"))
     assert lines, f"no uv invocation found in {script}"
-    for line in lines:
-        assert "env -C " in line, (
-            f"{script}: uv inherits the caller's directory: {line}"
-        )
-        assert "UV_NO_CONFIG=1" in line, (
-            f"{script}: uv config discovery left on: {line}"
-        )
+    assert text.count('env -i -C "$staging"') == len(lines)
+    assert text.count("UV_NO_CONFIG=1") == len(lines)
+    assert text.count('HOME="$BUILD_CACHE"') == len(lines)
+
+
+def test_root_never_installs_privileged_files_from_the_live_or_staged_tree():
+    update = (SCRIPTS / "update.sh").read_text()
+    bootstrap = (SCRIPTS / "bootstrap.sh").read_text()
+    assert '"$SRC_DIR/deploy/explorer-cli"' in update
+    assert '"$INSTALL_SRC_DIR/deploy/explorer-cli"' in bootstrap
+    assert '"$APP_DIR/deploy/explorer-cli"' not in update + bootstrap
+    assert 'chown -R "$APP_USER:$APP_USER"' not in update + bootstrap
+    assert 'layout_revision_matches "$after_sha"' in update
+
+
+def test_root_scripts_do_not_source_the_service_owned_environment():
+    for script in ("bootstrap.sh", "update.sh"):
+        text = (SCRIPTS / script).read_text()
+        assert 'source "$ENV_FILE"' not in text
+        assert '. "$ENV_FILE"' not in text
+        assert "layout_read_env" in text
+
+
+def test_service_owned_environment_is_parsed_as_data(tmp_path: Path):
+    marker = tmp_path / "executed"
+    env_file = tmp_path / ".env"
+    literal = f"$(touch {marker})"
+    env_file.write_text(f'EXPLORER_SESSION_SECRET="{literal}"\nPATH="/attacker"\n')
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            'APP_DIR=/unused APP_USER=nobody; source "$1"; '
+            'layout_read_env "$2"; printf "%s\\n%s\\n" '
+            '"$EXPLORER_SESSION_SECRET" "$PATH"',
+            "bash",
+            str(SCRIPTS / "lib/layout.sh"),
+            str(env_file),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[0] == literal
+    assert result.stdout.splitlines()[1] != "/attacker"
+    assert not marker.exists()
+
+
+def test_operator_cli_checks_source_before_root_handoff():
+    text = (SCRIPTS.parent / "deploy/explorer-cli").read_text()
+    assert text.count("trusted_source_or_die") >= 4
+    assert text.index("trusted_source_or_die", text.index("  update)")) < text.index(
+        'exec sudo bash "$SRC_DIR/scripts/update.sh"'
+    )
 
 
 def test_environment_file_is_owner_only_everywhere():
@@ -74,6 +125,15 @@ def test_environment_file_is_owner_only_everywhere():
                 assert "0640" not in line, (
                     f"{script}: env file left group-readable: {line.strip()}"
                 )
+
+
+def test_root_env_writers_refuse_links():
+    provision = (SCRIPTS / "provision.sh").read_text()
+    cli = (SCRIPTS.parent / "deploy/explorer-cli").read_text()
+    assert "! -L $ENV_FILE" in provision
+    assert 'stat -c %h "$ENV_FILE"' in provision
+    assert 'sudo test -L "$ENV_FILE"' in cli
+    assert 'sudo stat -c %h "$ENV_FILE"' in cli
 
 
 def test_provision_creates_every_file_private():

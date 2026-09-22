@@ -74,6 +74,17 @@ done
 [[ $EUID -eq 0 ]] || die "run as root: sudo bash scripts/provision.sh"
 [[ -d "$CLIENTS_DIR" ]] || die "no $CLIENTS_DIR — is this a checkout? ($SRC_DIR)"
 
+# The service-owned env is data, but root rewrites it. Require the hardened
+# directory layout and refuse links so a compromised legacy service cannot
+# redirect that write to a privileged path.
+[[ -d $APP_DIR && ! -L $APP_DIR ]] || die "$APP_DIR must be a real directory"
+[[ $(stat -c '%U:%G %a' "$APP_DIR") == 'root:root 755' ]] \
+  || die "$APP_DIR must be root:root 0755; run 'explorer rebuild' to migrate the install first"
+if [[ -e $ENV_FILE || -L $ENV_FILE ]]; then
+  [[ -f $ENV_FILE && ! -L $ENV_FILE && $(stat -c %h "$ENV_FILE") -eq 1 ]] \
+    || die "$ENV_FILE must be a single-link regular file"
+fi
+
 mapfile -t available < <(find "$CLIENTS_DIR" -maxdepth 1 -name '*.env.enc' -printf '%f\n' 2>/dev/null \
                           | sed 's/\.env\.enc$//' | sort)
 [[ ${#available[@]} -gt 0 ]] || die "no encrypted client files in $CLIENTS_DIR (looked for *.env.enc)"
@@ -200,9 +211,11 @@ fi
 if [[ "$RESTART" == "1" ]]; then
   if systemctl list-unit-files "$SERVICE" >/dev/null 2>&1; then
     step "Restarting $SERVICE"
-    systemctl restart "$SERVICE" \
-      && ok "$SERVICE restarted" \
-      || warn "restart failed — check: journalctl -u $SERVICE -n 50"
+    if systemctl restart "$SERVICE"; then
+      ok "$SERVICE restarted"
+    else
+      warn "restart failed — check: journalctl -u $SERVICE -n 50"
+    fi
   else
     info "$SERVICE not installed yet — skipping restart"
   fi

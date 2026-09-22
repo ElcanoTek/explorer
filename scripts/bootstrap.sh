@@ -35,6 +35,7 @@ SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 INSTALL_SRC_DIR="${EXPLORER_SRC_DIR:-/opt/explorer-src}"
 ENV_FILE="$APP_DIR/.env"
 CLI_TARGET="/usr/local/bin/explorer"
+BUILD_CACHE="${EXPLORER_BUILD_CACHE:-/var/cache/explorer-build}"
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
@@ -80,6 +81,32 @@ genhex()    { openssl rand -hex "$1"; }
 [[ $EUID -eq 0 ]] || die "run as root: sudo bash scripts/bootstrap.sh"
 [[ -f "$SRC_DIR/requirements.txt" ]] || die "not an Explorer checkout at $SRC_DIR"
 
+# This check is deliberately inline: sourcing a helper from an untrusted
+# checkout in order to decide whether the checkout is trusted is already root
+# code execution. The full check is repeated by layout_require_trusted.
+require_trusted_checkout() {
+  local dir=$1 path owner mode stray
+  [[ -d $dir && ! -L $dir ]] || return 1
+  path=$(readlink -f -- "$dir") || return 1
+  while :; do
+    owner=$(stat -c %U "$path") || return 1
+    mode=$(stat -c %a "$path") || return 1
+    [[ $owner == root ]] || return 1
+    (( (8#$mode & 8#022) == 0 )) || return 1
+    [[ $path == / ]] && break
+    path=$(dirname -- "$path")
+  done
+  stray=$(find "$(readlink -f -- "$dir")" \
+    \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) \
+    -print -quit 2>/dev/null)
+  [[ -z $stray ]]
+}
+require_trusted_checkout "$SRC_DIR" \
+  || die "$SRC_DIR is not an exclusively root-owned, non-writable, symlink-free checkout"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/layout.sh"
+layout_require_trusted "$SRC_DIR" || die "untrusted bootstrap checkout"
+
 cat <<EOF
 ${c_bold}Elcano Explorer — bootstrap${c_reset}
 ${c_dim}Fedora / RHEL 9+  •  systemd  •  FastAPI email-archive UI${c_reset}
@@ -100,56 +127,51 @@ step "2/7  Preparing $APP_DIR + '$APP_USER' user"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 fi
-mkdir -p "$APP_DIR/.tmp/email_attachments"
 install -d -m 0700 -o "$APP_USER" -g "$APP_USER" /var/lib/explorer
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 if [[ ! -d "$INSTALL_SRC_DIR/.git" ]]; then
   # Seed WITH /.git so `explorer update` can git fetch/merge later.
   # /.venv stays excluded — we rebuild it into APP_DIR below.
   [[ -d "$SRC_DIR/.git" ]] || die "bootstrap must run from a git checkout (no .git at $SRC_DIR)"
-  mkdir -p "$INSTALL_SRC_DIR"
-  rsync -a --exclude='/.venv' "$SRC_DIR/" "$INSTALL_SRC_DIR/"
+  install -d -o root -g root -m 0755 "$INSTALL_SRC_DIR"
+  rsync -a --no-owner --no-group --chown=root:root --chmod=go-w \
+    --exclude='/.venv' "$SRC_DIR/" "$INSTALL_SRC_DIR/"
   ok "copied $SRC_DIR → $INSTALL_SRC_DIR"
 else
   info "$INSTALL_SRC_DIR already exists — leaving it in place"
 fi
-
-# Sync source from the canonical checkout into the app dir. --delete
-# keeps the install in sync with the repo layout, but we exclude
-# .venv (built below) and .tmp (runtime state).
-rsync -a --delete \
-  --exclude='/.git' \
-  --exclude='/.venv' \
-  --exclude='/.tmp' \
-  --exclude='/.env' \
-  "$INSTALL_SRC_DIR/" "$APP_DIR/"
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+layout_require_trusted "$INSTALL_SRC_DIR" \
+  || die "$INSTALL_SRC_DIR is not safe for root-run updates; re-clone it as root"
 
 # ── step 3: Python env via uv ────────────────────────────────────────────
 step "3/7  Building venv + installing Python deps via uv"
-# uv-only: the chat deploy lessons learned apply here too — pip on
-# modern Fedora hits PEP 668 and resolution-depth walls with these
-# transitive graphs. uv is in the Fedora repos.
-# uv looks for a uv.toml in the working directory and every parent. The
-# installer is normally started from /root, which is mode 0550, so the service
-# user cannot even stat /root/uv.toml and uv fails the build with a permission
-# error instead of finding no config. Run it from the application directory,
-# with config discovery off so no stray uv.toml anywhere can change the build.
-runuser -u "$APP_USER" -- env -C "$APP_DIR" UV_NO_CONFIG=1 uv venv "$APP_DIR/.venv" >/dev/null
-runuser -u "$APP_USER" -- env -C "$APP_DIR" UV_NO_CONFIG=1 uv pip install --python "$APP_DIR/.venv/bin/python" \
-  --reinstall -r "$APP_DIR/requirements.txt" \
-  || die "uv pip install failed — service will not boot"
+# uv-only: pip on modern Fedora hits PEP 668 and resolution-depth walls with
+# these transitive graphs. layout_build also prevents uv from discovering a
+# config in the root caller's working directory.
+staging=$(mktemp -d "$(dirname -- "$APP_DIR")/.explorer-build.XXXXXX")
+cleanup_staging() { rm -rf "$staging"; }
+trap cleanup_staging EXIT
+layout_build "$INSTALL_SRC_DIR" "$staging" \
+  || die "uv build failed — the installed service was not changed"
+layout_install_source "$INSTALL_SRC_DIR" || die "could not install the trusted source tree"
+install_revision=$(git -c safe.directory="$INSTALL_SRC_DIR" -c core.hooksPath=/dev/null \
+  -C "$INSTALL_SRC_DIR" rev-parse 'HEAD^{commit}') \
+  || die "could not resolve the installed source revision"
+layout_write_revision "$install_revision" || die "could not record the installed source revision"
+if [[ -e $APP_DIR/.venv || -L $APP_DIR/.venv ]]; then
+  [[ -d $APP_DIR/.venv && ! -L $APP_DIR/.venv ]] || die "$APP_DIR/.venv is not a real directory"
+  rm -rf "$APP_DIR/.venv.old"
+  mv "$APP_DIR/.venv" "$APP_DIR/.venv.old"
+fi
+mv "$staging/.venv" "$APP_DIR/.venv"
+layout_secure_runtime || die "could not enforce the root-owned install layout"
 ok "venv + deps ready at $APP_DIR/.venv"
 
 # ── step 4: prompts + env file ──────────────────────────────────────────
 step "4/7  Configuring the instance"
 if [[ -f "$ENV_FILE" ]]; then
   info "found existing $ENV_FILE — re-using values, only asking for what's missing"
-  set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-  set +a
+  layout_read_env "$ENV_FILE"
 fi
 
 EXPLORER_SESSION_SECRET="${EXPLORER_SESSION_SECRET:-$(genbase64 32)}"
@@ -244,13 +266,14 @@ chown "$APP_USER:$APP_USER" "$ENV_FILE"
 # Owner-only: this file carries the session secret, the central-auth client
 # secret, and any AWS keys.
 chmod 0600 "$ENV_FILE"  # owner only: it holds the auth client secret and the AWS keys
+layout_secure_runtime || die "could not secure runtime configuration"
 ok "env seeded at $ENV_FILE"
 
 # ── step 4b: optional encrypted config bundle ───────────────────────────
 # Run BEFORE the systemd start step so the service sees the merged values
 # on its first boot. provision.sh is also runnable standalone post-install
 # via `sudo explorer provision`.
-PROVISION_DIR="$APP_DIR/provision/clients"
+PROVISION_DIR="$INSTALL_SRC_DIR/provision/clients"
 if compgen -G "$PROVISION_DIR/*.env.enc" >/dev/null 2>&1; then
   step "Encrypted config bundle (optional)"
   do_provision_ans="$(prompt EXPLORER_BOOTSTRAP_PROVISION "Provision config from the encrypted bundle now? (Y/n)" Y)"
@@ -266,7 +289,7 @@ if compgen -G "$PROVISION_DIR/*.env.enc" >/dev/null 2>&1; then
       [[ " ${_clients[*]} " == *" elcano "* ]] || _default="${_clients[0]}"
       _client="$(prompt EXPLORER_BOOTSTRAP_PROVISION_CLIENT "Which client?" "$_default")"
     fi
-    if bash "$APP_DIR/scripts/provision.sh" --client="$_client" --no-restart; then
+    if bash "$INSTALL_SRC_DIR/scripts/provision.sh" --client="$_client" --no-restart; then
       ok "config bundle provisioned ($_client)"
     else
       warn "provision failed — continuing install. Retry later with: sudo explorer provision"
@@ -278,11 +301,11 @@ fi
 
 # ── step 5: systemd units + CLI ─────────────────────────────────────────
 step "5/7  Installing systemd units + operator CLI"
-install -m 0644 "$APP_DIR/deploy/systemd/explorer.service" /etc/systemd/system/
-install -m 0644 "$APP_DIR/deploy/systemd/explorer-attachment-cleanup.service" /etc/systemd/system/
-install -m 0644 "$APP_DIR/deploy/systemd/explorer-attachment-cleanup.timer" /etc/systemd/system/
-install -m 0644 "$APP_DIR/deploy/systemd/explorer.tmpfiles.conf" /etc/tmpfiles.d/explorer.conf
-install -m 0755 "$APP_DIR/deploy/explorer-cli" "$CLI_TARGET"
+install -m 0644 "$INSTALL_SRC_DIR/deploy/systemd/explorer.service" /etc/systemd/system/
+install -m 0644 "$INSTALL_SRC_DIR/deploy/systemd/explorer-attachment-cleanup.service" /etc/systemd/system/
+install -m 0644 "$INSTALL_SRC_DIR/deploy/systemd/explorer-attachment-cleanup.timer" /etc/systemd/system/
+install -m 0644 "$INSTALL_SRC_DIR/deploy/systemd/explorer.tmpfiles.conf" /etc/tmpfiles.d/explorer.conf
+install -m 0755 "$INSTALL_SRC_DIR/deploy/explorer-cli" "$CLI_TARGET"
 systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf >/dev/null
 systemctl daemon-reload
 ok "systemd units + CLI installed"
@@ -331,7 +354,8 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   # Use a directory already imported by this Caddyfile, including Fedora's
   # Caddyfile.d/*.caddyfile. Keep a marker-owned block already loaded there;
   # the old conf.d copy may be orphaned after an operator's manual repair.
-  source "$SRC_DIR/scripts/lib/caddy-site.sh"
+  # shellcheck disable=SC1091
+  source "$INSTALL_SRC_DIR/scripts/lib/caddy-site.sh"
   caddyfile=/etc/caddy/Caddyfile
   explorer_caddy_plan "$caddyfile" \
     || die "no safe Caddy site path is available"
@@ -360,7 +384,7 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   # after the opening brace of the site block. awk over sed because
   # BSD/GNU sed differ on `a\` syntax.
   tmp=$(mktemp)
-  sed "s/{{HOSTNAME}}/$HOSTNAME_FOR_TLS/g" "$APP_DIR/deploy/explorer.caddy" > "$tmp"
+  sed "s/{{HOSTNAME}}/$HOSTNAME_FOR_TLS/g" "$INSTALL_SRC_DIR/deploy/explorer.caddy" > "$tmp"
   if [[ "$USE_LETSENCRYPT" != "y" ]]; then
     awk -v host="$HOSTNAME_FOR_TLS" '
       $0 == host " {" { print; print "\ttls internal"; next }
@@ -444,7 +468,11 @@ fi
 # ── motd ─────────────────────────────────────────────────────────────────
 # Single source of truth is deploy/motd; update.sh keeps it in sync on
 # existing boxes.
-install -m 0644 "$APP_DIR/deploy/motd" /etc/motd
+install -m 0644 "$INSTALL_SRC_DIR/deploy/motd" /etc/motd
+layout_check || die "installed layout failed its ownership check"
+rm -rf "$APP_DIR/.venv.old"
+trap - EXIT
+cleanup_staging
 
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
