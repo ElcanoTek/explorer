@@ -462,18 +462,6 @@ def diagnose(app, src, user):
                 "dnf check-update failed (network or repo issue)",
                 warning=True,
             )
-        if shutil.which("needs-restarting"):
-            code, _ = run("needs-restarting", "-r", timeout=30)
-            if code == 1:
-                add(
-                    "reboot",
-                    False,
-                    "",
-                    "kernel or core libraries updated — reboot the host when convenient",
-                    warning=True,
-                )
-            else:
-                add("reboot", True, "no reboot pending")
         try:
             os_release = platform.freedesktop_os_release()
         except (OSError, AttributeError):
@@ -527,6 +515,47 @@ def diagnose(app, src, user):
             False,
             "",
             "dnf not found; keep host packages current manually",
+            warning=True,
+        )
+    # Reboot needed — fallback chain, first success wins: needs-restarting,
+    # then dnf needs-restarting, then uname -r vs the newest installed kernel
+    # from rpm. Every step is bounded (10s) so a hung dnf cannot hang doctor;
+    # an exit code other than 0/1 means "this tier cannot say" and falls
+    # through. None means unknown, which is reported as such — never guessed.
+    reboot_needed = None
+    if shutil.which("needs-restarting"):
+        code, _ = run("needs-restarting", "-r", timeout=10)
+        if code in (0, 1):
+            reboot_needed = code == 1
+    if reboot_needed is None and shutil.which("dnf"):
+        code, _ = run("dnf", "needs-restarting", "-r", timeout=10)
+        if code in (0, 1):
+            reboot_needed = code == 1
+    if reboot_needed is None and shutil.which("uname") and shutil.which("rpm"):
+        code, running = run("uname", "-r", timeout=10)
+        code2, installed = run("rpm", "-q", "kernel", "--last", timeout=10)
+        if code == 0 and code2 == 0 and running and installed:
+            # rpm -q kernel --last sorts newest first; the NEVRA's version
+            # (everything after "kernel-") is exactly what uname -r prints.
+            newest = installed.splitlines()[0].split()[0].removeprefix("kernel-")
+            reboot_needed = running != newest
+    if reboot_needed is True:
+        add(
+            "reboot",
+            False,
+            "",
+            "kernel or core libraries updated — reboot the host when convenient",
+            warning=True,
+        )
+    elif reboot_needed is False:
+        add("reboot", True, "no reboot pending")
+    else:
+        add(
+            "reboot",
+            False,
+            "",
+            "could not determine reboot status — needs-restarting, dnf "
+            "needs-restarting and rpm/uname all unavailable or failed",
             warning=True,
         )
     if src.joinpath(".git").exists():

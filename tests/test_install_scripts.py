@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -394,13 +395,19 @@ def test_doctor_py_json_smoke_on_a_bare_box(tmp_path: Path):
         assert check["status"] in ("ok", "warn", "fail"), check
 
 
-def _run_doctor_json(tmp_path: Path, app_dir: Path, src_dir: Path) -> dict:
-    """Run doctor.py --json against scratch dirs with a minimal PATH."""
+def _run_doctor_json(
+    tmp_path: Path, app_dir: Path, src_dir: Path, path: str = "/usr/bin:/bin"
+) -> dict:
+    """Run doctor.py --json against scratch dirs with a caller-chosen PATH.
+
+    The default keeps the host tools (fast, degrades offline); reboot-chain
+    tests pass a stub-only PATH so they decide which tier runs.
+    """
     env = {
         "APP_DIR": str(app_dir),
         "EXPLORER_SRC_DIR": str(src_dir),
         "APP_USER": "explorer",
-        "PATH": "/usr/bin:/bin",
+        "PATH": path,
     }
     result = subprocess.run(
         ["python3", str(SCRIPTS / "doctor.py"), "--json"],
@@ -546,3 +553,102 @@ def test_doctor_branch_honest_when_fetch_fails(tmp_path: Path):
     assert branch["status"] == "warn", branch
     assert "could not reach origin" in branch["detail"], branch
     assert "up to date" not in branch["detail"], branch
+
+
+REBOOT_WARN = "kernel or core libraries updated — reboot the host when convenient"
+REBOOT_UNKNOWN = (
+    "could not determine reboot status — needs-restarting, dnf "
+    "needs-restarting and rpm/uname all unavailable or failed"
+)
+
+# The running kernel every stub below agrees on.
+RUNNING_KERNEL = "6.9.1-1.fc40.x86_64"
+
+STUB_NEEDS_REBOOT = "#!/bin/bash\nexit 1\n"
+STUB_DNF_REBOOT = """#!/bin/bash
+# stub dnf: check-update reports current; needs-restarting demands a reboot
+if [[ "${1:-}" == "needs-restarting" ]]; then exit 1; fi
+exit 0
+"""
+STUB_UNAME = f"#!/bin/bash\necho {RUNNING_KERNEL}\n"
+STUB_RPM_NEWER_KERNEL = """#!/bin/bash
+# rpm -q kernel --last, newest first; newer than the running kernel
+echo "kernel-6.10.0-1.fc40.x86_64    Wed 01 Jan 2025 12:00:00 AM UTC"
+echo "kernel-6.9.1-1.fc40.x86_64     Tue 01 Jan 2025 12:00:00 AM UTC"
+"""
+STUB_RPM_RUNNING_NEWEST = """#!/bin/bash
+# the running kernel is the newest installed
+echo "kernel-6.9.1-1.fc40.x86_64     Tue 01 Jan 2025 12:00:00 AM UTC"
+echo "kernel-6.8.0-1.fc40.x86_64     Mon 01 Jan 2025 12:00:00 AM UTC"
+"""
+STUB_RPM_FAILS = """#!/bin/bash
+echo "error: no package found" >&2
+exit 1
+"""
+
+
+def _hermetic_path(tmp_path: Path, stubs: dict[str, str]) -> str:
+    """A PATH holding only python3 plus the given command stubs.
+
+    Stubs are bash scripts with a /bin/bash shebang so they run without
+    /usr/bin on PATH. Everything else doctor probes for (needs-restarting,
+    dnf, uname, rpm, ...) is genuinely absent, so the fallback chain under
+    test is decided by which stubs exist — not by the host the suite runs on.
+    """
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir(exist_ok=True)
+    py_dir = tmp_path / "stub-py"
+    py_dir.mkdir(exist_ok=True)
+    (py_dir / "python3").symlink_to(Path(sys.executable).resolve())
+    for name, script in stubs.items():
+        path = bin_dir / name
+        path.write_text(script)
+        path.chmod(0o755)
+    return f"{bin_dir}:{py_dir}"
+
+
+def test_doctor_reboot_needs_restarting_tier_decides(tmp_path: Path):
+    """Tier 1: needs-restarting present -> its verdict wins, nothing else runs."""
+    path = _hermetic_path(tmp_path, {"needs-restarting": STUB_NEEDS_REBOOT})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_dnf_tier_when_needs_restarting_absent(tmp_path: Path):
+    """Tier 2: no needs-restarting binary -> dnf needs-restarting decides."""
+    path = _hermetic_path(tmp_path, {"dnf": STUB_DNF_REBOOT})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_uname_rpm_tier_newer_kernel_installed(tmp_path: Path):
+    """Tier 3: both tools absent; uname runs an older kernel than rpm lists."""
+    path = _hermetic_path(tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_NEWER_KERNEL})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_uname_rpm_tier_running_newest(tmp_path: Path):
+    """Tier 3 the other way: running kernel is the newest installed -> OK."""
+    path = _hermetic_path(
+        tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_RUNNING_NEWEST}
+    )
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "ok", reboot
+    assert reboot["detail"] == "no reboot pending", reboot
+
+
+def test_doctor_reboot_unknown_when_rpm_fails(tmp_path: Path):
+    """Tier 3 with rpm erroring: honest advisory, no crash, no guessed verdict."""
+    path = _hermetic_path(tmp_path, {"uname": STUB_UNAME, "rpm": STUB_RPM_FAILS})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_UNKNOWN, reboot
