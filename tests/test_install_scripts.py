@@ -114,6 +114,33 @@ def _caddy_helper(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_caddy_template_contract_matches_installer():
+    """Rendered sites must retain their cleanup marker and expected upstream.
+
+    The marker is also a compatibility identifier for files already installed
+    by earlier releases; changing both copies would strand those files.
+    """
+    template = (SCRIPTS.parent / "deploy/explorer.caddy").read_text()
+    bootstrap = (SCRIPTS / "bootstrap.sh").read_text()
+    marker_result = _caddy_helper('printf "%s\\n" "$EXPLORER_CADDY_MARKER"')
+    assert marker_result.returncode == 0, marker_result.stderr
+    marker = marker_result.stdout.rstrip("\n")
+    assert (
+        marker
+        == "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via"
+    )
+    assert template.splitlines()[0] == marker
+
+    match = re.search(
+        r'explorer_caddy_adapted_has_site "\$adapted" "\$HOSTNAME_FOR_TLS" "([^"]+)"',
+        bootstrap,
+    )
+    assert match, "bootstrap no longer checks the rendered site's upstream"
+    assert re.findall(r"^\s*reverse_proxy\s+(\S+)\s*$", template, re.MULTILINE) == [
+        match.group(1)
+    ]
+
+
 @pytest.mark.parametrize(
     ("import_line", "target", "add_import"),
     [

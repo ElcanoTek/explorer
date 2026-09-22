@@ -5,6 +5,8 @@
 
 # Sourceable Caddy site planning helpers. The primary Caddyfile's import paths
 # are relative to that file, not to bootstrap's working directory.
+# Compatibility identifier for already-installed site blocks. Do not change:
+# bootstrap must recognize and clean up copies written by older releases.
 EXPLORER_CADDY_MARKER='# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via'
 
 explorer_caddy_is_ours() {
