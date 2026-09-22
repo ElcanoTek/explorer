@@ -328,19 +328,20 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   fi
 
   dnf install -y caddy >/dev/null
-  install -d /etc/caddy/conf.d
-
-  # Ensure main /etc/caddy/Caddyfile imports our conf.d/. We only add
-  # the import if no import line exists at all — so the first service
-  # installed sets it up and subsequent services drop snippets into
-  # /etc/caddy/conf.d/ without overwriting each other.
-  if [[ ! -f /etc/caddy/Caddyfile ]] || ! grep -qE '^[[:space:]]*import[[:space:]]' /etc/caddy/Caddyfile; then
+  # Use a directory already imported by this Caddyfile, including Fedora's
+  # Caddyfile.d/*.caddyfile. Keep a marker-owned block already loaded there;
+  # the old conf.d copy may be orphaned after an operator's manual repair.
+  source "$SRC_DIR/scripts/lib/caddy-site.sh"
+  caddyfile=/etc/caddy/Caddyfile
+  explorer_caddy_plan "$caddyfile" \
+    || die "no safe Caddy site path is available"
+  if [[ "$EXPLORER_CADDY_ADD_IMPORT" == 1 ]]; then
     {
       echo ""
       echo "# Managed by Elcano service bootstraps — each service drops"
       echo "# its own site block at /etc/caddy/conf.d/<service>.caddy."
       echo "import conf.d/*.caddy"
-    } >> /etc/caddy/Caddyfile
+    } >> "$caddyfile"
   fi
 
   # Inject an LE contact email as a global block at the top of
@@ -366,11 +367,34 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
       { print }
     ' "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
   fi
-  install -m 0644 "$tmp" /etc/caddy/conf.d/explorer.caddy
+  [[ ! -e $EXPLORER_CADDY_TARGET && ! -L $EXPLORER_CADDY_TARGET ]] ||
+    explorer_caddy_is_ours "$EXPLORER_CADDY_TARGET" \
+    || die "refusing to overwrite an unmarked Caddy site: $EXPLORER_CADDY_TARGET"
+  install -d "$(dirname -- "$EXPLORER_CADDY_TARGET")"
+  install -m 0644 "$tmp" "$EXPLORER_CADDY_TARGET"
   rm -f "$tmp"
+  removed=$(explorer_caddy_remove_stale "$caddyfile" "$EXPLORER_CADDY_TARGET") \
+    || die "could not remove a stale Explorer Caddy site"
+  if [[ -n $removed ]]; then
+    while IFS= read -r stale; do info "removed stale Explorer site: $stale"; done <<< "$removed"
+  fi
 
-  # Open 80/443 if firewalld is active. Soft-fail: some boxes run pf
-  # or no firewall at all — don't abort the install on an unusual host.
+  # The config must parse AND contain this site: a snippet that is written
+  # but never imported is exactly the failure above, and it is invisible
+  # until someone opens the URL.
+  caddy validate --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1 \
+    || die "the Caddy configuration does not validate — run: caddy validate --config $caddyfile --adapter caddyfile"
+  adapted=$(mktemp)
+  caddy adapt --config "$caddyfile" --adapter caddyfile > "$adapted" 2>/dev/null \
+    || die "Caddy could not adapt $caddyfile"
+  if ! explorer_caddy_adapted_has_site "$adapted" "$HOSTNAME_FOR_TLS" "127.0.0.1:8080"; then
+    rm -f "$adapted"
+    die "Caddy does not load an Explorer proxy for $HOSTNAME_FOR_TLS from $EXPLORER_CADDY_TARGET"
+  fi
+  rm -f "$adapted"
+
+  # Open 80/443 only after the configuration has passed both checks.
+  # Soft-fail: some boxes run pf or no firewall at all.
   if systemctl is-active --quiet firewalld 2>/dev/null; then
     firewall-cmd --add-service=http --permanent >/dev/null 2>&1 || true
     firewall-cmd --add-service=https --permanent >/dev/null 2>&1 || true
@@ -389,13 +413,20 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   ok "Caddy running — auto-renews ~30 days before expiry, no cron needed"
 
   if [[ "$USE_LETSENCRYPT" == "y" ]]; then
-    info "waiting for TLS at https://${HOSTNAME_FOR_TLS} (up to 45s)"
+    info "waiting for TLS at https://${HOSTNAME_FOR_TLS} (up to 120s)"
     tls_ok=0
-    for _ in $(seq 1 45); do
-      if curl -fsS --max-time 5 "https://${HOSTNAME_FOR_TLS}/" -o /dev/null 2>/dev/null; then
+    tls_deadline=$(( $(date +%s) + 120 ))
+    while (( $(date +%s) < tls_deadline )); do
+      tls_remaining=$(( tls_deadline - $(date +%s) ))
+      (( tls_remaining > 0 )) || break
+      (( tls_remaining > 5 )) && tls_remaining=5
+      if curl -fsS --max-time "$tls_remaining" "https://${HOSTNAME_FOR_TLS}/" -o /dev/null 2>/dev/null; then
         tls_ok=1; break
       fi
-      sleep 1
+      tls_remaining=$(( tls_deadline - $(date +%s) ))
+      (( tls_remaining > 0 )) || break
+      (( tls_remaining > 1 )) && tls_remaining=1
+      sleep "$tls_remaining"
     done
     if [[ "$tls_ok" == "1" ]]; then
       expiry=$(echo | openssl s_client -servername "$HOSTNAME_FOR_TLS" \
@@ -403,7 +434,7 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
         | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
       ok "TLS live — cert valid until ${expiry:-unknown}"
     else
-      warn "https://${HOSTNAME_FOR_TLS} didn't come up in 45s — check: journalctl -u caddy"
+      die "https://${HOSTNAME_FOR_TLS} did not answer within 120s. Explorer itself is installed and healthy on 127.0.0.1:8080, but it is not reachable over TLS, so the install is not finished. Check: journalctl -u caddy, that 80 and 443 are open to the internet, and that the DNS record points here."
     fi
   fi
 else

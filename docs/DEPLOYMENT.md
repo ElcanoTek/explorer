@@ -137,7 +137,7 @@ present, bootstrap silently skips this step.
 | `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
 | `/etc/tmpfiles.d/explorer.conf` | root | Creates the attachment dir on boot. |
 | `/usr/local/bin/explorer` | root, `0755` | Operator CLI (`deploy/explorer-cli`). |
-| `/etc/caddy/conf.d/explorer.caddy` | root | Site block, if Caddy was installed. |
+| Caddy's imported snippet directory | root | Explorer site block, if Caddy was installed (for example, Fedora uses `/etc/caddy/Caddyfile.d/explorer.caddyfile`). |
 
 The service runs as the unprivileged `explorer` user (`nologin` shell) under
 a hardened unit (`deploy/systemd/explorer.service`): `NoNewPrivileges`,
@@ -409,9 +409,8 @@ retention rules.
 ### Caddy (what bootstrap installs)
 
 Answer the hostname prompt and bootstrap will `dnf install caddy`, render
-`deploy/explorer.caddy` with your hostname into
-`/etc/caddy/conf.d/explorer.caddy`, ensure `/etc/caddy/Caddyfile` contains
-`import conf.d/*.caddy` (so several services can coexist on one box), add a
+`deploy/explorer.caddy` with your hostname into a directory already imported
+by `/etc/caddy/Caddyfile` (or add `import conf.d/*.caddy` when none exists), add a
 global `{ email ... }` block for Let's Encrypt if you supplied one, open
 80/443 in `firewalld` when it is active, and reload Caddy.
 
