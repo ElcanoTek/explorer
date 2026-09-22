@@ -429,8 +429,9 @@ def _make_fake_app(tmp_path: Path) -> Path:
     """A scratch APP_DIR whose venv python impersonates the env probe.
 
     The stub answers --version like an interpreter and the -c dotenv probe
-    with a report of fully-configured static AWS credentials — the shape a
-    real box with AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY set produces.
+    by echoing .probe.json from the app dir, so each test scripts the exact
+    configuration shape it wants (fully-configured static AWS credentials by
+    default).
     """
     app = tmp_path / "app"
     venv_python = app / ".venv/bin/python"
@@ -443,22 +444,31 @@ import sys
 if sys.argv[1:2] == ["--version"]:
     print("Python 3.11.9")
 else:
-    print(json.dumps({
-        "missing": [],
-        "central_missing": [],
-        "key_ok": True,
-        "mode_ok": True,
-        "session_ok": True,
-        "s3_bucket": True,
-        "aws_key": True,
-        "aws_secret": True,
-    }))
+    print(json.dumps(json.load(open(".probe.json"))))
 """
     )
     venv_python.chmod(0o755)
     (app / ".env").write_text("AWS_ACCESS_KEY_ID=...\nAWS_SECRET_ACCESS_KEY=...\n")
     (app / ".env").chmod(0o600)
+    _write_probe(app, session_len=48)
     return app
+
+
+def _write_probe(app: Path, **overrides) -> None:
+    """Script the env-probe report the fake venv python will echo back."""
+    probe = {
+        "missing": [],
+        "central_missing": [],
+        "key_ok": True,
+        "mode": "elcano",
+        "mode_ok": True,
+        "session_len": 48,
+        "s3_bucket": True,
+        "aws_key": True,
+        "aws_secret": True,
+    }
+    probe.update(overrides)
+    (app / ".probe.json").write_text(json.dumps(probe))
 
 
 def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
@@ -472,6 +482,67 @@ def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
     aws = _checks_by_name(report)["aws-credentials"]
     assert aws["status"] == "ok", aws
     assert aws["detail"] == "static AWS credentials configured"
+
+
+def test_doctor_short_session_secret_reported_once(tmp_path: Path):
+    """The real-box case: pubkey fine, session secret 26 chars.
+
+    The old remedy always named BOTH keys, and the one fault failed the box
+    twice ('configuration' and 'session-secret'). Now configuration passes —
+    the secret is not its concern — and the single FAIL names the actual
+    length.
+    """
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, session_len=26)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    checks = _checks_by_name(report)
+    assert checks["configuration"]["status"] == "ok", checks["configuration"]
+    secret = checks["session-secret"]
+    assert secret["status"] == "fail", secret
+    assert "got 26 chars, need >= 32" in secret["detail"], secret
+    assert "SESSION_SECRET" not in checks["configuration"]["detail"]
+    names = [check["name"] for check in report["checks"]]
+    assert names.count("session-secret") == 1, names
+
+
+def test_doctor_configuration_remedy_names_missing_keys(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, missing=["AUTH_SIGNING_PUBKEY"], key_ok=False)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert config["detail"] == "missing: AUTH_SIGNING_PUBKEY", config
+    # a missing key is named once — not repeated as a shape problem
+    assert "32-byte" not in config["detail"]
+
+
+def test_doctor_configuration_remedy_names_bad_key_shape(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(app, key_ok=False)  # present, but not a 32-byte base64 key
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert (
+        config["detail"]
+        == "AUTH_SIGNING_PUBKEY is set but is not a 32-byte base64 Ed25519 key"
+    ), config
+
+
+def test_doctor_configuration_remedy_names_bad_mode_and_central_gap(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_probe(
+        app,
+        mode="ldap",
+        mode_ok=False,
+        central_missing=["AUTH_ISSUER_URL", "AUTH_CLIENT_SECRET"],
+    )
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert config["detail"] == (
+        "missing: AUTH_ISSUER_URL, AUTH_CLIENT_SECRET; "
+        "EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got 'ldap')"
+    ), config
 
 
 def _make_clone_behind_origin(tmp_path: Path) -> tuple[Path, Path]:
@@ -570,6 +641,10 @@ STUB_DNF_REBOOT = """#!/bin/bash
 if [[ "${1:-}" == "needs-restarting" ]]; then exit 1; fi
 exit 0
 """
+STUB_DNF_NO_REBOOT = """#!/bin/bash
+# stub dnf: every subcommand, including needs-restarting, says all is fine
+exit 0
+"""
 STUB_UNAME = f"#!/bin/bash\necho {RUNNING_KERNEL}\n"
 STUB_RPM_NEWER_KERNEL = """#!/bin/bash
 # rpm -q kernel --last, newest first; newer than the running kernel
@@ -608,7 +683,7 @@ def _hermetic_path(tmp_path: Path, stubs: dict[str, str]) -> str:
 
 
 def test_doctor_reboot_needs_restarting_tier_decides(tmp_path: Path):
-    """Tier 1: needs-restarting present -> its verdict wins, nothing else runs."""
+    """Tier 1: needs-restarting present -> its verdict feeds the chain."""
     path = _hermetic_path(tmp_path, {"needs-restarting": STUB_NEEDS_REBOOT})
     report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
     reboot = _checks_by_name(report)["reboot"]
@@ -616,9 +691,44 @@ def test_doctor_reboot_needs_restarting_tier_decides(tmp_path: Path):
     assert reboot["detail"] == REBOOT_WARN, reboot
 
 
-def test_doctor_reboot_dnf_tier_when_needs_restarting_absent(tmp_path: Path):
-    """Tier 2: no needs-restarting binary -> dnf needs-restarting decides."""
+def test_doctor_reboot_f44_scenario_dnf_plugin_decides(tmp_path: Path):
+    """F44: needs-restarting binary absent, dnf plugin answers -> verdict.
+
+    This is the silent-skip scenario from the box review: the chain must
+    still produce a 'reboot' line (a verdict, not nothing) when only the
+    dnf plugin can speak.
+    """
     path = _hermetic_path(tmp_path, {"dnf": STUB_DNF_REBOOT})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_WARN, reboot
+
+
+def test_doctor_reboot_line_always_present(tmp_path: Path):
+    """No tier installed at all: the check still emits its unknown advisory.
+
+    The lookup itself is the guard — a silently skipped 'reboot' check would
+    KeyError here, which is exactly the failure mode the box review found.
+    """
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    reboot = _checks_by_name(report)["reboot"]
+    assert reboot["status"] == "warn", reboot
+    assert reboot["detail"] == REBOOT_UNKNOWN, reboot
+
+
+def test_doctor_reboot_any_yes_wins_across_tiers(tmp_path: Path):
+    """The whole chain is walked: dnf says no but rpm proves a newer kernel.
+
+    Under the old short-circuit the first 'no' skipped the remaining tiers
+    and reported OK — a stale tier could outvote a current one. Now a single
+    'yes' wins.
+    """
+    path = _hermetic_path(
+        tmp_path,
+        {"dnf": STUB_DNF_NO_REBOOT, "uname": STUB_UNAME, "rpm": STUB_RPM_NEWER_KERNEL},
+    )
     report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
     reboot = _checks_by_name(report)["reboot"]
     assert reboot["status"] == "warn", reboot

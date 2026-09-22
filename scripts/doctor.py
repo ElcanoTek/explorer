@@ -60,8 +60,9 @@ try:
 except (ValueError, TypeError):
     key_ok = False
 print(json.dumps({'missing': missing, 'central_missing': central_missing,
-                  'key_ok': key_ok, 'mode_ok': mode in ('elcano', 'central'),
-                  'session_ok': len(v.get('EXPLORER_SESSION_SECRET') or '') >= 32,
+                  'key_ok': key_ok, 'mode': mode,
+                  'mode_ok': mode in ('elcano', 'central'),
+                  'session_len': len(v.get('EXPLORER_SESSION_SECRET') or ''),
                   's3_bucket': bool(v.get('EMAIL_S3_BUCKET')),
                   'aws_key': bool(v.get('AWS_ACCESS_KEY_ID')),
                   'aws_secret': bool(v.get('AWS_SECRET_ACCESS_KEY'))}))
@@ -149,35 +150,45 @@ def diagnose(app, src, user):
         code, data = inspect_env(app)
         env = json.loads(data) if code == 0 else {}
         missing = env.get("missing", []) + env.get("central_missing", [])
-        good = (
-            bool(env)
-            and not missing
-            and env["key_ok"]
-            and env["mode_ok"]
-            and env["session_ok"]
-        )
+        # Only the failures that are THIS check's to name: absent keys, a key
+        # that is present but malformed, a bad auth mode. The session secret
+        # length belongs to the dedicated session-secret check below — naming
+        # it here too used to fail the box twice for one fault.
+        good = bool(env) and not missing and env["key_ok"] and env["mode_ok"]
+        problems = []
+        if not env:
+            problems.append(
+                "could not parse .env; run doctor with sudo or restore .env"
+            )
+        else:
+            if missing:
+                problems.append("missing: " + ", ".join(missing))
+            if not env["key_ok"] and "AUTH_SIGNING_PUBKEY" not in missing:
+                problems.append(
+                    "AUTH_SIGNING_PUBKEY is set but is not a 32-byte base64 Ed25519 key"
+                )
+            if not env["mode_ok"]:
+                problems.append(
+                    f"EXPLORER_AUTH_MODE must be 'elcano' or 'central' (got {env['mode']!r})"
+                )
         add(
             "configuration",
             good,
-            "auth signing key and session secret configured",
-            "explorer env edit: set AUTH_SIGNING_PUBKEY (run 'auth pubkey' on the auth host)"
-            " and EXPLORER_SESSION_SECRET (openssl rand -hex 32)"
-            + (f"; missing: {', '.join(missing)}" if missing else "")
-            + (
-                ""
-                if env.get("mode_ok", True)
-                else "; EXPLORER_AUTH_MODE must be elcano or central"
-            ),
+            "auth signing key and auth mode configured",
+            "; ".join(problems),
         )
         if env:
-            if env["mode_ok"] and not env["session_ok"]:
+            session_len = env.get("session_len", 0)
+            if session_len < 32:
                 add(
                     "session-secret",
                     False,
                     "",
-                    "EXPLORER_SESSION_SECRET unset or short (<32 chars) — generate one: "
-                    "openssl rand -hex 32, then: explorer env edit && explorer restart",
+                    f"EXPLORER_SESSION_SECRET got {session_len} chars, need >= 32 "
+                    "— generate: openssl rand -hex 32, then: explorer env edit && explorer restart",
                 )
+            else:
+                add("session-secret", True, "session secret >= 32 chars")
             add(
                 "s3-archive",
                 env["s3_bucket"],
@@ -207,6 +218,10 @@ def diagnose(app, src, user):
             else:
                 add("aws-credentials", True, "static AWS credentials configured")
     except (OSError, KeyError, ValueError):
+        # Replace, never append: if the fault happened after the main
+        # 'configuration' check was already added, appending here would
+        # report the same fault twice under the same name.
+        checks[:] = [c for c in checks if c["name"] != "configuration"]
         add(
             "configuration",
             False,
@@ -517,29 +532,30 @@ def diagnose(app, src, user):
             "dnf not found; keep host packages current manually",
             warning=True,
         )
-    # Reboot needed — fallback chain, first success wins: needs-restarting,
-    # then dnf needs-restarting, then uname -r vs the newest installed kernel
-    # from rpm. Every step is bounded (10s) so a hung dnf cannot hang doctor;
-    # an exit code other than 0/1 means "this tier cannot say" and falls
-    # through. None means unknown, which is reported as such — never guessed.
-    reboot_needed = None
+    # Reboot needed — always walk the WHOLE fallback chain: every installed
+    # tier gets its say (each bounded at 10s so a hung dnf cannot hang
+    # doctor). A single "yes" wins over any number of "no" (tiers can
+    # disagree when one is stale), unanimity of "no" passes, and only when
+    # NO tier could answer is the verdict unknown. A 'reboot' line therefore
+    # always appears — never a silent skip when needs-restarting is absent.
+    answers = []
     if shutil.which("needs-restarting"):
         code, _ = run("needs-restarting", "-r", timeout=10)
         if code in (0, 1):
-            reboot_needed = code == 1
-    if reboot_needed is None and shutil.which("dnf"):
+            answers.append(code == 1)
+    if shutil.which("dnf"):
         code, _ = run("dnf", "needs-restarting", "-r", timeout=10)
         if code in (0, 1):
-            reboot_needed = code == 1
-    if reboot_needed is None and shutil.which("uname") and shutil.which("rpm"):
+            answers.append(code == 1)
+    if shutil.which("uname") and shutil.which("rpm"):
         code, running = run("uname", "-r", timeout=10)
         code2, installed = run("rpm", "-q", "kernel", "--last", timeout=10)
         if code == 0 and code2 == 0 and running and installed:
             # rpm -q kernel --last sorts newest first; the NEVRA's version
             # (everything after "kernel-") is exactly what uname -r prints.
             newest = installed.splitlines()[0].split()[0].removeprefix("kernel-")
-            reboot_needed = running != newest
-    if reboot_needed is True:
+            answers.append(running != newest)
+    if any(answers):
         add(
             "reboot",
             False,
@@ -547,7 +563,7 @@ def diagnose(app, src, user):
             "kernel or core libraries updated — reboot the host when convenient",
             warning=True,
         )
-    elif reboot_needed is False:
+    elif answers:
         add("reboot", True, "no reboot pending")
     else:
         add(
