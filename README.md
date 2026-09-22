@@ -259,11 +259,31 @@ layout, systemd units, the operator CLI, TLS via Caddy, the
 attachment-cleanup timer, updates and rollback, health checks, and
 troubleshooting.
 
-The short version:
+The short version — one line on a Fedora/RHEL 9+ host with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ElcanoTek/explorer/main/install.sh | sudo bash
+```
+
+The installer clones this repository into `/opt/explorer-src` and runs
+`scripts/bootstrap.sh`, which installs the dependencies, builds the venv,
+writes `/opt/explorer/.env`, installs the systemd units and the `explorer`
+operator CLI, and optionally sets up Caddy with automatic TLS. It asks for
+the authentication mode, the auth service's public key, and an optional
+S3 bucket; have those ready.
+
+Equivalent manual steps, if you'd rather clone yourself:
 
 ```bash
 sudo git clone https://github.com/ElcanoTek/explorer.git /opt/explorer-src
 sudo bash /opt/explorer-src/scripts/bootstrap.sh
+```
+
+Then manage the install with:
+
+```bash
+explorer doctor    # read-only diagnostics: config, service, readiness, TLS, disk
+explorer update    # git pull + rebuild + restart (staged, health-checked)
 ```
 
 ## Security posture

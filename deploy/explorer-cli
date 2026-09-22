@@ -40,6 +40,12 @@ case "$cmd" in
     [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
     exec sudo env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 bash "$SRC_DIR/scripts/update.sh"
     ;;
+  doctor)
+    # Read-only diagnostics; never touches the install. Runs from the
+    # source checkout so fixes to doctor.py apply on the next update.
+    [[ -d "$SRC_DIR/.git" ]] || { echo "no source checkout at $SRC_DIR" >&2; exit 1; }
+    exec sudo bash "$SRC_DIR/scripts/doctor.sh" "$@"
+    ;;
   access)
     [[ -x "$APP_DIR/.venv/bin/python" ]] || { echo "Explorer venv missing at $APP_DIR/.venv" >&2; exit 1; }
     cd "$APP_DIR"
@@ -123,6 +129,9 @@ UPDATES
                                     (use EXPLORER_UPDATE_YES=1 to skip prompt)
   explorer rebuild                  rebuild + restart current checkout
                                     (skip fetch — useful after a manual rollback)
+  explorer doctor [--json] [--strict]  read-only diagnostics: configuration,
+                                    service, readiness, TLS, disk, packages
+
   explorer provision [--client=N]   decrypt an encrypted config bundle and
                                     merge into .env + restart
                                     (--no-restart to skip; see provision/README.md)

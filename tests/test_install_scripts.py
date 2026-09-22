@@ -292,3 +292,103 @@ def test_tls_failure_is_fatal():
     assert "explorer_caddy_adapted_has_site" in text, (
         "bootstrap.sh does not confirm the site block is actually loaded"
     )
+
+
+REPO_ROOT = SCRIPTS.parent
+
+
+def test_install_sh_is_a_thin_clone_entrypoint():
+    """The public one-liner downloads and pipes this to root bash.
+
+    Same contract as the other Elcano services: parse-guarded function,
+    root + dnf required, refuses to clobber an existing checkout, clones
+    main and hands off to bootstrap.sh.
+    """
+    text = (REPO_ROOT / "install.sh").read_text()
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    assert "set -euo pipefail" in text
+    assert (
+        "git clone --branch main --single-branch https://github.com/ElcanoTek/explorer.git"
+        in text
+    )
+    assert 'exec bash "$src/scripts/bootstrap.sh"' in text
+    assert "command -v dnf" in text, "install.sh lost its Fedora/RHEL detection"
+    assert "[[ $EUID == 0 ]]" in text, "install.sh no longer demands root"
+    assert "already exists. Use explorer update" in text, (
+        "install.sh would overwrite an existing /opt/explorer-src"
+    )
+
+
+def test_doctor_wrapper_dispatches_to_sibling_doctor_py():
+    """scripts/doctor.sh is a trampoline so `explorer doctor` has one home.
+
+    It must resolve doctor.py next to itself (not via PATH or cwd), so the
+    command behaves identically from any directory.
+    """
+    text = (SCRIPTS / "doctor.sh").read_text()
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    assert 'exec python3 "$(dirname "${BASH_SOURCE[0]}")/doctor.py" "$@"' in text, (
+        "doctor.sh no longer execs the sibling doctor.py"
+    )
+
+
+def test_doctor_py_never_imports_the_app():
+    """doctor.py must run on a broken box — importing app/ would crash it.
+
+    app/config.py reads the environment at import time, and the whole point
+    of doctor is diagnosing a box where that environment is wrong. Secrets
+    are parsed with dotenv and only key names/booleans ever leave the probe.
+    """
+    text = (SCRIPTS / "doctor.py").read_text()
+    assert "SPDX-License-Identifier: BUSL-1.1" in text
+    for banned in ("import app", "from app", "import main", "uvicorn"):
+        assert banned not in text, f"doctor.py imports the application: {banned}"
+    assert "dotenv_values" in text, "doctor.py no longer parses .env with dotenv"
+
+
+def test_operator_cli_dispatches_doctor():
+    """`explorer doctor` must reach scripts/doctor.sh in the source checkout."""
+    text = (REPO_ROOT / "deploy/explorer-cli").read_text()
+    assert "doctor)" in text
+    assert 'exec sudo bash "$SRC_DIR/scripts/doctor.sh" "$@"' in text
+    assert "doctor [--json] [--strict]" in text
+
+
+def test_doctor_py_json_smoke_on_a_bare_box(tmp_path: Path):
+    """doctor.py --json must emit a well-formed report and exit 1 when broken.
+
+    Pointed at an empty APP_DIR/SRC_DIR (no venv, no units, no git) every
+    probe degrades to a check line instead of an exception — that is the
+    contract a real broken box relies on.
+    """
+    for flag in ("--help",):
+        result = subprocess.run(
+            ["python3", str(SCRIPTS / "doctor.py"), flag],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    env = {
+        "APP_DIR": str(tmp_path / "app"),
+        "EXPLORER_SRC_DIR": str(tmp_path / "src"),
+        "APP_USER": "explorer",
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        ["python3", str(SCRIPTS / "doctor.py"), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    checks = report["checks"]
+    assert len(checks) > 5
+    for check in checks:
+        assert set(check) == {"name", "status", "detail"}, check
+        assert check["status"] in ("ok", "warn", "fail"), check
