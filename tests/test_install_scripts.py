@@ -392,3 +392,157 @@ def test_doctor_py_json_smoke_on_a_bare_box(tmp_path: Path):
     for check in checks:
         assert set(check) == {"name", "status", "detail"}, check
         assert check["status"] in ("ok", "warn", "fail"), check
+
+
+def _run_doctor_json(tmp_path: Path, app_dir: Path, src_dir: Path) -> dict:
+    """Run doctor.py --json against scratch dirs with a minimal PATH."""
+    env = {
+        "APP_DIR": str(app_dir),
+        "EXPLORER_SRC_DIR": str(src_dir),
+        "APP_USER": "explorer",
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        ["python3", str(SCRIPTS / "doctor.py"), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=120,
+    )
+    assert result.returncode == 1, result.stdout
+    return json.loads(result.stdout)
+
+
+def _checks_by_name(report: dict) -> dict:
+    return {check["name"]: check for check in report["checks"]}
+
+
+def _make_fake_app(tmp_path: Path) -> Path:
+    """A scratch APP_DIR whose venv python impersonates the env probe.
+
+    The stub answers --version like an interpreter and the -c dotenv probe
+    with a report of fully-configured static AWS credentials — the shape a
+    real box with AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY set produces.
+    """
+    app = tmp_path / "app"
+    venv_python = app / ".venv/bin/python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1:2] == ["--version"]:
+    print("Python 3.11.9")
+else:
+    print(json.dumps({
+        "missing": [],
+        "central_missing": [],
+        "key_ok": True,
+        "mode_ok": True,
+        "session_ok": True,
+        "s3_bucket": True,
+        "aws_key": True,
+        "aws_secret": True,
+    }))
+"""
+    )
+    venv_python.chmod(0o755)
+    (app / ".env").write_text("AWS_ACCESS_KEY_ID=...\nAWS_SECRET_ACCESS_KEY=...\n")
+    (app / ".env").chmod(0o600)
+    return app
+
+
+def test_doctor_static_aws_keys_do_not_crash(tmp_path: Path):
+    """The static-credentials OK line used to omit the remedy argument.
+
+    add() took remedy positionally, so a box with AWS keys set (a healthy
+    box!) crashed doctor with TypeError instead of getting a clean report.
+    """
+    app = _make_fake_app(tmp_path)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    aws = _checks_by_name(report)["aws-credentials"]
+    assert aws["status"] == "ok", aws
+    assert aws["detail"] == "static AWS credentials configured"
+
+
+def _make_clone_behind_origin(tmp_path: Path) -> tuple[Path, Path]:
+    """A local clone of a local origin, with N commits pushed after cloning."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(origin)],
+        capture_output=True,
+        check=True,
+    )
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    for cmd in (
+        ["git", "init", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(cmd, cwd=seed, capture_output=True, check=True)
+    (seed / "file.txt").write_text("one\n")
+    subprocess.run(["git", "add", "."], cwd=seed, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "one"], cwd=seed, capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(origin)],
+        cwd=seed,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", "main"], cwd=seed, capture_output=True, check=True
+    )
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", str(origin), str(clone)],
+        capture_output=True,
+        check=True,
+    )
+    return origin, clone
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, check=True)
+
+
+def test_doctor_branch_warns_when_behind_origin(tmp_path: Path):
+    """Without a fetch, a stale remote-tracking ref reports 'up to date'.
+
+    Push commits to origin AFTER cloning, then demand the branch check
+    fetches first and counts HEAD..origin/main — it must WARN, not pass.
+    """
+    origin, clone = _make_clone_behind_origin(tmp_path)
+    seed = tmp_path / "seed"
+    (seed / "file.txt").write_text("one\ntwo\nthree\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "two")
+    _git(seed, "push", "origin", "main")
+    assert origin.is_dir() and clone.is_dir()
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert branch["detail"] == (
+        "checkout is 1 commit(s) behind origin/main — run explorer update"
+    ), branch
+
+
+def test_doctor_branch_honest_when_fetch_fails(tmp_path: Path):
+    """An unreachable origin must never read as 'up to date'.
+
+    Point the clone's origin at a path that does not exist: the fetch fails,
+    and the check has to say it could not compare — not claim current.
+    """
+    _, clone = _make_clone_behind_origin(tmp_path)
+    _git(clone, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert "could not reach origin" in branch["detail"], branch
+    assert "up to date" not in branch["detail"], branch

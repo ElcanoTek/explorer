@@ -14,14 +14,21 @@ import sys
 from pathlib import Path
 
 if sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb":
-    _C = {"ok": "\033[0;32m", "warn": "\033[0;33m", "fail": "\033[0;31m", "reset": "\033[0m"}
+    _C = {
+        "ok": "\033[0;32m",
+        "warn": "\033[0;33m",
+        "fail": "\033[0;31m",
+        "reset": "\033[0m",
+    }
 else:
     _C = {"ok": "", "warn": "", "fail": "", "reset": ""}
 
 
 def run(*args, timeout=15, cwd=None):
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, cwd=cwd
+        )
         return result.returncode, result.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return 127, ""
@@ -65,14 +72,21 @@ print(json.dumps({'missing': missing, 'central_missing': central_missing,
 
 def caddy_site_host():
     """Hostname of the installed Explorer Caddy site block, if there is one."""
-    for snippet in ("/etc/caddy/conf.d/explorer.caddy", "/etc/caddy/Caddyfile.d/explorer.caddyfile"):
+    for snippet in (
+        "/etc/caddy/conf.d/explorer.caddy",
+        "/etc/caddy/Caddyfile.d/explorer.caddyfile",
+    ):
         path = Path(snippet)
         if not path.is_file():
             continue
         try:
             for line in path.read_text().splitlines():
                 stripped = line.strip()
-                if stripped and not stripped.startswith(("#", "import", "}")) and stripped.endswith("{"):
+                if (
+                    stripped
+                    and not stripped.startswith(("#", "import", "}"))
+                    and stripped.endswith("{")
+                ):
                     return snippet, stripped[:-1].strip().rstrip("{").strip()
         except OSError:
             continue
@@ -82,7 +96,9 @@ def caddy_site_host():
 def diagnose(app, src, user):
     checks = []
 
-    def add(name, good, detail, remedy, warning=False):
+    def add(name, good, detail, remedy="", warning=False):
+        # remedy is only read when good is False; passing-detail-only call
+        # sites (e.g. an OK line with no failure advice) omit it.
         checks.append(
             {
                 "name": name,
@@ -133,7 +149,13 @@ def diagnose(app, src, user):
         code, data = inspect_env(app)
         env = json.loads(data) if code == 0 else {}
         missing = env.get("missing", []) + env.get("central_missing", [])
-        good = bool(env) and not missing and env["key_ok"] and env["mode_ok"] and env["session_ok"]
+        good = (
+            bool(env)
+            and not missing
+            and env["key_ok"]
+            and env["mode_ok"]
+            and env["session_ok"]
+        )
         add(
             "configuration",
             good,
@@ -141,7 +163,11 @@ def diagnose(app, src, user):
             "explorer env edit: set AUTH_SIGNING_PUBKEY (run 'auth pubkey' on the auth host)"
             " and EXPLORER_SESSION_SECRET (openssl rand -hex 32)"
             + (f"; missing: {', '.join(missing)}" if missing else "")
-            + ("" if env.get("mode_ok", True) else "; EXPLORER_AUTH_MODE must be elcano or central"),
+            + (
+                ""
+                if env.get("mode_ok", True)
+                else "; EXPLORER_AUTH_MODE must be elcano or central"
+            ),
         )
         if env:
             if env["mode_ok"] and not env["session_ok"]:
@@ -188,7 +214,12 @@ def diagnose(app, src, user):
             f"Cannot read {env_file}; run doctor with sudo or restore .env",
         )
     code, _ = run("systemctl", "is-active", "--quiet", "explorer.service")
-    add("service", code == 0, "explorer.service active", "Inspect explorer logs; then explorer restart")
+    add(
+        "service",
+        code == 0,
+        "explorer.service active",
+        "Inspect explorer logs; then explorer restart",
+    )
     code, status = run(
         "curl",
         "-sS",
@@ -208,7 +239,9 @@ def diagnose(app, src, user):
         "/health returns 200",
         "Readiness failed; inspect explorer logs",
     )
-    code, pid = run("systemctl", "show", "--property=MainPID", "--value", "explorer.service")
+    code, pid = run(
+        "systemctl", "show", "--property=MainPID", "--value", "explorer.service"
+    )
     if code == 0 and pid.isdigit() and int(pid):
         try:
             same = os.path.samefile(f"/proc/{pid}/exe", python)
@@ -231,9 +264,16 @@ def diagnose(app, src, user):
                 warning=True,
             )
         else:
-            code, _ = run("systemctl", "is-enabled", "--quiet", "explorer-attachment-cleanup.timer")
+            code, _ = run(
+                "systemctl",
+                "is-enabled",
+                "--quiet",
+                "explorer-attachment-cleanup.timer",
+            )
             enabled = code == 0
-            code, _ = run("systemctl", "is-active", "--quiet", "explorer-attachment-cleanup.timer")
+            code, _ = run(
+                "systemctl", "is-active", "--quiet", "explorer-attachment-cleanup.timer"
+            )
             active = code == 0
             if not enabled or not active:
                 add(
@@ -246,7 +286,10 @@ def diagnose(app, src, user):
                 )
             else:
                 code, result = run(
-                    "systemctl", "show", "--property=Result", "--value",
+                    "systemctl",
+                    "show",
+                    "--property=Result",
+                    "--value",
                     "explorer-attachment-cleanup.service",
                 )
                 if code == 0 and result and result != "success":
@@ -258,12 +301,23 @@ def diagnose(app, src, user):
                         "journalctl -u explorer-attachment-cleanup -n 50",
                     )
                 else:
-                    add("attachment-cleanup", True, "timer enabled + active, no failed run recorded")
+                    add(
+                        "attachment-cleanup",
+                        True,
+                        "timer enabled + active, no failed run recorded",
+                    )
     snippet, host = caddy_site_host()
     if snippet and shutil.which("caddy"):
         code, _ = run("systemctl", "is-active", "--quiet", "caddy.service")
         add("caddy", code == 0, "caddy.service active", "Inspect journalctl -u caddy")
-        code, _ = run("caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
+        code, _ = run(
+            "caddy",
+            "validate",
+            "--config",
+            "/etc/caddy/Caddyfile",
+            "--adapter",
+            "caddyfile",
+        )
         add(
             "caddy-config",
             code == 0,
@@ -276,15 +330,30 @@ def diagnose(app, src, user):
             expiry = None
             try:
                 s_client = subprocess.run(
-                    ["openssl", "s_client", "-servername", host, "-connect", f"{host}:443"],
-                    input="", capture_output=True, text=True, timeout=15,
+                    [
+                        "openssl",
+                        "s_client",
+                        "-servername",
+                        host,
+                        "-connect",
+                        f"{host}:443",
+                    ],
+                    input="",
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 if s_client.returncode == 0:
                     x509 = subprocess.run(
                         ["openssl", "x509", "-noout", "-enddate"],
-                        input=s_client.stdout, capture_output=True, text=True, timeout=10,
+                        input=s_client.stdout,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
-                    if x509.returncode == 0 and x509.stdout.strip().startswith("notAfter="):
+                    if x509.returncode == 0 and x509.stdout.strip().startswith(
+                        "notAfter="
+                    ):
                         expiry = datetime.datetime.strptime(
                             x509.stdout.strip().split("=", 1)[1].strip(),
                             "%b %d %H:%M:%S %Y %Z",
@@ -386,7 +455,13 @@ def diagnose(app, src, user):
                 warning=True,
             )
         else:
-            add("packages", False, "", "dnf check-update failed (network or repo issue)", warning=True)
+            add(
+                "packages",
+                False,
+                "",
+                "dnf check-update failed (network or repo issue)",
+                warning=True,
+            )
         if shutil.which("needs-restarting"):
             code, _ = run("needs-restarting", "-r", timeout=30)
             if code == 1:
@@ -403,9 +478,17 @@ def diagnose(app, src, user):
             os_release = platform.freedesktop_os_release()
         except (OSError, AttributeError):
             os_release = {}
-        if os_release.get("ID") == "fedora" and os_release.get("VERSION_ID", "").isdigit():
+        if (
+            os_release.get("ID") == "fedora"
+            and os_release.get("VERSION_ID", "").isdigit()
+        ):
             code, out = run(
-                "curl", "-fsS", "--connect-timeout", "5", "--max-time", "15",
+                "curl",
+                "-fsS",
+                "--connect-timeout",
+                "5",
+                "--max-time",
+                "15",
                 "https://fedoraproject.org/releases.json",
             )
             latest = None
@@ -421,7 +504,13 @@ def diagnose(app, src, user):
                     latest = None
             current = int(os_release["VERSION_ID"])
             if latest is None:
-                add("fedora", False, "", "could not read the Fedora release feed", warning=True)
+                add(
+                    "fedora",
+                    False,
+                    "",
+                    "could not read the Fedora release feed",
+                    warning=True,
+                )
             elif latest > current:
                 add(
                     "fedora",
@@ -433,7 +522,13 @@ def diagnose(app, src, user):
             else:
                 add("fedora", True, f"Fedora {current} (latest stable: {latest})")
     else:
-        add("packages", False, "", "dnf not found; keep host packages current manually", warning=True)
+        add(
+            "packages",
+            False,
+            "",
+            "dnf not found; keep host packages current manually",
+            warning=True,
+        )
     if src.joinpath(".git").exists():
         git = ("git", "-c", f"safe.directory={src}", "-C", str(src))
         code, dirty = run(*git, "status", "--porcelain")
@@ -444,7 +539,6 @@ def diagnose(app, src, user):
             "Resolve local source changes before explorer update",
         )
         code, branch = run(*git, "rev-parse", "--abbrev-ref", "HEAD")
-        code2, behind = run(*git, "rev-list", "--count", "HEAD..origin/main")
         if code == 0 and branch != "main":
             add(
                 "branch",
@@ -454,18 +548,39 @@ def diagnose(app, src, user):
                 f"git -C {src} checkout main",
                 warning=True,
             )
-        elif code2 == 0 and behind.isdigit() and int(behind) > 0:
-            add(
-                "branch",
-                False,
-                "",
-                f"checkout is {behind} commit(s) behind origin/main — run explorer update",
-                warning=True,
-            )
         else:
-            add("branch", True, "on main, up to date with origin")
+            # Compare only after a successful fetch: without it, a stale
+            # remote-tracking ref reports a weeks-behind checkout as current.
+            code, _ = run(*git, "fetch", "--quiet", "origin", "main", timeout=10)
+            if code != 0:
+                add(
+                    "branch",
+                    False,
+                    "",
+                    "could not reach origin — cannot compare with upstream; "
+                    "check network or remote credentials",
+                    warning=True,
+                )
+            else:
+                code2, behind = run(*git, "rev-list", "--count", "HEAD..origin/main")
+                if code2 == 0 and behind.isdigit() and int(behind) > 0:
+                    add(
+                        "branch",
+                        False,
+                        "",
+                        f"checkout is {behind} commit(s) behind origin/main — run explorer update",
+                        warning=True,
+                    )
+                else:
+                    add("branch", True, "on main, up to date with origin")
     else:
-        add("checkout", False, "", f"no source checkout at {src} — explorer update will not work", warning=True)
+        add(
+            "checkout",
+            False,
+            "",
+            f"no source checkout at {src} — explorer update will not work",
+            warning=True,
+        )
     return checks
 
 
@@ -480,13 +595,17 @@ def main():
         Path(os.environ.get("EXPLORER_SRC_DIR", "/opt/explorer-src")),
         os.environ.get("APP_USER", "explorer"),
     )
-    failed = any(c["status"] == "fail" or (args.strict and c["status"] == "warn") for c in checks)
+    failed = any(
+        c["status"] == "fail" or (args.strict and c["status"] == "warn") for c in checks
+    )
     if args.json:
         print(json.dumps({"ok": not failed, "checks": checks}, indent=2))
     else:
         for check in checks:
             label = check["status"].upper()
-            print(f"{_C[check['status']]}{label:4}{_C['reset']} {check['name']}: {check['detail']}")
+            print(
+                f"{_C[check['status']]}{label:4}{_C['reset']} {check['name']}: {check['detail']}"
+            )
         print("\nHost packages: sudo dnf upgrade --refresh. Doctor changes nothing.")
     return int(failed)
 
