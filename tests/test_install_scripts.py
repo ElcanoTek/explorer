@@ -15,7 +15,9 @@ import base64
 import getpass
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -519,14 +521,29 @@ def _healthy_dotenv() -> str:
     )
 
 
+_FAKE_REQUIREMENTS = "fastdemo==1.0.0\nwidget-tool==2.3.4\n"
+
+
+def _install_fake_package(app: Path, dist_name: str, metadata_name: str, version: str):
+    """A dist-info/METADATA pair, as installed packages leave behind."""
+    dist = app / f".venv/lib/python3.11/site-packages/{dist_name}.dist-info"
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {metadata_name}\nVersion: {version}\n"
+    )
+
+
 def _make_fake_app(tmp_path: Path) -> Path:
     """A scratch APP_DIR with a venv stand-in and a healthy .env.
 
     pyvenv.cfg stands in for the venv — the python check reads it because a
     root-run doctor must never execute the service-writable venv
     interpreter. .venv/bin/python is a stub: doctor only checks that it
-    exists, never runs it. Each test rewrites .env (and optionally
-    .env.shared) with real dotenv text, so parsing is exercised end to end.
+    exists, never runs it. requirements.txt plus matching dist-info
+    metadata stand in for the installed packages, which the dependencies
+    check reads as data (never by executing the venv). Each test rewrites
+    .env (and optionally .env.shared) with real dotenv text, so parsing is
+    exercised end to end.
     """
     app = tmp_path / "app"
     (app / ".venv/bin").mkdir(parents=True)
@@ -535,6 +552,10 @@ def _make_fake_app(tmp_path: Path) -> Path:
     (app / ".venv/pyvenv.cfg").write_text(
         "home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.9\n"
     )
+    (app / "requirements.txt").write_text(_FAKE_REQUIREMENTS)
+    # fastdemo matches as-is; widget_tool normalizes to the widget-tool pin.
+    _install_fake_package(app, "fastdemo-1.0.0", "fastdemo", "1.0.0")
+    _install_fake_package(app, "widget_tool-2.3.4", "widget_tool", "2.3.4")
     _write_dotenv(app, _healthy_dotenv())
     return app
 
@@ -579,8 +600,6 @@ version_info = 3.14.5
 include-system-site-packages = false
 """
 
-STUB_UV_OK = "#!/bin/bash\nexit 0\n"
-
 
 @pytest.mark.parametrize(
     "cfg",
@@ -594,12 +613,12 @@ def test_doctor_pyvenv_cfg_version_keys_accepted(tmp_path: Path, cfg: str):
     """Real-box bug: uv writes version_info, stdlib venv writes version.
 
     Doctor must accept either key (exact match, other keys ignored) and
-    report the venv healthy. The uv stub proves 'uv pip check' ran against
-    the existing interpreter.
+    report the venv healthy, with the dependencies verdict computed from
+    installed metadata — not from executing the venv interpreter.
     """
     app = _make_fake_app(tmp_path)
     (app / ".venv/pyvenv.cfg").write_text(cfg)
-    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    path = _hermetic_path(tmp_path, {})
     report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
     checks = _checks_by_name(report)
     assert checks["python"]["status"] == "ok", checks["python"]
@@ -619,12 +638,12 @@ def test_doctor_unreadable_venv_version_warns_not_fails(tmp_path: Path, cfg: str
     """A venv whose version metadata can't be read is not a missing venv.
 
     The interpreter exists, so: python check is a WARN (not a FAIL), and
-    'uv pip check' still runs against it (the uv stub proves it) instead of
-    being gated on the version parse.
+    the dependencies check still runs against the installed metadata
+    instead of being gated on the version parse.
     """
     app = _make_fake_app(tmp_path)
     (app / ".venv/pyvenv.cfg").write_text(cfg)
-    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    path = _hermetic_path(tmp_path, {})
     report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
     checks = _checks_by_name(report)
     python = checks["python"]
@@ -633,10 +652,64 @@ def test_doctor_unreadable_venv_version_warns_not_fails(tmp_path: Path, cfg: str
     assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
 
 
+def test_doctor_pyvenv_cfg_undecodable_bytes_warns_not_crashes(tmp_path: Path):
+    """A corrupted (non-UTF-8) service-owned pyvenv.cfg is a WARN, not a
+    traceback: UnicodeDecodeError must not escape the reader."""
+    app = _make_fake_app(tmp_path)
+    (app / ".venv/pyvenv.cfg").write_bytes(b"\xff\xfe\x00version_info = 3.14.5\n")
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    python = checks["python"]
+    assert python["status"] == "warn", python
+    assert python["detail"] == "could not read venv Python version", python
+    assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
+
+
+def test_doctor_never_executes_the_venv_interpreter(tmp_path: Path):
+    """Codex P1: .venv is service-writable, so a root-run doctor must not
+    execute .venv/bin/python — a compromised service could plant a binary
+    and gain root execution via doctor.
+
+    The canary stub would touch a marker file the instant anything ran it;
+    the dependencies verdict must still come out OK from dist-info
+    metadata alone.
+    """
+    app = _make_fake_app(tmp_path)
+    canary = tmp_path / "canary"
+    (app / ".venv/bin/python").write_text(f"#!/bin/bash\ntouch {canary}\nexit 1\n")
+    (app / ".venv/bin/python").chmod(0o755)
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(
+        tmp_path, app, tmp_path / "src", path=path, extra_env={"DOCTOR_CANARY": "1"}
+    )
+    checks = _checks_by_name(report)
+    assert checks["dependencies"]["status"] == "ok", checks["dependencies"]
+    assert not canary.exists(), "doctor executed the service-writable venv interpreter"
+
+
+def test_doctor_dependencies_divergence_names_packages(tmp_path: Path):
+    """A drifted package FAILs the dependencies check by name (versions of
+    pins are not secrets, but names alone keep the report terse)."""
+    app = _make_fake_app(tmp_path)
+    # Replace, not add: two dist-infos for one package is its own ambiguity.
+    for stale in (app / ".venv/lib/python3.11/site-packages").glob(
+        "fastdemo-*.dist-info"
+    ):
+        shutil.rmtree(stale)
+    _install_fake_package(app, "fastdemo-9.9.9", "fastdemo", "9.9.9")
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    deps = _checks_by_name(report)["dependencies"]
+    assert deps["status"] == "fail", deps
+    assert "fastdemo" in deps["detail"], deps
+    assert "widget-tool" not in deps["detail"], deps
+
+
 def test_doctor_venv_python_floor_still_enforced(tmp_path: Path):
     app = _make_fake_app(tmp_path)
     (app / ".venv/pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.10.9\n")
-    path = _hermetic_path(tmp_path, {"uv": STUB_UV_OK})
+    path = _hermetic_path(tmp_path, {})
     report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
     checks = _checks_by_name(report)
     python = checks["python"]
@@ -758,6 +831,10 @@ def test_doctor_configuration_names_missing_central_keys(tmp_path: Path):
             "AUTH_ISSUER_URL must be an https origin without a path, query or embedded credentials",
         ),
         (
+            "AUTH_ISSUER_URL=https://[",
+            "AUTH_ISSUER_URL must be an https origin without a path, query or embedded credentials",
+        ),
+        (
             'AUTH_CLIENT_ID="bad:id"',
             "AUTH_CLIENT_ID must be 1-128 characters without ':'",
         ),
@@ -833,6 +910,27 @@ def test_doctor_dotenv_local_overrides_shared(tmp_path: Path):
     assert _checks_by_name(report)["configuration"]["status"] == "ok"
 
 
+def test_doctor_dotenv_references_resolve_in_parse_order(tmp_path: Path):
+    """python-dotenv resolves each entry as it is parsed: a reference sees
+    only EARLIER entries plus the process environment. A forward reference
+    must NOT resolve here (the app would load it empty), while a backward
+    reference and ${VAR:-default} must keep working."""
+    app = _make_fake_app(tmp_path)
+    forward = _drop_lines(_healthy_dotenv(), "AUTH_SIGNING_PUBKEY")
+    forward += f"AUTH_SIGNING_PUBKEY=${{LATER}}\nLATER={_VALID_PUBKEY}\n"
+    _write_dotenv(app, forward)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert "missing: AUTH_SIGNING_PUBKEY" in config["detail"], config
+
+    backward = _drop_lines(_healthy_dotenv(), "AUTH_SIGNING_PUBKEY")
+    backward += f"EARLIER={_VALID_PUBKEY}\nAUTH_SIGNING_PUBKEY=${{EARLIER}}\n"
+    _write_dotenv(app, backward)
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    assert _checks_by_name(report)["configuration"]["status"] == "ok"
+
+
 def test_doctor_env_shared_permissions_checked(tmp_path: Path):
     """A group-readable .env.shared exposes secrets while .env looks clean."""
     app = _make_fake_app(tmp_path)
@@ -845,6 +943,33 @@ def test_doctor_env_shared_permissions_checked(tmp_path: Path):
     shared_check = checks["env-shared-permissions"]
     assert shared_check["status"] == "fail", shared_check
     assert "chmod 600" in shared_check["detail"], shared_check
+
+
+def test_doctor_env_hard_link_fails_the_permissions_check(tmp_path: Path):
+    """layout.sh requires a single-link regular file; a hard-linked .env
+    (st_nlink > 1) must not pass env-permissions."""
+    app = _make_fake_app(tmp_path)
+    os.link(app / ".env", app / ".env.bak")
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    perms = _checks_by_name(report)["env-permissions"]
+    assert perms["status"] == "fail", perms
+    assert "hard links" in perms["detail"], perms
+
+
+def test_doctor_env_fifo_fails_without_being_opened(tmp_path: Path):
+    """A non-regular dotenv (fifo) fails the check and is never read —
+    opening it would block the whole doctor run."""
+    app = _make_fake_app(tmp_path)
+    (app / ".env").unlink()
+    os.mkfifo(app / ".env", 0o600)
+    path = _hermetic_path(tmp_path, {})
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    perms = checks["env-permissions"]
+    assert perms["status"] == "fail", perms
+    assert "not a regular file" in perms["detail"], perms
+    # configuration still diagnoses: could not parse, never a hang
+    assert checks["configuration"]["status"] == "fail", checks["configuration"]
 
 
 def test_doctor_env_symlink_is_not_followed(tmp_path: Path):
@@ -1273,3 +1398,151 @@ def test_install_sh_cleans_partial_clone():
     assert 'mv "$tmp/repo" "$src"' in text, (
         "install.sh does not move the finished clone into place"
     )
+
+
+def _central_dotenv(extra: str = "") -> str:
+    local = _drop_lines(_healthy_dotenv(), "EXPLORER_AUTH_MODE", "AUTH_SIGNING_PUBKEY")
+    local += (
+        "EXPLORER_AUTH_MODE=central\n"
+        "AUTH_SIGNING_PUBKEY=" + _VALID_PUBKEY + "\n"
+        "AUTH_ISSUER_URL=https://auth.example.com\n"
+        "EXPLORER_PUBLIC_URL=https://explorer.example.com\n"
+        "AUTH_CLIENT_ID=explorer\n"
+        "AUTH_CLIENT_SECRET=" + "x" * 40 + "\n"
+    )
+    return local + extra
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "AUTH_HTTP_TIMEOUT_SECONDS=bogus\n",
+            "AUTH_HTTP_TIMEOUT_SECONDS must be a number",
+        ),
+        (
+            "AUTH_HTTP_TIMEOUT_SECONDS=0\n",
+            "AUTH_HTTP_TIMEOUT_SECONDS must be between 0 and 60",
+        ),
+        (
+            "AUTH_HTTP_TIMEOUT_SECONDS=120\n",
+            "AUTH_HTTP_TIMEOUT_SECONDS must be between 0 and 60",
+        ),
+    ],
+    ids=["nonnumeric", "zero", "too-large"],
+)
+def test_doctor_central_timeout_validated(tmp_path: Path, line: str, expected: str):
+    """from_env does float(AUTH_HTTP_TIMEOUT_SECONDS) and the constructor
+    requires 0 < timeout <= 60 — a value a restart would choke on must not
+    pass doctor."""
+    app = _make_fake_app(tmp_path)
+    _write_dotenv(app, _central_dotenv(line))
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    config = _checks_by_name(report)["configuration"]
+    assert config["status"] == "fail", config
+    assert expected in config["detail"], config
+
+
+def test_doctor_central_timeout_absent_or_valid_passes(tmp_path: Path):
+    app = _make_fake_app(tmp_path)
+    _write_dotenv(app, _central_dotenv())
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    assert _checks_by_name(report)["configuration"]["status"] == "ok"
+    _write_dotenv(app, _central_dotenv("AUTH_HTTP_TIMEOUT_SECONDS=10\n"))
+    report = _run_doctor_json(tmp_path, app, tmp_path / "src")
+    assert _checks_by_name(report)["configuration"]["status"] == "ok"
+
+
+def _commit_and_push(repo: Path, message: str):
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", message)
+    _git(repo, "push", "origin", "main")
+
+
+def test_doctor_branch_exact_behind_count_with_fresh_ref(tmp_path: Path):
+    """Local origin/main already at the live remote: ancestry against it is
+    exact, so the behind count is reported."""
+    _, clone = _make_clone_behind_origin(tmp_path)
+    seed = tmp_path / "seed"
+    (seed / "file.txt").write_text("one\ntwo\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "two")
+    _git(seed, "push", "origin", "main")
+    # The TEST fetches (doctor never does): now the clone's origin/main IS
+    # the live remote, and HEAD is a strict ancestor of it.
+    _git(clone, "fetch", "origin", "main")
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert branch["detail"] == (
+        "checkout is 1 commit(s) behind origin/main — run explorer update"
+    ), branch
+
+
+def test_doctor_branch_ahead_is_never_called_behind(tmp_path: Path):
+    """A local commit not on the remote must not be labeled behind, and
+    'explorer update' must not be suggested as the remedy (ff would fail
+    or clobber local work)."""
+    _, clone = _make_clone_behind_origin(tmp_path)
+    (clone / "local.txt").write_text("local work\n")
+    _git(clone, "add", ".")
+    _git(clone, "commit", "-m", "local commit")
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert branch["detail"] == (
+        "checkout has 1 local commit(s) not on origin/main — investigate before update"
+    ), branch
+    assert "behind" not in branch["detail"], branch
+
+
+def test_doctor_branch_diverged_gets_neutral_warning(tmp_path: Path):
+    """Local and remote both moved: neither behind nor ahead — a neutral
+    divergence WARN that does not point at explorer update."""
+    _, clone = _make_clone_behind_origin(tmp_path)
+    (clone / "local.txt").write_text("local work\n")
+    _git(clone, "add", ".")
+    _git(clone, "commit", "-m", "local commit")
+    seed = tmp_path / "seed"
+    (seed / "file.txt").write_text("one\ntwo\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "two")
+    _git(seed, "push", "origin", "main")
+    _git(clone, "fetch", "origin", "main")
+
+    report = _run_doctor_json(tmp_path, tmp_path / "app", clone)
+    branch = _checks_by_name(report)["branch"]
+    assert branch["status"] == "warn", branch
+    assert branch["detail"] == (
+        "checkout and origin/main have diverged — investigate before update"
+    ), branch
+
+
+STUB_SYSTEMCTL_INACTIVE_AND_DISABLED = """#!/bin/bash
+# stub systemctl: service down AND disabled; timer absent
+cmd="${1:-}"
+case "$cmd" in
+  is-active) exit 1 ;;
+  is-enabled) exit 1 ;;
+  cat) exit 1 ;;
+  show) echo 0; exit 0 ;;
+esac
+exit 1
+"""
+
+
+def test_doctor_service_inactive_and_disabled_reports_both(tmp_path: Path):
+    """Codex #30: enablement must be queried independently of activity —
+    an inactive+disabled unit shows BOTH faults, not just the restart
+    remedy."""
+    path = _hermetic_path(tmp_path, {"systemctl": STUB_SYSTEMCTL_INACTIVE_AND_DISABLED})
+    report = _run_doctor_json(tmp_path, tmp_path / "app", tmp_path / "src", path=path)
+    checks = _checks_by_name(report)
+    service = checks["service"]
+    assert service["status"] == "fail", service
+    enabled = checks["service-enabled"]
+    assert enabled["status"] == "warn", enabled
+    assert "DISABLED and inactive" in enabled["detail"], enabled
+    assert "enable --now" in enabled["detail"], enabled

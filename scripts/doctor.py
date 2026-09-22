@@ -90,15 +90,23 @@ def _parse_dotenv(text, base):
             # Unquoted: a comment starts only at whitespace-then-#.
             values[key] = re.sub(r"\s+#.*$", "", val).rstrip()
 
+    # Resolve references in PARSE ORDER, exactly like python-dotenv: an
+    # entry sees only earlier entries of this file plus the ambient base —
+    # a forward reference to a later line stays empty (or takes the
+    # default), never the later value.
+    resolved = {}
+
     def repl(match):
         name, default = match.group(1), match.group(2)
-        if name in values:
-            return values[name]
+        if name in resolved:
+            return resolved[name]
         if name in base:
             return base[name]
         return default or ""
 
-    return {key: _ENV_REF.sub(repl, val) for key, val in values.items()}
+    for key, val in values.items():
+        resolved[key] = _ENV_REF.sub(repl, val)
+    return resolved
 
 
 def load_dotenv_pair(app):
@@ -243,6 +251,57 @@ def caddy_site_host(caddyfile=None):
     return None, None
 
 
+def _requirements_pins(app):
+    """name==version pins from the app's requirements.txt (normalized names).
+
+    None when the file cannot be read. Version pins are not secret, but
+    only names are ever reported as diverged.
+    """
+    try:
+        text = (app / "requirements.txt").read_text()
+    except OSError:
+        return None
+    pins = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "-")):
+            continue
+        match = re.match(
+            r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==(\S+)(?:\s+#.*)?$",
+            line,
+        )
+        if match:
+            pins[_norm_name(match.group(1))] = match.group(2)
+    return pins
+
+
+def _norm_name(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _installed_package_versions(app):
+    """name→version of everything installed in the venv, from dist-info
+    METADATA files. Reading metadata never executes venv code — essential
+    because .venv is service-writable and doctor runs as root."""
+    versions = {}
+    for site_packages in sorted((app / ".venv").glob("lib/python*/site-packages")):
+        for metadata in site_packages.glob("*.dist-info/METADATA"):
+            name = version = None
+            try:
+                for line in metadata.read_text(errors="replace").splitlines():
+                    if line.startswith("Name: "):
+                        name = line[len("Name: ") :].strip()
+                    elif line.startswith("Version: "):
+                        version = line[len("Version: ") :].strip()
+                    if name and version:
+                        break
+            except OSError:
+                continue
+            if name:
+                versions[_norm_name(name)] = version
+    return versions
+
+
 def diagnose(app, src, user):
     checks = []
 
@@ -278,7 +337,9 @@ def diagnose(app, src, user):
                 if sep and key.strip() in ("version", "version_info"):
                     version_text = value.strip()
                     break
-        except OSError:
+        except (OSError, UnicodeError):
+            # A corrupted (non-UTF-8) service-owned cfg is a damaged file,
+            # not a doctor crash: the WARN below covers it.
             version_text = None
         version = None
         if version_text:
@@ -306,13 +367,34 @@ def diagnose(app, src, user):
                 "",
                 "Need Python >= 3.11 in the venv; run explorer rebuild",
             )
-        code, _ = run("uv", "pip", "check", "--python", str(python), timeout=60)
-        add(
-            "dependencies",
-            code == 0,
-            "locked dependencies consistent",
-            "Run explorer rebuild; Python dependencies are broken",
-        )
+        pins = _requirements_pins(app)
+        installed = _installed_package_versions(app)
+        if pins is None:
+            add(
+                "dependencies",
+                False,
+                "",
+                "requirements.txt is unreadable — run explorer rebuild",
+            )
+        elif not installed:
+            add(
+                "dependencies",
+                False,
+                "",
+                "venv site-packages missing or empty — run explorer rebuild",
+            )
+        else:
+            diverged = sorted(
+                name for name, want in pins.items() if installed.get(name) != want
+            )
+            sample = ", ".join(diverged[:8]) + (" …" if len(diverged) > 8 else "")
+            add(
+                "dependencies",
+                not diverged,
+                "installed packages match requirements.txt pins",
+                f"installed packages diverge from requirements.txt pins: {sample} "
+                "— run explorer rebuild",
+            )
     # Permissions on every dotenv the app loads (lstat: never through a
     # symlink — layout.sh requires a regular file, one link, owner-only).
     texts = {}
@@ -333,30 +415,45 @@ def diagnose(app, src, user):
                 )
             continue
         is_link = stat.S_ISLNK(st.st_mode)
+        is_reg = stat.S_ISREG(st.st_mode)
         try:
             owner = pwd.getpwuid(st.st_uid).pw_name
         except KeyError:
             owner = str(st.st_uid)
         mode = stat.S_IMODE(st.st_mode)
-        good = not is_link and mode == 0o600 and owner == user
+        # layout.sh requires exactly this: a single-link regular file,
+        # owner-only. A hard link (st_nlink > 1) or a fifo/socket/device
+        # with friendly ownership must not pass.
+        good = (
+            is_reg
+            and not is_link
+            and st.st_nlink == 1
+            and mode == 0o600
+            and owner == user
+        )
         problems = []
         if is_link:
             problems.append(f"{env_path} is a symlink — replace it with a regular file")
+        if not is_reg:
+            problems.append(f"{env_path} is not a regular file")
+        if st.st_nlink > 1:
+            problems.append(f"{env_path} has {st.st_nlink} hard links — want exactly 1")
         if mode != 0o600:
             problems.append(f"chmod 600 {env_path}")
         if owner != user:
             problems.append(f"chown {user}:{user} {env_path}")
-        problems.append("(it holds secrets; the installed layout is owner-only)")
+        problems.append("(layout.sh requires a single-link regular file, owner-only)")
         add(
             check_name,
             good,
-            f"{owner}-owned 0600",
+            f"{owner}-owned 0600, one link",
             "; ".join(problems),
         )
         # Read whatever parsed regardless of the verdict above: a
         # permissions fault must not hide a configuration fault (and root
-        # can read the file anyway). Symlinks are still never followed.
-        if not is_link:
+        # can read the file anyway). Symlinks and non-regular files are
+        # never opened (a fifo would block).
+        if is_reg and not is_link:
             try:
                 texts[name] = env_path.read_text()
             except OSError:
@@ -395,7 +492,12 @@ def diagnose(app, src, user):
     if mode == "central":
 
         def origin_ok(raw):
-            parsed = urllib.parse.urlsplit(raw.strip())
+            try:
+                parsed = urllib.parse.urlsplit(raw.strip())
+            except ValueError:
+                # Malformed URLs ('https://[') raise instead of parsing —
+                # that is an invalid origin, not a doctor crash.
+                return False
             return (
                 parsed.scheme == "https"
                 and bool(parsed.netloc)
@@ -425,6 +527,20 @@ def diagnose(app, src, user):
                 central_problems.append(
                     "AUTH_CLIENT_SECRET is longer than 256 characters or contains ':'"
                 )
+        # Mirror from_env: float(AUTH_HTTP_TIMEOUT_SECONDS) with the
+        # constructor's 0 < timeout <= 60. Absent means the default and is
+        # fine; anything a restart would choke on is named here.
+        raw_timeout = merged.get("AUTH_HTTP_TIMEOUT_SECONDS")
+        if raw_timeout is not None:
+            try:
+                timeout_value = float(str(raw_timeout).strip())
+            except ValueError:
+                central_problems.append("AUTH_HTTP_TIMEOUT_SECONDS must be a number")
+            else:
+                if timeout_value <= 0 or timeout_value > 60:
+                    central_problems.append(
+                        "AUTH_HTTP_TIMEOUT_SECONDS must be between 0 and 60"
+                    )
     # Only the failures that are THIS check's to name: absent keys, a key
     # that is present but malformed, a bad auth mode, invalid central-mode
     # values. The session secret length belongs to the dedicated
@@ -496,22 +612,35 @@ def diagnose(app, src, user):
         else:
             add("aws-credentials", True, "static AWS credentials configured")
     code, _ = run("systemctl", "is-active", "--quiet", "explorer.service")
+    service_active = code == 0
     add(
         "service",
-        code == 0,
+        service_active,
         "explorer.service active",
         "Inspect explorer logs; then explorer restart",
     )
+    # Enablement is queried independently of activity: an inactive AND
+    # disabled unit has two faults, and 'restart' alone would leave the
+    # second one (no start after reboot) in place.
+    code, _ = run("systemctl", "is-enabled", "--quiet", "explorer.service")
     if code == 0:
-        # Active only tells half the story: a manually disabled unit stays
-        # up until the next reboot and never comes back.
-        code, _ = run("systemctl", "is-enabled", "--quiet", "explorer.service")
+        add("service-enabled", True, "explorer.service enabled")
+    elif service_active:
         add(
             "service-enabled",
-            code == 0,
-            "explorer.service enabled",
+            False,
+            "",
             "explorer.service is active but DISABLED — it will not start on "
             "boot: systemctl enable explorer.service",
+            warning=True,
+        )
+    else:
+        add(
+            "service-enabled",
+            False,
+            "",
+            "explorer.service is DISABLED and inactive — it will not start "
+            "on boot: systemctl enable --now explorer.service",
             warning=True,
         )
     code, status = run(
@@ -910,9 +1039,11 @@ def diagnose(app, src, user):
             # Compare against the live remote. A fetch is forbidden here:
             # it writes FETCH_HEAD and remote refs, and a read-only check
             # must never mutate the checkout it diagnoses. ls-remote reads
-            # only. The count comes from the local tracking ref only when
-            # that ref already matches the live remote; otherwise we say
-            # "behind" without inventing a number.
+            # only. Direction comes from ancestry between HEAD and the
+            # local origin/main (both objects exist locally): ahead must
+            # never be labeled behind — 'explorer update' on an ahead
+            # checkout would ff-fail or clobber local work, so ahead and
+            # divergence get neutral remedies instead.
             code, head = run(*git, "rev-parse", "HEAD")
             code2, remote = run(*git, "ls-remote", "origin", "main", timeout=10)
             remote_sha = remote.split()[0] if code2 == 0 and remote else ""
@@ -929,17 +1060,66 @@ def diagnose(app, src, user):
                 add("branch", True, "on main, up to date with origin")
             else:
                 code3, local_ref = run(*git, "rev-parse", "origin/main")
-                detail = "checkout is behind origin/main — run explorer update"
-                if code3 == 0 and local_ref == remote_sha:
-                    code4, behind = run(
-                        *git, "rev-list", "--count", "HEAD..origin/main"
-                    )
-                    if code4 == 0 and behind.isdigit() and int(behind) > 0:
-                        detail = (
-                            f"checkout is {behind} commit(s) behind "
-                            "origin/main — run explorer update"
+                direction = None
+                if code3 == 0 and local_ref:
+                    if local_ref == head:
+                        # HEAD == the local tracking ref but the live remote
+                        # has moved on: strictly behind, no count available.
+                        direction = "behind"
+                    else:
+                        code4, _ = run(
+                            *git, "merge-base", "--is-ancestor", "HEAD", "origin/main"
                         )
-                add("branch", False, "", detail, warning=True)
+                        code5, _ = run(
+                            *git, "merge-base", "--is-ancestor", "origin/main", "HEAD"
+                        )
+                        if code4 == 0 and code5 != 0:
+                            direction = "behind"
+                        elif code5 == 0 and code4 != 0:
+                            direction = "ahead"
+                        elif code4 != 0 and code5 != 0:
+                            direction = "diverged"
+                if direction == "behind":
+                    detail = "checkout is behind origin/main — run explorer update"
+                    if local_ref == remote_sha:
+                        _, behind = run(
+                            *git, "rev-list", "--count", "HEAD..origin/main"
+                        )
+                        if behind.isdigit() and int(behind) > 0:
+                            detail = (
+                                f"checkout is {behind} commit(s) behind "
+                                "origin/main — run explorer update"
+                            )
+                    add("branch", False, "", detail, warning=True)
+                elif direction == "ahead":
+                    _, ahead = run(*git, "rev-list", "--count", "origin/main..HEAD")
+                    count = f"{ahead} " if ahead.isdigit() and int(ahead) > 0 else ""
+                    add(
+                        "branch",
+                        False,
+                        "",
+                        f"checkout has {count}local commit(s) not on "
+                        "origin/main — investigate before update",
+                        warning=True,
+                    )
+                elif direction == "diverged":
+                    add(
+                        "branch",
+                        False,
+                        "",
+                        "checkout and origin/main have diverged — "
+                        "investigate before update",
+                        warning=True,
+                    )
+                else:
+                    add(
+                        "branch",
+                        False,
+                        "",
+                        "checkout differs from origin/main and local "
+                        "ancestry is undeterminable — investigate before update",
+                        warning=True,
+                    )
     else:
         add(
             "checkout",
