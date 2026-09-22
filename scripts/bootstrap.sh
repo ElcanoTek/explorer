@@ -333,7 +333,7 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   # the old conf.d copy may be orphaned after an operator's manual repair.
   source "$SRC_DIR/scripts/lib/caddy-site.sh"
   caddyfile=/etc/caddy/Caddyfile
-  explorer_caddy_plan "$caddyfile" "$HOSTNAME_FOR_TLS" \
+  explorer_caddy_plan "$caddyfile" \
     || die "no safe Caddy site path is available"
   if [[ "$EXPLORER_CADDY_ADD_IMPORT" == 1 ]]; then
     {
@@ -368,12 +368,12 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
     ' "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
   fi
   [[ ! -e $EXPLORER_CADDY_TARGET && ! -L $EXPLORER_CADDY_TARGET ]] ||
-    explorer_caddy_is_ours "$EXPLORER_CADDY_TARGET" "$HOSTNAME_FOR_TLS" \
+    explorer_caddy_is_ours "$EXPLORER_CADDY_TARGET" \
     || die "refusing to overwrite an unmarked Caddy site: $EXPLORER_CADDY_TARGET"
   install -d "$(dirname -- "$EXPLORER_CADDY_TARGET")"
   install -m 0644 "$tmp" "$EXPLORER_CADDY_TARGET"
   rm -f "$tmp"
-  removed=$(explorer_caddy_remove_stale "$caddyfile" "$HOSTNAME_FOR_TLS" "$EXPLORER_CADDY_TARGET") \
+  removed=$(explorer_caddy_remove_stale "$caddyfile" "$EXPLORER_CADDY_TARGET") \
     || die "could not remove a stale Explorer Caddy site"
   if [[ -n $removed ]]; then
     while IFS= read -r stale; do info "removed stale Explorer site: $stale"; done <<< "$removed"

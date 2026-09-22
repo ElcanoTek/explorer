@@ -157,7 +157,7 @@ def test_caddy_plan_uses_a_loaded_glob(
     caddyfile = tmp_path / "Caddyfile"
     caddyfile.write_text(import_line + "\n")
     result = _caddy_helper(
-        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
+        'explorer_caddy_plan "$2"; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
         str(caddyfile),
     )
     assert result.returncode == 0, result.stderr
@@ -169,7 +169,7 @@ def test_caddy_plan_resolves_absolute_import(tmp_path: Path):
     caddyfile = tmp_path / "Caddyfile"
     caddyfile.write_text(f'import "{imported}"\n')
     result = _caddy_helper(
-        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
+        'explorer_caddy_plan "$2"; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
         str(caddyfile),
     )
     assert result.returncode == 0, result.stderr
@@ -199,7 +199,7 @@ def test_caddy_plan_preserves_loaded_manual_copy_and_removes_only_owned_orphan(
     orphan.write_text(content)
     unrelated.write_text("other.example {\n}\n")
     result = _caddy_helper(
-        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"; explorer_caddy_remove_stale "$2" explorer.example "$EXPLORER_CADDY_TARGET"',
+        'explorer_caddy_plan "$2"; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"; explorer_caddy_remove_stale "$2" "$EXPLORER_CADDY_TARGET"',
         str(caddyfile),
     )
     assert result.returncode == 0, result.stderr
@@ -223,7 +223,7 @@ def test_caddy_cleanup_removes_owned_old_hostname_but_not_unmarked_file(
         "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via\nother.example {\n}\n"
     )
     result = _caddy_helper(
-        'explorer_caddy_plan "$2" explorer.example; explorer_caddy_remove_stale "$2" explorer.example "$EXPLORER_CADDY_TARGET"',
+        'explorer_caddy_plan "$2"; explorer_caddy_remove_stale "$2" "$EXPLORER_CADDY_TARGET"',
         str(caddyfile),
     )
     assert result.returncode == 0, result.stderr
@@ -271,7 +271,7 @@ def test_caddy_adapted_check_requires_host_matcher_and_explorer_proxy(tmp_path: 
 
 def test_bootstrap_uses_the_tested_caddy_helpers_before_opening_firewall():
     text = (SCRIPTS / "bootstrap.sh").read_text()
-    assert 'explorer_caddy_plan "$caddyfile" "$HOSTNAME_FOR_TLS"' in text
+    assert 'explorer_caddy_plan "$caddyfile"' in text
     assert 'explorer_caddy_remove_stale "$caddyfile"' in text
     assert 'explorer_caddy_adapted_has_site "$adapted"' in text
     assert text.index("caddy validate --config") < text.index(

@@ -60,7 +60,7 @@ explorer_caddy_candidate() {
 }
 
 explorer_caddy_plan() {
-  local file=$1 host=$2 pattern candidate
+  local file=$1 pattern candidate
   EXPLORER_CADDY_TARGET=''
   EXPLORER_CADDY_ADD_IMPORT=0
   EXPLORER_CADDY_CANDIDATES=()
@@ -71,7 +71,7 @@ explorer_caddy_plan() {
   # Keep the already-loaded hand-installed block in preference to creating a
   # second one. An occupied, unmarked candidate is never overwritten.
   for candidate in "${EXPLORER_CADDY_CANDIDATES[@]}"; do
-    if explorer_caddy_is_ours "$candidate" "$host"; then
+    if explorer_caddy_is_ours "$candidate"; then
       EXPLORER_CADDY_TARGET=$candidate
       return 0
     fi
@@ -87,11 +87,11 @@ explorer_caddy_plan() {
   # shellcheck disable=SC2034
   EXPLORER_CADDY_ADD_IMPORT=1
   [[ ! -e $EXPLORER_CADDY_TARGET && ! -L $EXPLORER_CADDY_TARGET ]] ||
-    explorer_caddy_is_ours "$EXPLORER_CADDY_TARGET" "$host"
+    explorer_caddy_is_ours "$EXPLORER_CADDY_TARGET"
 }
 
 explorer_caddy_remove_stale() {
-  local file=$1 host=$2 target=$3 candidate dir path
+  local file=$1 target=$2 candidate dir path
   local -A directories=()
   for candidate in "${EXPLORER_CADDY_CANDIDATES[@]}" \
     "$(dirname -- "$file")/conf.d/explorer.caddy" \
@@ -102,7 +102,7 @@ explorer_caddy_remove_stale() {
   for dir in "${!directories[@]}"; do
     while IFS= read -r -d '' path; do
       [[ $path == "$target" ]] && continue
-      if explorer_caddy_is_ours "$path" "$host"; then
+      if explorer_caddy_is_ours "$path"; then
         rm -- "$path" || return 1
         printf '%s\n' "$path"
       fi
