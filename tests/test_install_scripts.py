@@ -92,3 +92,40 @@ def test_provision_creates_every_file_private():
     assert top_level[0] < first_write, (
         "provision.sh writes before its umask takes effect"
     )
+
+
+def test_caddy_import_check_names_our_own_snippet_directory():
+    """A generic "is there any import?" test is not enough.
+
+    Fedora's caddy package ships a Caddyfile that already imports
+    `Caddyfile.d/*.caddyfile`. The installer writes its site block to
+    `conf.d/`, so a check for any import at all passed, nothing was added,
+    and Caddy served plain HTTP with the site block unread while the install
+    reported success.
+    """
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    guard = [
+        line
+        for line in text.splitlines()
+        if "grep" in line and "import" in line and "Caddyfile" in line
+    ]
+    assert guard, "bootstrap.sh no longer checks the Caddyfile for its import"
+    for line in guard:
+        assert "conf" in line and "caddy" in line, (
+            f"the import check does not name our own snippet directory: {line.strip()}"
+        )
+
+
+def test_tls_failure_is_fatal():
+    """A proxy that never answered used to be a warning under a success card.
+
+    The box was left with Explorer healthy on loopback and nothing reachable,
+    which is how a broken install passed for a finished one.
+    """
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert 'die "https://${HOSTNAME_FOR_TLS} did not answer' in text, (
+        "bootstrap.sh no longer fails when TLS does not come up"
+    )
+    assert "caddy adapt" in text, (
+        "bootstrap.sh does not confirm the site block is actually loaded"
+    )

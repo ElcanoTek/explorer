@@ -330,11 +330,13 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
   dnf install -y caddy >/dev/null
   install -d /etc/caddy/conf.d
 
-  # Ensure main /etc/caddy/Caddyfile imports our conf.d/. We only add
-  # the import if no import line exists at all — so the first service
-  # installed sets it up and subsequent services drop snippets into
-  # /etc/caddy/conf.d/ without overwriting each other.
-  if [[ ! -f /etc/caddy/Caddyfile ]] || ! grep -qE '^[[:space:]]*import[[:space:]]' /etc/caddy/Caddyfile; then
+  # Ensure main /etc/caddy/Caddyfile imports OUR conf.d/, not merely that
+  # some import exists. Fedora's caddy package ships a Caddyfile that already
+  # ends with `import Caddyfile.d/*.caddyfile`, which does not match the files
+  # this script writes: the old check saw that line, added nothing, and the
+  # site block sat in conf.d/ unread. Caddy then served plain HTTP with no
+  # automatic HTTPS while the install still printed a success card.
+  if [[ ! -f /etc/caddy/Caddyfile ]] || ! grep -qE '^[[:space:]]*import[[:space:]]+(\./)?conf\.d/\*\.caddy[[:space:]]*$' /etc/caddy/Caddyfile; then
     {
       echo ""
       echo "# Managed by Elcano service bootstraps — each service drops"
@@ -378,6 +380,15 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
     ok "firewalld: http + https opened"
   fi
 
+  # The config must parse AND contain this site: a snippet that is written
+  # but never imported is exactly the failure above, and it is invisible
+  # until someone opens the URL.
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+    || die "the Caddy configuration does not validate — run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+  if ! caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null | grep -qF "$HOSTNAME_FOR_TLS"; then
+    die "Caddy does not load $HOSTNAME_FOR_TLS: /etc/caddy/conf.d/explorer.caddy is not imported by /etc/caddy/Caddyfile"
+  fi
+
   systemctl enable caddy >/dev/null 2>&1 || true
   # `caddy reload` is graceful and validates before applying; only fall
   # back to `restart` if the service wasn't already running.
@@ -403,7 +414,7 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
         | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
       ok "TLS live — cert valid until ${expiry:-unknown}"
     else
-      warn "https://${HOSTNAME_FOR_TLS} didn't come up in 45s — check: journalctl -u caddy"
+      die "https://${HOSTNAME_FOR_TLS} did not answer within 45s. Explorer itself is installed and healthy on 127.0.0.1:8080, but it is not reachable over TLS, so the install is not finished. Check: journalctl -u caddy, that 80 and 443 are open to the internet, and that the DNS record points here."
     fi
   fi
 else
