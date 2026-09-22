@@ -3,15 +3,17 @@
 
 """Guards on the installer and updater shell scripts.
 
-These are source-level checks, not a run of the scripts, which need root and a
-service user. They pin two faults that are invisible until a real install:
+Most are source-level checks; Caddy planning runs against temporary fixture
+files without root or a service user. They pin faults invisible until install:
 a venv build that dies when the operator happens to run it from /root, and an
 environment file whose mode silently loosened on update.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -94,26 +96,157 @@ def test_provision_creates_every_file_private():
     )
 
 
-def test_caddy_import_check_names_our_own_snippet_directory():
-    """A generic "is there any import?" test is not enough.
+def _caddy_helper(script: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            f'source "$1"; {script}',
+            "bash",
+            str(SCRIPTS / "lib/caddy-site.sh"),
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    Fedora's caddy package ships a Caddyfile that already imports
-    `Caddyfile.d/*.caddyfile`. The installer writes its site block to
-    `conf.d/`, so a check for any import at all passed, nothing was added,
-    and Caddy served plain HTTP with the site block unread while the install
-    reported success.
-    """
-    text = (SCRIPTS / "bootstrap.sh").read_text()
-    guard = [
-        line
-        for line in text.splitlines()
-        if "grep" in line and "import" in line and "Caddyfile" in line
+
+@pytest.mark.parametrize(
+    ("import_line", "target", "add_import"),
+    [
+        ("import Caddyfile.d/*.caddyfile", "Caddyfile.d/explorer.caddyfile", "0"),
+        ("", "conf.d/explorer.caddy", "1"),
+        ('import "Caddyfile.d/*.caddyfile"', "Caddyfile.d/explorer.caddyfile", "0"),
+        ("import ./conf.d/*", "conf.d/explorer.caddy", "0"),
+        ("import conf.d/*.caddy", "conf.d/explorer.caddy", "0"),
+    ],
+)
+def test_caddy_plan_uses_a_loaded_glob(
+    tmp_path: Path, import_line: str, target: str, add_import: str
+):
+    caddyfile = tmp_path / "Caddyfile"
+    caddyfile.write_text(import_line + "\n")
+    result = _caddy_helper(
+        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
+        str(caddyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(tmp_path / target), add_import]
+
+
+def test_caddy_plan_resolves_absolute_import(tmp_path: Path):
+    imported = tmp_path / "different" / "*.caddyfile"
+    caddyfile = tmp_path / "Caddyfile"
+    caddyfile.write_text(f'import "{imported}"\n')
+    result = _caddy_helper(
+        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"',
+        str(caddyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(tmp_path / "different/explorer.caddyfile"),
+        "0",
     ]
-    assert guard, "bootstrap.sh no longer checks the Caddyfile for its import"
-    for line in guard:
-        assert "conf" in line and "caddy" in line, (
-            f"the import check does not name our own snippet directory: {line.strip()}"
-        )
+
+
+@pytest.mark.parametrize("orphan_also_imported", [False, True])
+def test_caddy_plan_preserves_loaded_manual_copy_and_removes_only_owned_orphan(
+    tmp_path: Path, orphan_also_imported: bool
+):
+    caddyfile = tmp_path / "Caddyfile"
+    imports = "import Caddyfile.d/*.caddyfile\n"
+    if orphan_also_imported:
+        imports += "import conf.d/*.caddy\n"
+    caddyfile.write_text(imports)
+    loaded = tmp_path / "Caddyfile.d/explorer.caddyfile"
+    orphan = tmp_path / "conf.d/explorer.caddy"
+    unrelated = tmp_path / "conf.d/other.caddy"
+    for path in (loaded, orphan, unrelated):
+        path.parent.mkdir(exist_ok=True)
+    marker = "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via"
+    content = f"{marker}\nexplorer.example {{\n}}\n"
+    loaded.write_text(content)
+    orphan.write_text(content)
+    unrelated.write_text("other.example {\n}\n")
+    result = _caddy_helper(
+        'explorer_caddy_plan "$2" explorer.example; printf "%s\\n%s\\n" "$EXPLORER_CADDY_TARGET" "$EXPLORER_CADDY_ADD_IMPORT"; explorer_caddy_remove_stale "$2" explorer.example "$EXPLORER_CADDY_TARGET"',
+        str(caddyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(loaded), "0", str(orphan)]
+    assert loaded.read_text() == content
+    assert not orphan.exists()
+    assert unrelated.exists()
+
+
+def test_caddy_cleanup_never_removes_unmarked_or_other_host(tmp_path: Path):
+    caddyfile = tmp_path / "Caddyfile"
+    caddyfile.write_text("import Caddyfile.d/*.caddyfile\n")
+    directory = tmp_path / "conf.d"
+    directory.mkdir()
+    unmarked = directory / "explorer.caddy"
+    other_host = directory / "old.caddy"
+    unmarked.write_text("explorer.example {\n}\n")
+    other_host.write_text(
+        "# Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via\nother.example {\n}\n"
+    )
+    result = _caddy_helper(
+        'explorer_caddy_plan "$2" explorer.example; explorer_caddy_remove_stale "$2" explorer.example "$EXPLORER_CADDY_TARGET"',
+        str(caddyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert unmarked.exists() and other_host.exists()
+
+
+def test_caddy_adapted_check_requires_host_matcher_and_explorer_proxy(tmp_path: Path):
+    adapted = tmp_path / "adapted.json"
+    route = {
+        "match": [{"host": ["other.example"]}],
+        "handle": [
+            {
+                "handler": "subroute",
+                "routes": [
+                    {
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "127.0.0.1:8080"}],
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+    payload = {
+        "email": "explorer.example",
+        "apps": {"http": {"servers": {"srv0": {"routes": [route]}}}},
+    }
+    adapted.write_text(json.dumps(payload))
+    script = 'explorer_caddy_adapted_has_site "$2" explorer.example 127.0.0.1:8080'
+    assert _caddy_helper(script, str(adapted)).returncode != 0
+    route["match"][0]["host"] = ["explorer.example"]
+    adapted.write_text(json.dumps(payload))
+    result = _caddy_helper(script, str(adapted))
+    assert result.returncode == 0, result.stderr
+    route["handle"][0]["routes"][0]["handle"][0]["upstreams"][0]["dial"] = (
+        "127.0.0.1:9999"
+    )
+    adapted.write_text(json.dumps(payload))
+    assert _caddy_helper(script, str(adapted)).returncode != 0
+
+
+def test_bootstrap_uses_the_tested_caddy_helpers_before_opening_firewall():
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert 'explorer_caddy_plan "$caddyfile" "$HOSTNAME_FOR_TLS"' in text
+    assert 'explorer_caddy_remove_stale "$caddyfile"' in text
+    assert 'explorer_caddy_adapted_has_site "$adapted"' in text
+    assert text.index("caddy validate --config") < text.index(
+        "firewall-cmd --add-service"
+    )
 
 
 def test_tls_failure_is_fatal():
@@ -126,6 +259,6 @@ def test_tls_failure_is_fatal():
     assert 'die "https://${HOSTNAME_FOR_TLS} did not answer' in text, (
         "bootstrap.sh no longer fails when TLS does not come up"
     )
-    assert "caddy adapt" in text, (
+    assert "explorer_caddy_adapted_has_site" in text, (
         "bootstrap.sh does not confirm the site block is actually loaded"
     )
