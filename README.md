@@ -208,10 +208,13 @@ days) is live, the handoff signs them back in without a prompt. The short
 app limit bounds a stolen cookie and re-checks the account with Auth daily.
 Revoking an email immediately invalidates all of that email's Explorer
 sessions. Logout is CSRF-protected and revokes only the current Explorer
-session. Auth's signed back-channel endpoint also revokes every local session
-for the affected central subject after account disablement, password
-replacement, or explicit sign-out-everywhere. Events have durable retry and
-replay protection, so temporary Explorer outages do not lose revocations.
+session. In central mode, Auth application grants and revokes automatically
+maintain the same local allow-list through signed, versioned desired-state
+events. The signed back-channel endpoint also revokes every local session for
+the affected central subject after account disablement, password replacement,
+or explicit sign-out-everywhere. Events have durable retry and replay/version
+protection, so temporary Explorer outages do not lose access changes or
+revocations.
 
 The auth service must register the exact client ID, secret, callback URL, and
 `https://<explorer-host>/auth/backchannel-logout` endpoint.

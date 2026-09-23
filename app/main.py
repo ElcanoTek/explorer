@@ -35,6 +35,7 @@ from app.central_auth import (
     AuthTransactionError,
     CentralAuthError,
     CodeExchangeRejectedError,
+    verify_access_token,
     verify_csrf_token,
     verify_logout_token,
 )
@@ -733,16 +734,34 @@ def signed_out(request: Request):
 
 
 @app.post("/auth/backchannel-logout", status_code=204)
-def auth_backchannel_logout(request: Request, logout_token: str = Form(...)):
+def auth_backchannel_logout(
+    request: Request,
+    logout_token: str | None = Form(default=None),
+    access_token: str | None = Form(default=None),
+):
     provider = request_auth_provider(request)
     if not isinstance(provider, CentralAuthProvider):
         raise HTTPException(status_code=404)
+    if bool(logout_token) == bool(access_token):
+        raise HTTPException(status_code=400, detail="Invalid back-channel request")
+    if access_token:
+        try:
+            event = verify_access_token(
+                access_token,
+                issuer=provider.client.issuer_url,
+                audience=provider.client.client_id,
+                public_keys=provider.key_resolver.keys_for_token(access_token),
+            )
+        except CentralAuthError as exc:
+            raise HTTPException(status_code=400, detail="Invalid access token") from exc
+        provider.store.apply_access_provisioning(event)
+        return Response(status_code=204)
     try:
         event = verify_logout_token(
-            logout_token,
+            logout_token or "",
             issuer=provider.client.issuer_url,
             audience=provider.client.client_id,
-            public_keys=provider.key_resolver.keys_for_token(logout_token),
+            public_keys=provider.key_resolver.keys_for_token(logout_token or ""),
         )
     except CentralAuthError as exc:
         raise HTTPException(status_code=400, detail="Invalid logout token") from exc

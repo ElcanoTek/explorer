@@ -19,15 +19,56 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.central_auth import (
     AccessDeniedError,
+    AccessProvisionEvent,
     AuthKeyResolver,
     CentralAuthClient,
     CentralAuthError,
     CentralAuthStore,
     CodeExchangeRejectedError,
     csrf_token_for_session,
+    verify_access_token,
     verify_csrf_token,
     verify_logout_token,
 )
+
+
+def _mint_access(private_key, *, action="grant", version=1, **overrides):
+    public = private_key.public_key().public_bytes_raw()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
+        .rstrip(b"=")
+        .decode()
+    )
+    header = {"typ": "access+jwt", "alg": "EdDSA", "kid": kid}
+    payload = {
+        "iss": "https://auth.example.com",
+        "sub": "account-123",
+        "aud": "explorer",
+        "email": "alice@example.com",
+        "iat": 1_000,
+        "exp": 1_300,
+        "jti": f"access-{version}",
+        "events": {
+            "urn:elcanotek:event:application-access": {
+                "action": action,
+                "version": version,
+            }
+        },
+    }
+    payload.update(overrides)
+
+    def encode(value):
+        return (
+            base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+
+    body = f"{encode(header)}.{encode(payload)}"
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(body.encode())).rstrip(b"=").decode()
+    )
+    return f"{body}.{signature}", base64.b64encode(public).decode()
 
 
 @pytest.fixture()
@@ -183,6 +224,90 @@ def test_logout_token_verification_checks_signature_issuer_and_audience() -> Non
             public_keys=[public_key],
             now=1_010,
         )
+
+
+def test_access_token_verification_checks_signature_claims_and_version() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    raw, public_key = _mint_access(private_key, version=7)
+
+    event = verify_access_token(
+        raw,
+        issuer="https://auth.example.com",
+        audience="explorer",
+        public_keys=[public_key],
+        now=1_010,
+    )
+
+    assert event == AccessProvisionEvent(
+        event_id="access-7",
+        subject="account-123",
+        email="alice@example.com",
+        issuer="https://auth.example.com",
+        issued_at=1_000,
+        version=7,
+        allowed=True,
+    )
+
+    with pytest.raises(CentralAuthError):
+        verify_access_token(
+            raw,
+            issuer="https://auth.example.com",
+            audience="lens",
+            public_keys=[public_key],
+            now=1_010,
+        )
+
+    malformed, _ = _mint_access(private_key, version=True)
+    with pytest.raises(CentralAuthError):
+        verify_access_token(
+            malformed,
+            issuer="https://auth.example.com",
+            audience="explorer",
+            public_keys=[public_key],
+            now=1_010,
+        )
+
+
+def test_access_provisioning_is_ordered_and_revocation_ends_sessions(
+    store: CentralAuthStore,
+) -> None:
+    grant = AccessProvisionEvent(
+        event_id="grant-2",
+        subject="account-123",
+        email="alice@example.com",
+        issuer="https://auth.example.com",
+        issued_at=1_000,
+        version=2,
+        allowed=True,
+    )
+    stale_revoke = AccessProvisionEvent(
+        event_id="revoke-1",
+        subject=grant.subject,
+        email=grant.email,
+        issuer=grant.issuer,
+        issued_at=1_001,
+        version=1,
+        allowed=False,
+    )
+    revoke = AccessProvisionEvent(
+        event_id="revoke-3",
+        subject=grant.subject,
+        email=grant.email,
+        issuer=grant.issuer,
+        issued_at=1_002,
+        version=3,
+        allowed=False,
+    )
+
+    assert store.apply_access_provisioning(grant, now=1_010)
+    issued = store.create_session(grant.subject, grant.email, now=1_011)
+    assert not store.apply_access_provisioning(stale_revoke, now=1_012)
+    assert store.is_allowed(grant.email)
+
+    assert store.apply_access_provisioning(revoke, now=1_013)
+    assert not store.is_allowed(grant.email)
+    assert store.get_identity(issued.token, now=1_014) is None
+    assert not store.apply_access_provisioning(revoke, now=1_015)
 
 
 def test_csrf_token_is_bound_to_the_app_session_secret() -> None:

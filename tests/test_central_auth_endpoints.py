@@ -139,6 +139,46 @@ def complete_login(client, *, next_path: str = "/"):
     )
 
 
+def access_token(*, action: str, version: int, email: str) -> str:
+    private_key = FakeAuthClient.signing_key
+    assert private_key is not None
+    public = private_key.public_key().public_bytes_raw()
+    kid = (
+        base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
+        .rstrip(b"=")
+        .decode()
+    )
+
+    def encode(value):
+        return (
+            base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+
+    header = {"typ": "access+jwt", "alg": "EdDSA", "kid": kid}
+    claims = {
+        "iss": "https://auth.example.com",
+        "sub": "account-bob",
+        "aud": "explorer",
+        "email": email,
+        "iat": 1_000,
+        "exp": 2_000_000_000,
+        "jti": f"access-{version}",
+        "events": {
+            "urn:elcanotek:event:application-access": {
+                "action": action,
+                "version": version,
+            }
+        },
+    }
+    body = f"{encode(header)}.{encode(claims)}"
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(body.encode())).rstrip(b"=").decode()
+    )
+    return f"{body}.{signature}"
+
+
 def test_protected_request_starts_local_login_transaction(central_client) -> None:
     client, _store = central_client
 
@@ -353,6 +393,42 @@ def test_signed_backchannel_logout_revokes_all_sessions_for_subject(
         ).status_code
         == 204
     )
+
+
+def test_signed_access_events_grant_then_revoke_real_local_membership(
+    central_client,
+) -> None:
+    client, store = central_client
+    email = "bob@example.com"
+
+    grant = client.post(
+        "/auth/backchannel-logout",
+        data={"access_token": access_token(action="grant", version=1, email=email)},
+    )
+    assert grant.status_code == 204
+    assert store.is_allowed(email)
+
+    FakeAuthClient.email = email
+    assert complete_login(client).status_code == 303
+    raw_session = client.cookies.get(CENTRAL_AUTH_COOKIE_NAME)
+    assert raw_session and store.get_identity(raw_session) is not None
+
+    revoke = client.post(
+        "/auth/backchannel-logout",
+        data={"access_token": access_token(action="revoke", version=2, email=email)},
+    )
+    assert revoke.status_code == 204
+    assert not store.is_allowed(email)
+    assert store.get_identity(raw_session) is None
+
+    ambiguous = client.post(
+        "/auth/backchannel-logout",
+        data={
+            "access_token": access_token(action="revoke", version=2, email=email),
+            "logout_token": "also-present",
+        },
+    )
+    assert ambiguous.status_code == 400
 
 
 def test_auth_client_requires_https_and_a_strong_client_secret(monkeypatch) -> None:
