@@ -184,7 +184,10 @@ but lose to `.env`.
 | `EXPLORER_SESSION_IDLE_SECONDS` | no | `43200` | Explorer app-session idle lifetime. Activity refreshes this deadline but never extends the absolute deadline. |
 | `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `86400` | Explorer app-session absolute lifetime. |
 
-Central mode owns no passwords. Manage only the local authorization list:
+Central mode owns no passwords. Auth is the normal source of application
+membership: granting or revoking Explorer in Auth asynchronously updates this
+local authorization list. The CLI remains available for recovery and manual
+deployments:
 
 ```bash
 sudo explorer access grant user@example.com
@@ -216,17 +219,21 @@ redirect-URI matching, state, nonce, and S256 PKCE:
    `nonce`. Explorer requires the nonce to match before applying its local
    allowlist and issuing an app session. Errors must not return identity data.
 
-Auth can also deliver signed, durable back-channel logout events. Register this
-deployment's exact endpoint after creating the application:
+Auth also delivers signed, durable application-access and back-channel logout
+events to the same endpoint. Register this deployment's exact endpoint after
+creating the application:
 
 ```bash
 auth app set-backchannel explorer \
   https://explorer.example.com/auth/backchannel-logout
 ```
 
-Explorer validates the token's Ed25519 signature, issuer, audience, event type,
-subject, and replay ID before revoking every local session for that central
-subject. Delivery is idempotent, so Auth can retry safely after outages.
+Explorer validates each token's Ed25519 signature, issuer, audience, event
+type, subject, and replay/version data. A newer access grant enables the email;
+a newer revoke disables it and ends its Explorer sessions. Per-subject versions
+make delayed and replayed deliveries harmless, and Auth retains the latest
+desired state until Explorer acknowledges it, so an outage converges after
+recovery. Logout delivery remains idempotent and subject-scoped.
 Account disablement, password replacement, and an explicit central
 sign-out-everywhere take effect without waiting for Explorer's idle timeout.
 Explorer's own logout is that sign-out-everywhere: it revokes the local

@@ -49,9 +49,10 @@ DEFAULT_ABSOLUTE_SECONDS = 24 * 60 * 60
 # anything built later); keep it a constant, not a setting.
 SESSION_TOUCH_SECONDS = 60
 LOGIN_TRANSACTION_SECONDS = 10 * 60
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_TOKEN_RESPONSE_BYTES = 64 * 1024
 BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+APPLICATION_ACCESS_EVENT = "urn:elcanotek:event:application-access"
 REVOCATION_EVENT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -131,6 +132,17 @@ class LogoutEvent:
     subject: str
     issuer: str
     issued_at: int
+
+
+@dataclass(frozen=True)
+class AccessProvisionEvent:
+    event_id: str
+    subject: str
+    email: str
+    issuer: str
+    issued_at: int
+    version: int
+    allowed: bool
 
 
 def _decode_b64url(segment: str) -> bytes:
@@ -229,6 +241,98 @@ def verify_logout_token(
         subject=subject,
         issuer=issuer.rstrip("/"),
         issued_at=issued_at,
+    )
+
+
+def verify_access_token(
+    raw: str,
+    *,
+    issuer: str,
+    audience: str,
+    public_keys: list[str],
+    now: int | None = None,
+) -> AccessProvisionEvent:
+    """Verify Auth's signed, versioned desired application membership."""
+    if len(raw) > 16_384:
+        raise CentralAuthError("The access token was invalid")
+    parts = raw.split(".")
+    if len(parts) != 3:
+        raise CentralAuthError("The access token was invalid")
+    try:
+        header = json.loads(_decode_b64url(parts[0]))
+        claims = json.loads(_decode_b64url(parts[1]))
+        signature = _decode_b64url(parts[2])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CentralAuthError("The access token was invalid") from exc
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise CentralAuthError("The access token was invalid")
+    if header.get("typ") != "access+jwt" or header.get("alg") != "EdDSA":
+        raise CentralAuthError("The access token was invalid")
+    verified = False
+    for encoded_key in public_keys:
+        try:
+            raw_key = base64.b64decode(encoded_key.strip(), validate=True)
+            if len(raw_key) != 32:
+                continue
+            kid = (
+                base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest()[:16])
+                .rstrip(b"=")
+                .decode()
+            )
+            if not hmac.compare_digest(str(header.get("kid", "")), kid):
+                continue
+            Ed25519PublicKey.from_public_bytes(raw_key).verify(
+                signature, f"{parts[0]}.{parts[1]}".encode("ascii")
+            )
+            verified = True
+            break
+        except (ValueError, InvalidSignature, UnicodeEncodeError):
+            continue
+    if not verified:
+        raise CentralAuthError("The access token was invalid")
+    timestamp = int(time.time() if now is None else now)
+    events = claims.get("events")
+    access = events.get(APPLICATION_ACCESS_EVENT) if isinstance(events, dict) else None
+    issued_at = claims.get("iat")
+    expires_at = claims.get("exp")
+    version = access.get("version") if isinstance(access, dict) else None
+    action = access.get("action") if isinstance(access, dict) else None
+    try:
+        email = normalize_email(claims.get("email", ""))
+    except (TypeError, ValueError) as exc:
+        raise CentralAuthError("The access token was invalid") from exc
+    if (
+        isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or expires_at + CLOCK_SKEW_SECONDS <= timestamp
+        or not isinstance(claims.get("iss"), str)
+        or claims["iss"].rstrip("/") != issuer.rstrip("/")
+        or claims.get("aud") != audience
+        or not isinstance(claims.get("sub"), str)
+        or not claims["sub"]
+        or len(claims["sub"]) > 255
+        or not isinstance(claims.get("jti"), str)
+        or not claims["jti"]
+        or len(claims["jti"]) > 255
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, int)
+        or issued_at <= 0
+        or issued_at > timestamp + CLOCK_SKEW_SECONDS
+        or isinstance(version, bool)
+        or not isinstance(version, int)
+        or version <= 0
+        or action not in {"grant", "revoke"}
+        or "nonce" in claims
+    ):
+        raise CentralAuthError("The access token was invalid")
+    return AccessProvisionEvent(
+        event_id=claims["jti"],
+        subject=claims["sub"],
+        email=email,
+        issuer=issuer.rstrip("/"),
+        issued_at=issued_at,
+        version=version,
+        allowed=action == "grant",
     )
 
 
@@ -356,8 +460,14 @@ class AuthKeyResolver:
 
     def keys_for_token(self, raw_token: str) -> list[str]:
         """Keys to try for one token: refresh once if its kid is unknown."""
-        keys = self.public_keys()
         kid = _token_kid(raw_token)
+        # A token naming an already configured/cached key must not wait on
+        # Auth's JWKS endpoint. Besides avoiding a cold-start delay, this keeps
+        # revocation and provisioning available while Auth itself is restarting.
+        keys = list(dict.fromkeys(self.static_keys + self._remote_keys))
+        if kid is not None and any(_kid_for_key(key) == kid for key in keys):
+            return keys
+        keys = self.public_keys()
         if kid is not None and not any(_kid_for_key(key) == kid for key in keys):
             if self.refresh():
                 keys = self.public_keys()
@@ -702,6 +812,18 @@ class CentralAuthStore:
                     issued_at INTEGER NOT NULL,
                     received_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS access_provisioning_state (
+                    issuer TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+                    event_id TEXT NOT NULL,
+                    issued_at INTEGER NOT NULL,
+                    received_at INTEGER NOT NULL,
+                    PRIMARY KEY (issuer, subject)
+                );
                 """
             )
             connection.execute(
@@ -934,6 +1056,66 @@ class CentralAuthStore:
                     (timestamp, subject),
                 )
         return cursor.rowcount > 0
+
+    def apply_access_provisioning(
+        self, event: AccessProvisionEvent, *, now: int | None = None
+    ) -> bool:
+        """Apply only a newer desired-state version, atomically and idempotently."""
+        timestamp = int(time.time() if now is None else now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT email, version FROM access_provisioning_state WHERE issuer = ? AND subject = ?",
+                (event.issuer, event.subject),
+            ).fetchone()
+            if current is not None and int(current["version"]) >= event.version:
+                return False
+            old_email = str(current["email"]) if current is not None else ""
+            if old_email and old_email != event.email:
+                connection.execute(
+                    "UPDATE access_entries SET enabled = 0, updated_at = ? WHERE email = ?",
+                    (timestamp, old_email),
+                )
+                connection.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE email = ? AND revoked_at IS NULL",
+                    (timestamp, old_email),
+                )
+            connection.execute(
+                """
+                INSERT INTO access_entries(email, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    enabled = excluded.enabled, updated_at = excluded.updated_at
+                """,
+                (event.email, int(event.allowed), timestamp, timestamp),
+            )
+            if not event.allowed:
+                connection.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE email = ? AND revoked_at IS NULL",
+                    (timestamp, event.email),
+                )
+            connection.execute(
+                """
+                INSERT INTO access_provisioning_state(
+                    issuer, subject, email, version, allowed, event_id, issued_at, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(issuer, subject) DO UPDATE SET
+                    email = excluded.email, version = excluded.version,
+                    allowed = excluded.allowed, event_id = excluded.event_id,
+                    issued_at = excluded.issued_at, received_at = excluded.received_at
+                """,
+                (
+                    event.issuer,
+                    event.subject,
+                    event.email,
+                    event.version,
+                    int(event.allowed),
+                    event.event_id,
+                    event.issued_at,
+                    timestamp,
+                ),
+            )
+        return True
 
     @staticmethod
     def csrf_token(token: str) -> str:
