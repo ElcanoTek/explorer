@@ -193,6 +193,12 @@ def test_callback_denies_authenticated_but_unlisted_email(central_client) -> Non
     response = complete_login(client)
 
     assert response.status_code == 403
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "Explorer access needed" in response.text
+    assert "Ask an administrator" in response.text
+    assert '"detail"' not in response.text
     assert CENTRAL_AUTH_COOKIE_NAME not in client.cookies
 
 
@@ -203,6 +209,9 @@ def test_callback_fails_closed_when_code_exchange_fails(central_client) -> None:
     response = complete_login(client)
 
     assert response.status_code == 502
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Unable to sign in" in response.text
+    assert '"detail"' not in response.text
     assert CENTRAL_AUTH_COOKIE_NAME not in client.cookies
 
 
@@ -213,7 +222,9 @@ def test_rejected_code_is_a_retry_not_an_outage(central_client) -> None:
     response = complete_login(client)
 
     assert response.status_code == 400
-    assert "Try again" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Sign-in expired" in response.text
+    assert '"detail"' not in response.text
     assert CENTRAL_AUTH_COOKIE_NAME not in client.cookies
 
 

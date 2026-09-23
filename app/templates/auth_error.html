@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block header_title %}Explorer{% endblock %}
+{% block header_intro %}{% endblock %}
+{% block content %}
+<section class="card auth-card" aria-labelledby="auth-error-heading">
+  <div class="featured-head">
+    <p class="featured-kicker">Explorer</p>
+    <h2 id="auth-error-heading">{{ heading }}</h2>
+  </div>
+  <p class="description">{{ message }}</p>
+  <p><a class="button" href="/auth/login">Try again</a></p>
+</section>
+{% endblock %}
