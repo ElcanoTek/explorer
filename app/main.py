@@ -613,6 +613,24 @@ def safe_local_path(raw: str | None, default: str = "/") -> str:
     return raw
 
 
+def auth_error_page(
+    request: Request,
+    *,
+    status_code: int,
+    heading: str,
+    message: str,
+):
+    response = templates.TemplateResponse(
+        request,
+        "auth_error.html",
+        {"heading": heading, "message": message},
+        status_code=status_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -641,33 +659,57 @@ def auth_callback(
 ):
     provider = request_auth_provider(request)
     if not isinstance(provider, CentralAuthProvider):
-        raise HTTPException(status_code=404)
+        return auth_error_page(
+            request,
+            status_code=404,
+            heading="Sign-in unavailable",
+            message="Central sign-in is not configured for this Explorer instance.",
+        )
     if error or not code or not state:
         request.session.pop("central_auth_transaction", None)
-        raise HTTPException(status_code=400, detail="Sign-in was not completed.")
+        return auth_error_page(
+            request,
+            status_code=400,
+            heading="Sign-in was not completed",
+            message="Return to Explorer and try signing in again.",
+        )
     try:
         _principal, token, destination = provider.complete_login(
             request, code=code, state=state
         )
-    except AuthTransactionError as exc:
-        raise HTTPException(
-            status_code=400, detail="Sign-in expired. Try again."
-        ) from exc
-    except AccessDeniedError as exc:
-        raise HTTPException(
+    except AuthTransactionError:
+        return auth_error_page(
+            request,
+            status_code=400,
+            heading="Sign-in expired",
+            message="The sign-in request is no longer valid. Start a new sign-in to continue.",
+        )
+    except AccessDeniedError:
+        return auth_error_page(
+            request,
             status_code=403,
-            detail="Your account does not have access to this Explorer instance.",
-        ) from exc
-    except CodeExchangeRejectedError as exc:
+            heading="Explorer access needed",
+            message=(
+                "Your account is signed in, but it has not been given access to this "
+                "Explorer instance. Ask an administrator to enable access, then try again."
+            ),
+        )
+    except CodeExchangeRejectedError:
         # A consumed, expired, or superseded code (for example a second tab
         # that started its own sign-in) is a retry, not an outage.
-        raise HTTPException(
-            status_code=400, detail="Sign-in expired. Try again."
-        ) from exc
-    except CentralAuthError as exc:
-        raise HTTPException(
-            status_code=502, detail="The authentication service is unavailable."
-        ) from exc
+        return auth_error_page(
+            request,
+            status_code=400,
+            heading="Sign-in expired",
+            message="The sign-in request is no longer valid. Start a new sign-in to continue.",
+        )
+    except CentralAuthError:
+        return auth_error_page(
+            request,
+            status_code=502,
+            heading="Unable to sign in",
+            message="The authentication service is temporarily unavailable. Try again shortly.",
+        )
     response = RedirectResponse(url=safe_local_path(destination), status_code=303)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
