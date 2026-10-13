@@ -184,9 +184,11 @@ its tests in `tests/test_auth.py`.
 `EXPLORER_AUTH_MODE=central` removes passwords from Explorer. An anonymous
 browser starts an authorization-code flow at `AUTH_ISSUER_URL`; the request is
 bound with state, nonce, and PKCE. Explorer exchanges the short-lived,
-single-use code over a TLS backchannel authenticated with its client secret.
-The auth service returns the authenticated account ID and email—never its
-password or central session cookie.
+single-use code over a TLS backchannel authenticated with its client secret,
+and takes the account ID and email only from the EdDSA-signed `id_token` in
+the response, verified with Auth's signing keys (exact issuer and audience,
+live expiry, matching nonce). The auth service never sends its password or
+central session cookie.
 
 Explorer then applies a deployment-local, default-deny email access list. An
 operator controls it without creating another credential:

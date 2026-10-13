@@ -170,7 +170,7 @@ but lose to `.env`.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `EXPLORER_AUTH_MODE` | no | `elcano` | Selects exactly one provider. `elcano` preserves Elcano's external magic-link cookie; `central` delegates login to the new auth service. Any other value fails startup. |
-| `AUTH_SIGNING_PUBKEY` | yes | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Elcano mode verifies the session cookie's signature with it (a parse failure means "everyone is logged out"). Central mode verifies signed back-channel logout tokens with it and refuses to start without a valid key. Safe to store in plaintext config — a public key cannot mint sessions. |
+| `AUTH_SIGNING_PUBKEY` | yes | *(empty)* | Base64-encoded 32-byte Ed25519 **public** key of the auth service. Elcano mode verifies the session cookie's signature with it (a parse failure means "everyone is logged out"). Central mode verifies the sign-in `id_token` and signed back-channel tokens with it (plus keys Auth publishes at `/jwks.json`) and refuses to start without a valid key. Safe to store in plaintext config — a public key cannot mint sessions. |
 | `AUTH_LOGIN_URL` | no | `https://auth.elcanotek.com` | Where unauthenticated browsers are redirected, as `<url>/?return_to=<escaped current url>`. Set it to your own auth service. Trailing slashes are stripped. |
 | `AUTH_COOKIE_NAME` | no | `elcano_auth` | Cookie the auth service mints. Must match. |
 | `AUTH_ISSUER_URL` | central mode | *(empty)* | HTTPS origin of the client's central auth service, without a path or query. |

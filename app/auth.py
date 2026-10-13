@@ -290,7 +290,10 @@ class CentralAuthProvider:
         ):
             raise AuthTransactionError("The sign-in transaction is invalid or expired")
         principal = self.client.exchange(
-            code=code, code_verifier=verifier, expected_nonce=nonce
+            code=code,
+            code_verifier=verifier,
+            expected_nonce=nonce,
+            keys_for_token=self.key_resolver.keys_for_token,
         )
         issued = self.store.create_session(principal.subject, principal.email)
         return principal, issued.token, next_path

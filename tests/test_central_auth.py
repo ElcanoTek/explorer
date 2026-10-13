@@ -319,47 +319,119 @@ def test_csrf_token_is_bound_to_the_app_session_secret() -> None:
     assert not verify_csrf_token(token, "")
 
 
-def test_code_exchange_authenticates_client_and_validates_nonce(monkeypatch) -> None:
-    captured = {}
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
 
-    class Response:
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *args):
-            return None
+def _public_b64(private_key: Ed25519PrivateKey) -> str:
+    return base64.b64encode(private_key.public_key().public_bytes_raw()).decode()
 
-        def read(self, _limit):
-            return json.dumps(
-                {
-                    "sub": "account-123",
-                    "email": "Alice@Example.com",
-                    "nonce": "expected-nonce",
-                    "iss": "https://auth.example.com",
-                    "aud": "explorer",
-                    "exp": int(time.time()) + 300,
-                }
-            ).encode()
 
-    def fake_open(request, timeout):
-        captured["request"] = request
-        captured["timeout"] = timeout
-        return Response()
+ID_TOKEN_KEY = Ed25519PrivateKey.generate()
 
-    monkeypatch.setattr("app.central_auth._open_token_request", fake_open)
-    client = CentralAuthClient(
+
+def _mint_id_token(
+    private_key: Ed25519PrivateKey = ID_TOKEN_KEY,
+    *,
+    header: dict | None = None,
+    **overrides,
+) -> str:
+    """An id_token shaped exactly like Auth's token.SignIdentity output."""
+    public = private_key.public_key().public_bytes_raw()
+    now = int(time.time())
+    claims = {
+        "iss": "https://auth.example.com",
+        "sub": "account-123",
+        "aud": "explorer",
+        "email": "Alice@Example.com",
+        "iat": now,
+        "exp": now + 300,
+        "nonce": "expected-nonce",
+        "auth_time": now,
+        "amr": ["pwd"],
+        "acr": "urn:elcanotek:loa:1",
+    }
+    claims.update(overrides)
+    head = {
+        "typ": "JWT",
+        "alg": "EdDSA",
+        "kid": _b64url(hashlib.sha256(public).digest()[:16]),
+    }
+    head.update(header or {})
+    body = (
+        _b64url(json.dumps(head, separators=(",", ":")).encode())
+        + "."
+        + _b64url(json.dumps(claims, separators=(",", ":")).encode())
+    )
+    return f"{body}.{_b64url(private_key.sign(body.encode()))}"
+
+
+def _token_response(id_token: str | None = None, **plain) -> dict:
+    """Auth's /token body: the plain claims plus the signed id_token."""
+    token = _mint_id_token() if id_token is None else id_token
+    claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+    return claims | plain | {"id_token": token}
+
+
+def _static_keys(*private_keys: Ed25519PrivateKey):
+    keys = [_public_b64(key) for key in private_keys or (ID_TOKEN_KEY,)]
+    return lambda _raw: keys
+
+
+def _client() -> CentralAuthClient:
+    return CentralAuthClient(
         issuer_url="https://auth.example.com",
         public_url="https://explorer.example.com",
         client_id="explorer",
         client_secret="a-random-client-secret-with-32-bytes",
     )
 
-    principal = client.exchange(
+
+def _fake_response(payload: dict):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return json.dumps(payload).encode()
+
+    return Response()
+
+
+def _exchange(monkeypatch, payload: dict, keys_for_token=None):
+    monkeypatch.setattr(
+        "app.central_auth._open_token_request",
+        lambda *_args: _fake_response(payload),
+    )
+    return _client().exchange(
+        code="code",
+        code_verifier="v" * 43,
+        expected_nonce="expected-nonce",
+        keys_for_token=keys_for_token or _static_keys(),
+    )
+
+
+def test_code_exchange_authenticates_client_and_validates_nonce(monkeypatch) -> None:
+    captured = {}
+
+    def fake_open(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return _fake_response(_token_response())
+
+    monkeypatch.setattr("app.central_auth._open_token_request", fake_open)
+
+    principal = _client().exchange(
         code="single-use-code",
         code_verifier="pkce-verifier",
         expected_nonce="expected-nonce",
+        keys_for_token=_static_keys(),
     )
 
+    assert principal.subject == "account-123"
     assert principal.email == "alice@example.com"
     assert captured["timeout"] == 10
     request = captured["request"]
@@ -404,124 +476,135 @@ def test_authorization_url_uses_exact_callback_and_pkce() -> None:
     }
 
 
-def test_code_exchange_rejects_wrong_nonce(monkeypatch) -> None:
-    class Response:
-        def __enter__(self):
-            return self
+def test_identity_comes_from_the_signed_token_not_the_plain_claims(
+    monkeypatch,
+) -> None:
+    payload = _token_response(sub="account-666", email="mallory@example.com")
 
-        def __exit__(self, *args):
-            return None
+    principal = _exchange(monkeypatch, payload)
 
-        def read(self, _limit):
-            return json.dumps(
-                {
-                    "sub": "account-123",
-                    "email": "alice@example.com",
-                    "nonce": "wrong",
-                    "iss": "https://auth.example.com",
-                    "aud": "explorer",
-                    "exp": int(time.time()) + 300,
-                }
-            ).encode()
-
-    monkeypatch.setattr(
-        "app.central_auth._open_token_request", lambda *_args: Response()
-    )
-    client = CentralAuthClient(
-        issuer_url="https://auth.example.com",
-        public_url="https://explorer.example.com",
-        client_id="explorer",
-        client_secret="a-random-client-secret-with-32-bytes",
-    )
-
-    with pytest.raises(CentralAuthError, match="invalid"):
-        client.exchange(
-            code="single-use-code",
-            code_verifier="pkce-verifier",
-            expected_nonce="expected-nonce",
-        )
-
-
-def _client() -> CentralAuthClient:
-    return CentralAuthClient(
-        issuer_url="https://auth.example.com",
-        public_url="https://explorer.example.com",
-        client_id="explorer",
-        client_secret="a-random-client-secret-with-32-bytes",
-    )
-
-
-def _fake_response(payload: dict):
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self, _limit):
-            return json.dumps(payload).encode()
-
-    return Response()
-
-
-def _valid_payload() -> dict:
-    return {
-        "sub": "account-123",
-        "email": "alice@example.com",
-        "nonce": "expected-nonce",
-        "iss": "https://auth.example.com",
-        "aud": "explorer",
-        "exp": int(time.time()) + 300,
-    }
+    assert principal.subject == "account-123"
+    assert principal.email == "alice@example.com"
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    "payload",
     [
+        {k: v for k, v in _token_response().items() if k != "id_token"},
+        _token_response() | {"id_token": ""},
+        _token_response() | {"id_token": 42},
+        _token_response() | {"id_token": "not.a.jwt"},
+    ],
+    ids=["missing", "empty", "not-a-string", "garbage"],
+)
+def test_code_exchange_requires_an_id_token(monkeypatch, payload) -> None:
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _exchange(monkeypatch, payload)
+
+
+def test_code_exchange_rejects_a_tampered_id_token(monkeypatch) -> None:
+    head, body, signature = _mint_id_token().split(".")
+    claims = json.loads(base64.urlsafe_b64decode(body + "=="))
+    claims["email"] = "mallory@example.com"
+    forged = f"{head}.{_b64url(json.dumps(claims).encode())}.{signature}"
+
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _exchange(monkeypatch, _token_response(forged))
+
+
+def test_code_exchange_rejects_a_token_from_an_unknown_key(monkeypatch) -> None:
+    other = Ed25519PrivateKey.generate()
+
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _exchange(monkeypatch, _token_response(_mint_id_token(other)))
+
+
+def test_code_exchange_rejects_a_known_kid_signed_by_another_key(monkeypatch) -> None:
+    trusted = _public_b64(ID_TOKEN_KEY)
+    kid = _b64url(hashlib.sha256(base64.b64decode(trusted)).digest()[:16])
+    forged = _mint_id_token(Ed25519PrivateKey.generate(), header={"kid": kid})
+
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _exchange(monkeypatch, _token_response(forged))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        {"alg": "none"},
+        {"alg": "HS256"},
+        {"typ": "logout+jwt"},
+        {"typ": "access+jwt"},
+        {"kid": "\u00e9"},
+        {"kid": 7},
+        {"kid": None},
+    ],
+)
+def test_code_exchange_rejects_the_wrong_alg_or_typ(monkeypatch, header) -> None:
+    with pytest.raises(CentralAuthError, match="invalid"):
+        _exchange(monkeypatch, _token_response(_mint_id_token(header=header)))
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"nonce": "wrong"},
+        {"nonce": "expected-nonc\u00e9"},
         {"aud": "lens"},
+        {"aud": ["explorer"]},
+        {"nonce": "\ud800"},
         {"iss": "https://other-auth.example.com"},
+        {"iss": "https://auth.example.com/"},
         {"exp": int(time.time()) - 120},
         {"exp": "soon"},
         {"exp": True},
+        {"iat": int(time.time()) + 600},
+        {"sub": ""},
+        {"email": "not-an-email"},
     ],
 )
-def test_code_exchange_rejects_wrong_audience_issuer_or_expired(
-    monkeypatch, mutation
-) -> None:
-    payload = _valid_payload() | mutation
-    monkeypatch.setattr(
-        "app.central_auth._open_token_request",
-        lambda *_args: _fake_response(payload),
-    )
+def test_code_exchange_checks_the_signed_claims(monkeypatch, claims) -> None:
     with pytest.raises(CentralAuthError, match="invalid"):
-        _client().exchange(
-            code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
-        )
+        _exchange(monkeypatch, _token_response(_mint_id_token(**claims)))
 
 
 def test_code_exchange_tolerates_small_clock_skew(monkeypatch) -> None:
-    payload = _valid_payload() | {"exp": int(time.time()) - 10}
-    monkeypatch.setattr(
-        "app.central_auth._open_token_request",
-        lambda *_args: _fake_response(payload),
-    )
-    principal = _client().exchange(
-        code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
-    )
+    token = _mint_id_token(exp=int(time.time()) - 10)
+
+    principal = _exchange(monkeypatch, _token_response(token))
+
     assert principal.subject == "account-123"
 
 
-def test_non_ascii_nonce_from_issuer_is_rejected_not_crashed(monkeypatch) -> None:
-    payload = _valid_payload() | {"nonce": "expected-nonc\u00e9"}
-    monkeypatch.setattr(
-        "app.central_auth._open_token_request",
-        lambda *_args: _fake_response(payload),
+def test_code_exchange_accepts_a_key_known_only_from_jwks(monkeypatch) -> None:
+    rotated = Ed25519PrivateKey.generate()
+    jwks = {
+        "keys": [
+            {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": _b64url(rotated.public_key().public_bytes_raw()),
+            }
+        ]
+    }
+    fetched = []
+
+    def fetch(url, _timeout):
+        fetched.append(url)
+        return json.dumps(jwks).encode()
+
+    resolver = AuthKeyResolver(
+        "https://auth.example.com", [_public_b64(ID_TOKEN_KEY)], fetch=fetch
     )
-    with pytest.raises(CentralAuthError, match="invalid"):
-        _client().exchange(
-            code="code", code_verifier="v" * 43, expected_nonce="expected-nonce"
-        )
+
+    principal = _exchange(
+        monkeypatch,
+        _token_response(_mint_id_token(rotated)),
+        keys_for_token=resolver.keys_for_token,
+    )
+
+    assert principal.email == "alice@example.com"
+    assert fetched == ["https://auth.example.com/jwks.json"]
 
 
 def test_http_400_from_token_endpoint_is_a_rejected_code(monkeypatch) -> None:
@@ -532,7 +615,12 @@ def test_http_400_from_token_endpoint_is_a_rejected_code(monkeypatch) -> None:
 
     monkeypatch.setattr("app.central_auth._open_token_request", refuse)
     with pytest.raises(CodeExchangeRejectedError):
-        _client().exchange(code="code", code_verifier="v" * 43, expected_nonce="n")
+        _client().exchange(
+            code="code",
+            code_verifier="v" * 43,
+            expected_nonce="n",
+            keys_for_token=_static_keys(),
+        )
 
 
 def test_http_401_from_token_endpoint_is_an_outage_not_a_retry(monkeypatch) -> None:
@@ -543,7 +631,12 @@ def test_http_401_from_token_endpoint_is_an_outage_not_a_retry(monkeypatch) -> N
 
     monkeypatch.setattr("app.central_auth._open_token_request", refuse)
     with pytest.raises(CentralAuthError) as excinfo:
-        _client().exchange(code="code", code_verifier="v" * 43, expected_nonce="n")
+        _client().exchange(
+            code="code",
+            code_verifier="v" * 43,
+            expected_nonce="n",
+            keys_for_token=_static_keys(),
+        )
     assert not isinstance(excinfo.value, CodeExchangeRejectedError)
 
 
@@ -740,3 +833,113 @@ def test_logout_token_verifies_against_a_key_only_published_in_jwks() -> None:
         now=1_010,
     )
     assert event.subject == "account-123"
+
+
+def _kid_token(private_key: Ed25519PrivateKey) -> str:
+    """Only the header's kid matters to the resolver."""
+    return _mint_id_token(private_key)
+
+
+def _jwks(*private_keys: Ed25519PrivateKey) -> bytes:
+    return json.dumps(
+        {
+            "keys": [
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": _b64url(key.public_key().public_bytes_raw()),
+                }
+                for key in private_keys
+            ]
+        }
+    ).encode()
+
+
+class _FakeJwks:
+    def __init__(self, *private_keys: Ed25519PrivateKey) -> None:
+        self.document = _jwks(*private_keys)
+        self.fail = False
+        self.calls = 0
+
+    def __call__(self, _url, _timeout):
+        self.calls += 1
+        if self.fail:
+            raise OSError("Auth is restarting")
+        return self.document
+
+
+def test_a_retired_jwks_key_stops_being_trusted_after_the_cache_window() -> None:
+    clock = [10_000.0]
+    retired = Ed25519PrivateKey.generate()
+    jwks = _FakeJwks(retired)
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    assert _public_b64(retired) in resolver.keys_for_token(_kid_token(retired))
+
+    jwks.document = _jwks(Ed25519PrivateKey.generate())
+    clock[0] += 300
+    assert _public_b64(retired) in resolver.keys_for_token(_kid_token(retired))
+
+    clock[0] += 301
+    assert _public_b64(retired) not in resolver.keys_for_token(_kid_token(retired))
+
+
+def test_a_jwks_key_is_kept_when_the_refresh_fails() -> None:
+    clock = [10_000.0]
+    remote = Ed25519PrivateKey.generate()
+    jwks = _FakeJwks(remote)
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    resolver.keys_for_token(_kid_token(remote))
+
+    jwks.fail = True
+    clock[0] += 3_600
+    assert _public_b64(remote) in resolver.keys_for_token(_kid_token(remote))
+    assert jwks.calls == 2
+
+
+def test_a_static_key_never_waits_on_jwks() -> None:
+    clock = [10_000.0]
+    jwks = _FakeJwks(Ed25519PrivateKey.generate())
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    for _ in range(3):
+        assert _public_b64(ID_TOKEN_KEY) in resolver.keys_for_token(
+            _kid_token(ID_TOKEN_KEY)
+        )
+        clock[0] += 3_600
+    assert jwks.calls == 0
+
+
+def test_back_channel_tokens_refuse_a_non_ascii_kid() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _public_b64(private_key)
+    for minted, verify in (
+        (_mint_logout(private_key)[0], verify_logout_token),
+        (_mint_access(private_key)[0], verify_access_token),
+    ):
+        head, body, _signature = minted.split(".")
+        header = json.loads(base64.urlsafe_b64decode(head + "=="))
+        header["kid"] = "\u00e9"
+        unsigned = f"{_b64url(json.dumps(header).encode())}.{body}"
+        forged = f"{unsigned}.{_b64url(private_key.sign(unsigned.encode()))}"
+        with pytest.raises(CentralAuthError):
+            verify(
+                forged,
+                issuer="https://auth.example.com",
+                audience="explorer",
+                public_keys=[public_key],
+                now=1_010,
+            )

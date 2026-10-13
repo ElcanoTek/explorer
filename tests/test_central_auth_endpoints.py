@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 from dataclasses import replace
 from urllib.parse import parse_qs, urlsplit
 
@@ -52,8 +53,11 @@ class FakeAuthClient:
         return f"https://auth.example.com/authorize?{query}"
 
     def exchange(
-        self, *, code: str, code_verifier: str, expected_nonce: str
+        self, *, code: str, code_verifier: str, expected_nonce: str, keys_for_token
     ) -> AuthenticatedPrincipal:
+        # The provider hands over its key resolver, so the real client can
+        # verify the id_token with the same keys as back-channel tokens.
+        assert callable(keys_for_token)
         type(self).exchanged_codes.append(code)
         if type(self).exchange_error:
             raise type(self).exchange_error
@@ -494,3 +498,129 @@ def test_pages_carry_nonce_csp_and_other_responses_a_closed_one(central_client) 
 
     health = client.get("/health")
     assert health.headers["content-security-policy"] == main.CSP_NON_PAGE
+
+
+def _signed_id_token(
+    private_key: Ed25519PrivateKey, nonce: str, *, header: dict | None = None
+) -> str:
+    public = private_key.public_key().public_bytes_raw()
+
+    def encode(value):
+        return (
+            base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+
+    now = int(time.time())
+    header = {
+        "typ": "JWT",
+        "alg": "EdDSA",
+        "kid": base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
+        .rstrip(b"=")
+        .decode(),
+    } | (header or {})
+    claims = {
+        "iss": "https://auth.example.com",
+        "sub": "account-123",
+        "aud": "explorer",
+        "email": "alice@example.com",
+        "iat": now,
+        "exp": now + 300,
+        "nonce": nonce,
+        "auth_time": now,
+        "amr": ["pwd"],
+        "acr": "urn:elcanotek:loa:1",
+    }
+    body = f"{encode(header)}.{encode(claims)}"
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(body.encode())).rstrip(b"=").decode()
+    )
+    return f"{body}.{signature}"
+
+
+@pytest.mark.parametrize(
+    "case", ["auth-key", "other-key", "non-ascii-kid", "lone-surrogate-nonce"]
+)
+def test_real_client_signs_in_only_with_an_id_token_signed_by_auth(
+    monkeypatch, tmp_path, asgi_client, case
+) -> None:
+    """The provider hands the real client its key resolver: the same keys
+    that verify back-channel tokens decide whether the id_token is Auth's."""
+    db_path = tmp_path / "access.db"
+    auth_key = Ed25519PrivateKey.generate()
+    for name, value in {
+        "EXPLORER_AUTH_MODE": "central",
+        "EXPLORER_ACCESS_DB": str(db_path),
+        "EXPLORER_SESSION_SECRET": "test-session-secret-with-32-bytes-minimum",
+        "EXPLORER_PUBLIC_URL": "https://explorer.example.com",
+        "AUTH_ISSUER_URL": "https://auth.example.com",
+        "AUTH_CLIENT_ID": "explorer",
+        "AUTH_CLIENT_SECRET": "a-test-client-secret-with-at-least-32-bytes",
+        "AUTH_SIGNING_PUBKEY": base64.b64encode(
+            auth_key.public_key().public_bytes_raw()
+        ).decode(),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        main,
+        "settings",
+        replace(
+            main.settings, session_secret="test-session-secret-with-32-bytes-minimum"
+        ),
+    )
+    CentralAuthStore(db_path).grant_access("alice@example.com")
+    signer = Ed25519PrivateKey.generate() if case == "other-key" else auth_key
+    header = {"kid": "\u00e9"} if case == "non-ascii-kid" else None
+    sent = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            nonce = "\ud800" if case == "lone-surrogate-nonce" else sent["nonce"]
+            token = _signed_id_token(signer, nonce, header=header)
+            return json.dumps({"id_token": token}).encode()
+
+    monkeypatch.setattr(
+        "app.central_auth._open_token_request", lambda *_args: Response()
+    )
+    with asgi_client(main.app, base_url="https://explorer.example.com") as client:
+        state, sent["nonce"] = begin_login(client)
+        response = client.get(
+            "/auth/callback",
+            params={"code": "one-time-code", "state": state},
+            follow_redirects=False,
+        )
+
+    if case == "auth-key":
+        assert response.status_code == 303
+        assert CENTRAL_AUTH_COOKIE_NAME in response.headers["set-cookie"]
+    else:
+        assert response.status_code == 502
+        assert CENTRAL_AUTH_COOKIE_NAME not in response.headers.get("set-cookie", "")
+
+
+def test_backchannel_token_with_a_non_ascii_kid_is_a_400_not_a_crash(
+    central_client,
+) -> None:
+    client, _store = central_client
+    raw = access_token(action="grant", version=1, email="bob@example.com")
+    head, body, _signature = raw.split(".")
+    header = json.loads(base64.urlsafe_b64decode(head + "=="))
+    header["kid"] = "\u00e9"
+
+    def encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+    unsigned = f"{encode(json.dumps(header).encode())}.{body}"
+    signature = encode(FakeAuthClient.signing_key.sign(unsigned.encode()))
+    for field in ("access_token", "logout_token"):
+        response = client.post(
+            "/auth/backchannel-logout", data={field: f"{unsigned}.{signature}"}
+        )
+        assert response.status_code == 400
