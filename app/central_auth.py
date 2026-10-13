@@ -96,8 +96,36 @@ CLOCK_SKEW_SECONDS = 60
 
 
 def _constant_time_equal(expected: str, actual: str) -> bool:
-    """compare_digest on str raises TypeError for non-ASCII; compare bytes."""
-    return hmac.compare_digest(expected.encode("utf-8"), actual.encode("utf-8"))
+    """compare_digest on str raises TypeError for non-ASCII; compare bytes.
+
+    A string that cannot be UTF-8 encoded (a lone surrogate from a JSON
+    escape) is simply unequal rather than an unhandled error.
+    """
+    try:
+        return hmac.compare_digest(expected.encode("utf-8"), actual.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
+_B64URL_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+
+def _header_kid(header: dict) -> str | None:
+    """The token's kid when it has the shape Auth emits (base64url), else None.
+
+    A kid is public, so it is compared with ==; requiring the base64url
+    alphabet first keeps an exotic value from reaching any comparison.
+    """
+    kid = header.get("kid")
+    if (
+        not isinstance(kid, str)
+        or not 0 < len(kid) <= 64
+        or any(char not in _B64URL_ALPHABET for char in kid)
+    ):
+        return None
+    return kid
 
 
 @dataclass(frozen=True)
@@ -148,10 +176,7 @@ class AccessProvisionEvent:
 
 
 def _decode_b64url(segment: str) -> bytes:
-    if not segment or any(
-        char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        for char in segment
-    ):
+    if not segment or any(char not in _B64URL_ALPHABET for char in segment):
         raise CentralAuthError("The logout token was invalid")
     try:
         return base64.b64decode(
@@ -185,6 +210,9 @@ def verify_logout_token(
         raise CentralAuthError("The logout token was invalid")
     if header.get("typ") != "logout+jwt" or header.get("alg") != "EdDSA":
         raise CentralAuthError("The logout token was invalid")
+    header_kid = _header_kid(header)
+    if header_kid is None:
+        raise CentralAuthError("The logout token was invalid")
 
     verified = False
     for encoded_key in public_keys:
@@ -197,7 +225,7 @@ def verify_logout_token(
                 .rstrip(b"=")
                 .decode()
             )
-            if not hmac.compare_digest(str(header.get("kid", "")), kid):
+            if header_kid != kid:
                 continue
             Ed25519PublicKey.from_public_bytes(raw_key).verify(
                 signature, f"{parts[0]}.{parts[1]}".encode("ascii")
@@ -270,6 +298,9 @@ def verify_access_token(
         raise CentralAuthError("The access token was invalid")
     if header.get("typ") != "access+jwt" or header.get("alg") != "EdDSA":
         raise CentralAuthError("The access token was invalid")
+    header_kid = _header_kid(header)
+    if header_kid is None:
+        raise CentralAuthError("The access token was invalid")
     verified = False
     for encoded_key in public_keys:
         try:
@@ -281,7 +312,7 @@ def verify_access_token(
                 .rstrip(b"=")
                 .decode()
             )
-            if not hmac.compare_digest(str(header.get("kid", "")), kid):
+            if header_kid != kid:
                 continue
             Ed25519PublicKey.from_public_bytes(raw_key).verify(
                 signature, f"{parts[0]}.{parts[1]}".encode("ascii")
@@ -349,11 +380,12 @@ def verify_identity_token(
 ) -> AuthenticatedPrincipal:
     """Verify the id_token from Auth's /token and return who signed in.
 
-    Auth's application contract (docs/INTEGRATION.md, "Code exchange") says
-    to verify it against /jwks.json rather than trust the plain claims in the
-    same response. TLS and the client secret already authenticate that
-    channel; the signature means a mis-pointed AUTH_ISSUER_URL or anything
-    able to terminate TLS for Auth's host still cannot name the person.
+    This fulfils Auth's application contract (docs/INTEGRATION.md, "Code
+    exchange"): the identity is taken from a token signed with Auth's
+    published keys, the same keys that verify its back-channel events,
+    rather than from the plain claims beside it in the response. The keys
+    come from the configured issuer, so this protects identity end to end
+    with those keys; it does not replace the TLS trust in that issuer.
     """
     error = "The authentication response was invalid"
     if len(raw) > 16_384:
@@ -369,12 +401,12 @@ def verify_identity_token(
         raise CentralAuthError(error) from exc
     if not isinstance(header, dict) or not isinstance(claims, dict):
         raise CentralAuthError(error)
-    if header.get("typ") != "JWT" or header.get("alg") != "EdDSA":
+    header_kid = _header_kid(header)
+    if header.get("typ") != "JWT" or header.get("alg") != "EdDSA" or header_kid is None:
         raise CentralAuthError(error)
     verified = False
     for encoded_key in public_keys:
-        kid = _kid_for_key(encoded_key)
-        if kid is None or not hmac.compare_digest(str(header.get("kid", "")), kid):
+        if _kid_for_key(encoded_key) != header_kid:
             continue
         try:
             Ed25519PublicKey.from_public_bytes(
@@ -400,7 +432,8 @@ def verify_identity_token(
         or not isinstance(nonce, str)
         or not _constant_time_equal(expected_nonce, nonce)
         or not isinstance(token_issuer, str)
-        or token_issuer.rstrip("/") != issuer.rstrip("/")
+        # Exact: Auth signs its canonical issuer, which never ends in "/".
+        or token_issuer != issuer.rstrip("/")
         or not isinstance(claims.get("aud"), str)
         or claims["aud"] != audience
         or isinstance(expires_at, bool)
@@ -542,14 +575,20 @@ class AuthKeyResolver:
         return True
 
     def keys_for_token(self, raw_token: str) -> list[str]:
-        """Keys to try for one token: refresh once if its kid is unknown."""
+        """Keys to try for one token.
+
+        A kid naming a static key returns at once: it never waits on Auth's
+        JWKS endpoint, which keeps revocation and provisioning available while
+        Auth itself is restarting. Otherwise the JWKS cache is refreshed when
+        older than JWKS_CACHE_SECONDS, so a key Auth has retired stops being
+        trusted within that window, and an unknown kid triggers one more
+        refresh through the throttle. A failed fetch keeps the cached keys.
+        """
         kid = _token_kid(raw_token)
-        # A token naming an already configured/cached key must not wait on
-        # Auth's JWKS endpoint. Besides avoiding a cold-start delay, this keeps
-        # revocation and provisioning available while Auth itself is restarting.
-        keys = list(dict.fromkeys(self.static_keys + self._remote_keys))
-        if kid is not None and any(_kid_for_key(key) == kid for key in keys):
-            return keys
+        if kid is not None and any(
+            _kid_for_key(key) == kid for key in self.static_keys
+        ):
+            return list(dict.fromkeys(self.static_keys + self._remote_keys))
         keys = self.public_keys()
         if kid is not None and not any(_kid_for_key(key) == kid for key in keys):
             if self.refresh():
@@ -565,8 +604,7 @@ def _token_kid(raw_token: str) -> str | None:
         header = json.loads(_decode_b64url(parts[0]))
     except (CentralAuthError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    kid = header.get("kid") if isinstance(header, dict) else None
-    return kid if isinstance(kid, str) else None
+    return _header_kid(header) if isinstance(header, dict) else None
 
 
 def _kid_for_key(encoded_key: str) -> str | None:

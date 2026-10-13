@@ -530,7 +530,15 @@ def test_code_exchange_rejects_a_known_kid_signed_by_another_key(monkeypatch) ->
 
 @pytest.mark.parametrize(
     "header",
-    [{"alg": "none"}, {"alg": "HS256"}, {"typ": "logout+jwt"}, {"typ": "access+jwt"}],
+    [
+        {"alg": "none"},
+        {"alg": "HS256"},
+        {"typ": "logout+jwt"},
+        {"typ": "access+jwt"},
+        {"kid": "\u00e9"},
+        {"kid": 7},
+        {"kid": None},
+    ],
 )
 def test_code_exchange_rejects_the_wrong_alg_or_typ(monkeypatch, header) -> None:
     with pytest.raises(CentralAuthError, match="invalid"):
@@ -544,7 +552,9 @@ def test_code_exchange_rejects_the_wrong_alg_or_typ(monkeypatch, header) -> None
         {"nonce": "expected-nonc\u00e9"},
         {"aud": "lens"},
         {"aud": ["explorer"]},
+        {"nonce": "\ud800"},
         {"iss": "https://other-auth.example.com"},
+        {"iss": "https://auth.example.com/"},
         {"exp": int(time.time()) - 120},
         {"exp": "soon"},
         {"exp": True},
@@ -823,3 +833,113 @@ def test_logout_token_verifies_against_a_key_only_published_in_jwks() -> None:
         now=1_010,
     )
     assert event.subject == "account-123"
+
+
+def _kid_token(private_key: Ed25519PrivateKey) -> str:
+    """Only the header's kid matters to the resolver."""
+    return _mint_id_token(private_key)
+
+
+def _jwks(*private_keys: Ed25519PrivateKey) -> bytes:
+    return json.dumps(
+        {
+            "keys": [
+                {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": _b64url(key.public_key().public_bytes_raw()),
+                }
+                for key in private_keys
+            ]
+        }
+    ).encode()
+
+
+class _FakeJwks:
+    def __init__(self, *private_keys: Ed25519PrivateKey) -> None:
+        self.document = _jwks(*private_keys)
+        self.fail = False
+        self.calls = 0
+
+    def __call__(self, _url, _timeout):
+        self.calls += 1
+        if self.fail:
+            raise OSError("Auth is restarting")
+        return self.document
+
+
+def test_a_retired_jwks_key_stops_being_trusted_after_the_cache_window() -> None:
+    clock = [10_000.0]
+    retired = Ed25519PrivateKey.generate()
+    jwks = _FakeJwks(retired)
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    assert _public_b64(retired) in resolver.keys_for_token(_kid_token(retired))
+
+    jwks.document = _jwks(Ed25519PrivateKey.generate())
+    clock[0] += 300
+    assert _public_b64(retired) in resolver.keys_for_token(_kid_token(retired))
+
+    clock[0] += 301
+    assert _public_b64(retired) not in resolver.keys_for_token(_kid_token(retired))
+
+
+def test_a_jwks_key_is_kept_when_the_refresh_fails() -> None:
+    clock = [10_000.0]
+    remote = Ed25519PrivateKey.generate()
+    jwks = _FakeJwks(remote)
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    resolver.keys_for_token(_kid_token(remote))
+
+    jwks.fail = True
+    clock[0] += 3_600
+    assert _public_b64(remote) in resolver.keys_for_token(_kid_token(remote))
+    assert jwks.calls == 2
+
+
+def test_a_static_key_never_waits_on_jwks() -> None:
+    clock = [10_000.0]
+    jwks = _FakeJwks(Ed25519PrivateKey.generate())
+    resolver = AuthKeyResolver(
+        "https://auth.example.com",
+        [_public_b64(ID_TOKEN_KEY)],
+        fetch=jwks,
+        now=lambda: clock[0],
+    )
+    for _ in range(3):
+        assert _public_b64(ID_TOKEN_KEY) in resolver.keys_for_token(
+            _kid_token(ID_TOKEN_KEY)
+        )
+        clock[0] += 3_600
+    assert jwks.calls == 0
+
+
+def test_back_channel_tokens_refuse_a_non_ascii_kid() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _public_b64(private_key)
+    for minted, verify in (
+        (_mint_logout(private_key)[0], verify_logout_token),
+        (_mint_access(private_key)[0], verify_access_token),
+    ):
+        head, body, _signature = minted.split(".")
+        header = json.loads(base64.urlsafe_b64decode(head + "=="))
+        header["kid"] = "\u00e9"
+        unsigned = f"{_b64url(json.dumps(header).encode())}.{body}"
+        forged = f"{unsigned}.{_b64url(private_key.sign(unsigned.encode()))}"
+        with pytest.raises(CentralAuthError):
+            verify(
+                forged,
+                issuer="https://auth.example.com",
+                audience="explorer",
+                public_keys=[public_key],
+                now=1_010,
+            )

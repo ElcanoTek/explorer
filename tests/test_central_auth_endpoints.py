@@ -500,7 +500,9 @@ def test_pages_carry_nonce_csp_and_other_responses_a_closed_one(central_client) 
     assert health.headers["content-security-policy"] == main.CSP_NON_PAGE
 
 
-def _signed_id_token(private_key: Ed25519PrivateKey, nonce: str) -> str:
+def _signed_id_token(
+    private_key: Ed25519PrivateKey, nonce: str, *, header: dict | None = None
+) -> str:
     public = private_key.public_key().public_bytes_raw()
 
     def encode(value):
@@ -517,7 +519,7 @@ def _signed_id_token(private_key: Ed25519PrivateKey, nonce: str) -> str:
         "kid": base64.urlsafe_b64encode(hashlib.sha256(public).digest()[:16])
         .rstrip(b"=")
         .decode(),
-    }
+    } | (header or {})
     claims = {
         "iss": "https://auth.example.com",
         "sub": "account-123",
@@ -537,9 +539,11 @@ def _signed_id_token(private_key: Ed25519PrivateKey, nonce: str) -> str:
     return f"{body}.{signature}"
 
 
-@pytest.mark.parametrize("trusted", [True, False], ids=["auth-key", "other-key"])
+@pytest.mark.parametrize(
+    "case", ["auth-key", "other-key", "non-ascii-kid", "lone-surrogate-nonce"]
+)
 def test_real_client_signs_in_only_with_an_id_token_signed_by_auth(
-    monkeypatch, tmp_path, asgi_client, trusted
+    monkeypatch, tmp_path, asgi_client, case
 ) -> None:
     """The provider hands the real client its key resolver: the same keys
     that verify back-channel tokens decide whether the id_token is Auth's."""
@@ -566,7 +570,8 @@ def test_real_client_signs_in_only_with_an_id_token_signed_by_auth(
         ),
     )
     CentralAuthStore(db_path).grant_access("alice@example.com")
-    signer = auth_key if trusted else Ed25519PrivateKey.generate()
+    signer = Ed25519PrivateKey.generate() if case == "other-key" else auth_key
+    header = {"kid": "\u00e9"} if case == "non-ascii-kid" else None
     sent = {}
 
     class Response:
@@ -577,9 +582,9 @@ def test_real_client_signs_in_only_with_an_id_token_signed_by_auth(
             return None
 
         def read(self, _limit):
-            return json.dumps(
-                {"id_token": _signed_id_token(signer, sent["nonce"])}
-            ).encode()
+            nonce = "\ud800" if case == "lone-surrogate-nonce" else sent["nonce"]
+            token = _signed_id_token(signer, nonce, header=header)
+            return json.dumps({"id_token": token}).encode()
 
     monkeypatch.setattr(
         "app.central_auth._open_token_request", lambda *_args: Response()
@@ -592,9 +597,30 @@ def test_real_client_signs_in_only_with_an_id_token_signed_by_auth(
             follow_redirects=False,
         )
 
-    if trusted:
+    if case == "auth-key":
         assert response.status_code == 303
         assert CENTRAL_AUTH_COOKIE_NAME in response.headers["set-cookie"]
     else:
         assert response.status_code == 502
         assert CENTRAL_AUTH_COOKIE_NAME not in response.headers.get("set-cookie", "")
+
+
+def test_backchannel_token_with_a_non_ascii_kid_is_a_400_not_a_crash(
+    central_client,
+) -> None:
+    client, _store = central_client
+    raw = access_token(action="grant", version=1, email="bob@example.com")
+    head, body, _signature = raw.split(".")
+    header = json.loads(base64.urlsafe_b64decode(head + "=="))
+    header["kid"] = "\u00e9"
+
+    def encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+    unsigned = f"{encode(json.dumps(header).encode())}.{body}"
+    signature = encode(FakeAuthClient.signing_key.sign(unsigned.encode()))
+    for field in ("access_token", "logout_token"):
+        response = client.post(
+            "/auth/backchannel-logout", data={field: f"{unsigned}.{signature}"}
+        )
+        assert response.status_code == 400
