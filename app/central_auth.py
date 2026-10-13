@@ -5,8 +5,9 @@
 
 Passwords and primary login sessions belong to the central auth service.
 Explorer receives a short-lived, one-time authorization code, exchanges it
-over a TLS backchannel, applies its deployment-local email allowlist, and then
-issues an opaque cookie that is useful only to this Explorer instance.
+over a TLS backchannel, verifies the signed id_token that comes back, applies
+its deployment-local email allowlist, and then issues an opaque cookie that is
+useful only to this Explorer instance.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -336,6 +338,87 @@ def verify_access_token(
     )
 
 
+def verify_identity_token(
+    raw: str,
+    *,
+    issuer: str,
+    audience: str,
+    expected_nonce: str,
+    public_keys: list[str],
+    now: int | None = None,
+) -> AuthenticatedPrincipal:
+    """Verify the id_token from Auth's /token and return who signed in.
+
+    Auth's application contract (docs/INTEGRATION.md, "Code exchange") says
+    to verify it against /jwks.json rather than trust the plain claims in the
+    same response. TLS and the client secret already authenticate that
+    channel; the signature means a mis-pointed AUTH_ISSUER_URL or anything
+    able to terminate TLS for Auth's host still cannot name the person.
+    """
+    error = "The authentication response was invalid"
+    if len(raw) > 16_384:
+        raise CentralAuthError(error)
+    parts = raw.split(".")
+    if len(parts) != 3:
+        raise CentralAuthError(error)
+    try:
+        header = json.loads(_decode_b64url(parts[0]))
+        claims = json.loads(_decode_b64url(parts[1]))
+        signature = _decode_b64url(parts[2])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CentralAuthError(error) from exc
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise CentralAuthError(error)
+    if header.get("typ") != "JWT" or header.get("alg") != "EdDSA":
+        raise CentralAuthError(error)
+    verified = False
+    for encoded_key in public_keys:
+        kid = _kid_for_key(encoded_key)
+        if kid is None or not hmac.compare_digest(str(header.get("kid", "")), kid):
+            continue
+        try:
+            Ed25519PublicKey.from_public_bytes(
+                base64.b64decode(encoded_key.strip(), validate=True)
+            ).verify(signature, f"{parts[0]}.{parts[1]}".encode("ascii"))
+            verified = True
+            break
+        except (ValueError, InvalidSignature, UnicodeEncodeError):
+            continue
+    if not verified:
+        raise CentralAuthError(error)
+
+    timestamp = int(time.time() if now is None else now)
+    subject = claims.get("sub")
+    nonce = claims.get("nonce")
+    token_issuer = claims.get("iss")
+    issued_at = claims.get("iat")
+    expires_at = claims.get("exp")
+    if (
+        not isinstance(subject, str)
+        or not subject
+        or len(subject) > 255
+        or not isinstance(nonce, str)
+        or not _constant_time_equal(expected_nonce, nonce)
+        or not isinstance(token_issuer, str)
+        or token_issuer.rstrip("/") != issuer.rstrip("/")
+        or not isinstance(claims.get("aud"), str)
+        or claims["aud"] != audience
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or expires_at + CLOCK_SKEW_SECONDS <= timestamp
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, int)
+        or issued_at <= 0
+        or issued_at > timestamp + CLOCK_SKEW_SECONDS
+    ):
+        raise CentralAuthError(error)
+    try:
+        email = normalize_email(claims.get("email", ""))
+    except (TypeError, ValueError) as exc:
+        raise CentralAuthError(error) from exc
+    return AuthenticatedPrincipal(subject=subject, email=email, nonce=nonce)
+
+
 def auth_signing_public_keys() -> list[str]:
     """Statically configured keys: AUTH_SIGNING_PUBKEY plus previous keys."""
     keys = [os.getenv("AUTH_SIGNING_PUBKEY", "")]
@@ -642,8 +725,19 @@ class CentralAuthClient:
         return f"{self.issuer_url}/authorize?{query}"
 
     def exchange(
-        self, *, code: str, code_verifier: str, expected_nonce: str
+        self,
+        *,
+        code: str,
+        code_verifier: str,
+        expected_nonce: str,
+        keys_for_token: Callable[[str], list[str]],
     ) -> AuthenticatedPrincipal:
+        """Redeem the code at /token and verify the id_token it returns.
+
+        keys_for_token is AuthKeyResolver.keys_for_token: the static keys plus
+        Auth's JWKS, refreshed (throttled) for an unknown kid, exactly as for
+        back-channel tokens.
+        """
         body = urllib.parse.urlencode(
             {
                 "grant_type": "authorization_code",
@@ -695,39 +789,17 @@ class CentralAuthClient:
         if not isinstance(payload, dict):
             raise CentralAuthError("The authentication response was invalid")
 
-        subject = payload.get("sub")
-        email = payload.get("email")
-        nonce = payload.get("nonce")
-        issuer = payload.get("iss")
-        audience = payload.get("aud")
-        expires_at = payload.get("exp")
-        now = int(time.time())
-        # The response arrives over an authenticated TLS backchannel, so these
-        # checks defend against misconfiguration rather than an attacker: a
-        # response minted by a different issuer, for a different client, or
-        # replayed after its assertion window must not create a session.
-        if (
-            not isinstance(subject, str)
-            or not subject
-            or len(subject) > 255
-            or not isinstance(email, str)
-            or not isinstance(nonce, str)
-            or not _constant_time_equal(expected_nonce, nonce)
-            or not isinstance(issuer, str)
-            or issuer.rstrip("/") != self.issuer_url
-            or not isinstance(audience, str)
-            or audience != self.client_id
-            or isinstance(expires_at, bool)
-            or not isinstance(expires_at, int)
-            or expires_at + CLOCK_SKEW_SECONDS <= now
-        ):
+        # Identity comes only from the signed id_token; the plain claims
+        # alongside it in the response are not read.
+        id_token = payload.get("id_token")
+        if not isinstance(id_token, str) or not id_token:
             raise CentralAuthError("The authentication response was invalid")
-        try:
-            normalized_email = normalize_email(email)
-        except ValueError as exc:
-            raise CentralAuthError("The authentication response was invalid") from exc
-        return AuthenticatedPrincipal(
-            subject=subject, email=normalized_email, nonce=nonce
+        return verify_identity_token(
+            id_token,
+            issuer=self.issuer_url,
+            audience=self.client_id,
+            expected_nonce=expected_nonce,
+            public_keys=keys_for_token(id_token),
         )
 
 
