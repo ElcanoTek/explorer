@@ -6,6 +6,9 @@ install refuses any symlink in the source tree, `layout_require_trusted`).
 Humans: start with `README.md`, `CONTRIBUTING.md`,
 `SECURITY.md` and `docs/DEPLOYMENT.md`; this is the short version.
 
+Do not add a `CLAUDE.md` or `CLAUDE.local.md` here (or above the checkout):
+Claude Code then loads those instead and skips this file.
+
 ## What it is
 
 A small FastAPI app (`app/`) that browses SES-delivered email stored in S3:
