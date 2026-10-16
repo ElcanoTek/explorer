@@ -1,0 +1,335 @@
+{
+ "_comment": "Recorded from the bleach 6.4.0 render pipeline (S3EmailInbox._render_html_preview / _render_plain_preview) before the switch to nh3. Inputs are synthetic. 'bleach' is the historical output; tests/test_html_render.py pins today's output against it and lists every intentional difference.",
+ "html": {
+  "paragraph": {
+   "input": "<p>Hello <b>world</b></p>",
+   "bleach": "<p>Hello <b>world</b></p>"
+  },
+  "headings_lists": {
+   "input": "<h1>T</h1><h2>S</h2><ul><li>a</li><li>b</li></ul><ol><li>c</li></ol>",
+   "bleach": "<h1>T</h1><h2>S</h2><ul><li>a</li><li>b</li></ul><ol><li>c</li></ol>"
+  },
+  "table": {
+   "input": "<table class=\"t\"><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>",
+   "bleach": "<table class=\"t\"><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>"
+  },
+  "link_https": {
+   "input": "<a href=\"https://example.com/x?a=1&amp;b=2\" title=\"t\">ok</a>",
+   "bleach": "<a href=\"https://example.com/x?a=1&amp;b=2\" title=\"t\" rel=\"nofollow\">ok</a>"
+  },
+  "link_target_rel": {
+   "input": "<a href=\"https://example.com\" target=\"_blank\" rel=\"noopener\">ok</a>",
+   "bleach": "<a href=\"https://example.com\" target=\"_blank\" rel=\"noopener nofollow\">ok</a>"
+  },
+  "link_mailto": {
+   "input": "<a href=\"mailto:ada@example.com\">mail</a>",
+   "bleach": "<a href=\"mailto:ada@example.com\">mail</a>"
+  },
+  "img_data": {
+   "input": "<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"x\" width=\"10\" height=\"5\">",
+   "bleach": "<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"x\" width=\"10\" height=\"5\">"
+  },
+  "img_attachment": {
+   "input": "<img src=\"/attachment?s3_key=emails%2Fa&amp;filename=b.png\" alt=\"i\">",
+   "bleach": "<img src=\"/attachment?s3_key=emails%2Fa&amp;filename=b.png\" alt=\"i\">"
+  },
+  "img_https": {
+   "input": "<img src=\"https://img.example/p.png\" style=\"border:0\" alt=\"p\">",
+   "bleach": "<img src=\"https://img.example/p.png\" alt=\"p\">"
+  },
+  "class_kept_style_dropped": {
+   "input": "<div class=\"c\" style=\"color:red\" id=\"x\">d</div>",
+   "bleach": "<div class=\"c\">d</div>"
+  },
+  "unknown_tags_stripped": {
+   "input": "<center><font color=red>hi</font></center><u>u</u><i>i</i>",
+   "bleach": "hiui"
+  },
+  "pre_code": {
+   "input": "<pre><code>x &lt; y</code></pre><blockquote>q</blockquote><hr><br>",
+   "bleach": "<pre><code>x &lt; y</code></pre><blockquote>q</blockquote><hr><br>"
+  },
+  "entities_text": {
+   "input": "<p>Tom &amp; Jerry &lt;3 &quot;q&quot; &#39;s&#39; caf&eacute; &nbsp;x</p>",
+   "bleach": "<p>Tom &amp; Jerry &lt;3 &quot;q&quot; &#39;s&#39; caf&eacute; &nbsp;x</p>"
+  },
+  "nested": {
+   "input": "<div><div><span><strong><em>deep</em></strong></span></div></div>",
+   "bleach": "<div><div><span><strong><em>deep</em></strong></span></div></div>"
+  },
+  "unclosed": {
+   "input": "<p>one<p>two<div>three",
+   "bleach": "<p>one</p><p>two</p><div>three</div>"
+  },
+  "comment": {
+   "input": "<p>a<!-- hidden --></p>",
+   "bleach": "<p>a</p>"
+  },
+  "conditional_comment": {
+   "input": "<p>a</p><!--[if mso]><p>mso</p><![endif]--><p>b</p>",
+   "bleach": "<p>a</p><p>b</p>"
+  },
+  "css_noise_leading": {
+   "input": ".x{color:red} p{margin:0} <p>body</p>",
+   "bleach": "<p>body</p>"
+  },
+  "head_title": {
+   "input": "<html><head><title>T</title><meta charset=utf-8></head><body><p>b</p></body></html>",
+   "bleach": "<p>b</p>"
+  },
+  "linkify_bare_url": {
+   "input": "<p>see https://example.com/path?q=1 now</p>",
+   "bleach": "<p>see <a href=\"https://example.com/path?q=1\" rel=\"nofollow\">https://example.com/path?q=1</a> now</p>"
+  },
+  "linkify_www": {
+   "input": "<p>go www.example.com today</p>",
+   "bleach": "<p>go <a href=\"http://www.example.com\" rel=\"nofollow\">www.example.com</a> today</p>"
+  },
+  "linkify_bare_domain": {
+   "input": "<p>visit example.com.</p>",
+   "bleach": "<p>visit <a href=\"http://example.com\" rel=\"nofollow\">example.com</a>.</p>"
+  },
+  "linkify_trailing_paren": {
+   "input": "<p>(https://example.com/a)</p>",
+   "bleach": "<p>(<a href=\"https://example.com/a\" rel=\"nofollow\">https://example.com/a</a>)</p>"
+  },
+  "linkify_trailing_punct": {
+   "input": "<p>https://example.com/a, and https://example.org/b.</p>",
+   "bleach": "<p><a href=\"https://example.com/a\" rel=\"nofollow\">https://example.com/a</a>, and <a href=\"https://example.org/b\" rel=\"nofollow\">https://example.org/b</a>.</p>"
+  },
+  "linkify_inside_anchor": {
+   "input": "<a href=\"https://example.com\">https://example.org</a>",
+   "bleach": "<a href=\"https://example.com\" rel=\"nofollow\">https://example.org</a>"
+  },
+  "linkify_email_not_linked": {
+   "input": "<p>ada@example.com</p>",
+   "bleach": "<p>ada@example.com</p>"
+  },
+  "linkify_in_attr_not_linked": {
+   "input": "<img alt=\"https://example.com\" src=\"https://img.example/a.png\">",
+   "bleach": "<img alt=\"https://example.com\" src=\"https://img.example/a.png\">"
+  },
+  "linkify_in_pre": {
+   "input": "<pre>http://example.com</pre>",
+   "bleach": "<pre><a href=\"http://example.com\" rel=\"nofollow\">http://example.com</a></pre>"
+  },
+  "linkify_amp_query": {
+   "input": "<p>https://example.com/?a=1&amp;b=2</p>",
+   "bleach": "<p><a href=\"https://example.com/?a=1&amp;b=2\" rel=\"nofollow\">https://example.com/?a=1&amp;b=2</a></p>"
+  },
+  "linkify_http_upper": {
+   "input": "<p>HTTP://EXAMPLE.COM/X</p>",
+   "bleach": "<p><a href=\"HTTP://EXAMPLE.COM/X\" rel=\"nofollow\">HTTP://EXAMPLE.COM/X</a></p>"
+  },
+  "linkify_port": {
+   "input": "<p>http://example.com:8080/a</p>",
+   "bleach": "<p><a href=\"http://example.com:8080/a\" rel=\"nofollow\">http://example.com:8080/a</a></p>"
+  },
+  "xss_script": {
+   "input": "<p>x</p><script>alert(1)</script>",
+   "bleach": "<p>x</p>"
+  },
+  "xss_script_unclosed": {
+   "input": "<p>x</p><script>alert(1)",
+   "bleach": "<p>x</p>alert(1)"
+  },
+  "xss_onerror": {
+   "input": "<img src=x onerror=\"alert(1)\">",
+   "bleach": "<img src=\"x\">"
+  },
+  "xss_onclick": {
+   "input": "<p onclick=\"alert(1)\">hi</p>",
+   "bleach": "<p>hi</p>"
+  },
+  "xss_js_href": {
+   "input": "<a href=\"javascript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_case": {
+   "input": "<a href=\"JaVaScRiPt:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_entity": {
+   "input": "<a href=\"&#106;avascript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_hex_entity": {
+   "input": "<a href=\"&#x6A;&#x61;vascript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_tab": {
+   "input": "<a href=\"jav&#x09;ascript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_newline": {
+   "input": "<a href=\"java\nscript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_href_space": {
+   "input": "<a href=\" javascript:alert(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_vbscript": {
+   "input": "<a href=\"vbscript:msgbox(1)\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_data_href": {
+   "input": "<a href=\"data:text/html;base64,PHNjcmlwdD4=\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_data_href_case": {
+   "input": "<a href=\"DATA:text/html,x\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_cid_href": {
+   "input": "<a href=\"cid:abc\">x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_js_img_src": {
+   "input": "<img src=\"javascript:alert(1)\">",
+   "bleach": "<img>"
+  },
+  "xss_style_tag": {
+   "input": "<style>body{background:url(javascript:alert(1))}</style><p>b</p>",
+   "bleach": "<p>b</p>"
+  },
+  "xss_style_attr": {
+   "input": "<p style=\"background:url(javascript:alert(1))\">b</p>",
+   "bleach": "<p>b</p>"
+  },
+  "xss_svg": {
+   "input": "<svg onload=\"alert(1)\"><script>alert(1)</script></svg>",
+   "bleach": ""
+  },
+  "xss_svg_use": {
+   "input": "<svg><use href=\"data:image/svg+xml,<svg id=x onload=alert(1)>\"/></svg>",
+   "bleach": ""
+  },
+  "xss_svg_a": {
+   "input": "<svg><a xlink:href=\"javascript:alert(1)\"><text>x</text></a></svg>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_math": {
+   "input": "<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>",
+   "bleach": "<table></table>"
+  },
+  "xss_math_href": {
+   "input": "<math href=\"javascript:alert(1)\">x</math>",
+   "bleach": "x"
+  },
+  "xss_iframe": {
+   "input": "<iframe src=\"https://evil.example\"></iframe><p>p</p>",
+   "bleach": "<p>p</p>"
+  },
+  "xss_object": {
+   "input": "<object data=\"x.swf\"></object><embed src=\"x.swf\">",
+   "bleach": ""
+  },
+  "xss_form": {
+   "input": "<form action=\"https://evil.example\"><input name=p><button>b</button></form>",
+   "bleach": "b"
+  },
+  "xss_meta_refresh": {
+   "input": "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert(1)\"><p>p</p>",
+   "bleach": "<p>p</p>"
+  },
+  "xss_base": {
+   "input": "<base href=\"https://evil.example/\"><a href=\"/x\">x</a>",
+   "bleach": "<a href=\"/x\" rel=\"nofollow\">x</a>"
+  },
+  "xss_link": {
+   "input": "<link rel=stylesheet href=\"https://evil.example/x.css\"><p>p</p>",
+   "bleach": "<p>p</p>"
+  },
+  "xss_nested_script": {
+   "input": "<scr<script>ipt>alert(1)</scr</script>ipt>",
+   "bleach": ""
+  },
+  "xss_comment_breakout": {
+   "input": "<!--<img src=x onerror=alert(1)>--><p>p</p>",
+   "bleach": "<p>p</p>"
+  },
+  "xss_cdata": {
+   "input": "<![CDATA[<script>alert(1)</script>]]><p>p</p>",
+   "bleach": "<p>p</p>"
+  },
+  "xss_attr_breakout": {
+   "input": "<img alt=\"&quot; onerror=alert(1) x=&quot;\" src=\"https://img.example/a.png\">",
+   "bleach": "<img alt=\"&quot; onerror=alert(1) x=&quot;\" src=\"https://img.example/a.png\">"
+  },
+  "xss_noscript": {
+   "input": "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\"></noscript>",
+   "bleach": "<p></p>"
+  },
+  "xss_template": {
+   "input": "<template><img src=x onerror=alert(1)></template>",
+   "bleach": "<img src=\"x\">"
+  },
+  "xss_textarea": {
+   "input": "<textarea><img src=x onerror=alert(1)></textarea>",
+   "bleach": "<img src=\"x\">"
+  },
+  "xss_title_breakout": {
+   "input": "<title><img src=x onerror=alert(1)></title>",
+   "bleach": ""
+  },
+  "xss_srcset": {
+   "input": "<img srcset=\"javascript:alert(1)\" src=\"https://img.example/a.png\">",
+   "bleach": "<img src=\"https://img.example/a.png\">"
+  },
+  "xss_formaction": {
+   "input": "<button formaction=\"javascript:alert(1)\">x</button>",
+   "bleach": "x"
+  },
+  "xss_unquoted_attr": {
+   "input": "<a href=javascript:alert(1)>x</a>",
+   "bleach": "<a>x</a>"
+  },
+  "xss_linkify_js": {
+   "input": "<p>javascript:alert(1)</p>",
+   "bleach": "<p>javascript:alert(1)</p>"
+  },
+  "xss_linkify_quote": {
+   "input": "<p>https://example.com/\"onmouseover=\"alert(1)</p>",
+   "bleach": "<p><a href=\"https://example.com/\" rel=\"nofollow\">https://example.com/</a>\"onmouseover=\"alert(1)</p>"
+  },
+  "xss_lt_in_text": {
+   "input": "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>",
+   "bleach": "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>"
+  }
+ },
+ "plain": {
+  "plain_text": {
+   "input": "Hello world",
+   "bleach": "Hello world"
+  },
+  "plain_url": {
+   "input": "Report at https://example.com/r?id=1&x=2 thanks",
+   "bleach": "Report at <a href=\"https://example.com/r?id=1&amp;x=2\" rel=\"nofollow\">https://example.com/r?id=1&amp;x=2</a> thanks"
+  },
+  "plain_markup_escaped": {
+   "input": "<script>alert(1)</script> & \"q\" 's'",
+   "bleach": "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#x27;s&#x27;"
+  },
+  "plain_www": {
+   "input": "www.example.com and example.org",
+   "bleach": "<a href=\"http://www.example.com\" rel=\"nofollow\">www.example.com</a> and <a href=\"http://example.org\" rel=\"nofollow\">example.org</a>"
+  },
+  "plain_email": {
+   "input": "contact ada@example.com",
+   "bleach": "contact ada@example.com"
+  },
+  "plain_js": {
+   "input": "javascript:alert(1)",
+   "bleach": "javascript:alert(1)"
+  },
+  "plain_quote_url": {
+   "input": "https://example.com/\"><img src=x onerror=alert(1)>",
+   "bleach": "<a href=\"https://example.com/&quot;&gt;&lt;img\" rel=\"nofollow\">https://example.com/&quot;&gt;&lt;img</a> src=x onerror=alert(1)&gt;"
+  },
+  "plain_multiline": {
+   "input": "line1\nhttps://example.com\n\nline3",
+   "bleach": "line1\n<a href=\"https://example.com\" rel=\"nofollow\">https://example.com</a>\n\nline3"
+  }
+ }
+}

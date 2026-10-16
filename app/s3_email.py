@@ -378,6 +378,18 @@ class S3EmailInbox:
         )
         return clean_html[:max_chars]
 
+    @classmethod
+    def _render_html_preview(cls, body_html: str) -> str:
+        """Untrusted HTML body -> sanitized, linkified markup for ``| safe``."""
+        safe_html = cls._sanitize_html_preview(body_html) if body_html else ""
+        safe_html = cls._strip_leading_css_noise(safe_html)
+        return bleach.linkify(safe_html) if safe_html else ""
+
+    @staticmethod
+    def _render_plain_preview(text: str) -> str:
+        """Plain-text body -> escaped, linkified markup."""
+        return bleach.linkify(html.escape(text)) if text else ""
+
     @staticmethod
     def _normalize_cid(content_id: str | None) -> str:
         if not content_id:
@@ -674,15 +686,11 @@ class S3EmailInbox:
                 flags=re.IGNORECASE,
             )
 
-        safe_html = self._sanitize_html_preview(body_html) if body_html else ""
-        safe_html = self._strip_leading_css_noise(safe_html)
-        safe_html_linked = bleach.linkify(safe_html) if safe_html else ""
+        safe_html_linked = self._render_html_preview(body_html)
         has_renderable_html = bool(safe_html_linked.strip())
         preview_text = body_plain or body_html or ""
         plain_preview = preview_text[:6000]
-        plain_preview_linked = (
-            bleach.linkify(html.escape(plain_preview)) if plain_preview else ""
-        )
+        plain_preview_linked = self._render_plain_preview(plain_preview)
 
         return {
             "s3_key": s3_key,
