@@ -13,7 +13,7 @@
 # every interpreter CI and production use. See AGENTS.md › Dependencies.
 fastapi==0.143.0
 starlette==1.7.0
-boto3==1.43.110
+boto3==1.43.113
 jinja2==3.1.6
 python-multipart==0.0.32
 itsdangerous==2.2.0
