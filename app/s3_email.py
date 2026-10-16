@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-import bleach
 import boto3
+import nh3
 from botocore.exceptions import ClientError
 
 from app.config import Settings
+from app.linkify import linkify
 
 UTC = UTC
 
@@ -88,19 +89,81 @@ class SearchCancelledError(Exception):
     pass
 
 
-def _allow_anchor_attribute(tag: str, name: str, value: str) -> bool:
-    """bleach attribute filter for <a>: data:/cid: are for inline images only.
+# Allow-list for rendering untrusted HTML mail. Widening it needs a very good
+# reason (CONTRIBUTING.md › Things worth knowing).
+_ALLOWED_TAGS = frozenset(
+    {
+        "a",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "div",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "span",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "title", "target", "rel"},
+    "img": {"src", "alt", "title", "width", "height"},
+    "*": {"class"},
+}
+# data:/cid: must be allowed globally so inline images survive; links may
+# use only these.
+_URL_SCHEMES = frozenset({"http", "https", "mailto", "data", "cid"})
+_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
+# What a URL parser (and the browser) drops before reading the scheme.
+_URL_IGNORED = re.compile(r"[\x00-\x20\x7f]")
 
-    The global ``protocols`` list must include data:/cid: so inline images
-    survive sanitization, but a link to a data: URL is a phishing/XSS vector
-    with no legitimate use in email bodies.
+
+def _filter_attribute(tag: str, name: str, value: str) -> str | None:
+    """nh3 attribute filter: data:/cid: are for inline images only.
+
+    The global scheme list must include data:/cid: so inline images survive
+    sanitization, but a link to a data: URL is a phishing/XSS vector with no
+    legitimate use in email bodies. A link keeps its href only when it is
+    relative or its scheme is http, https or mailto, read the way a browser
+    reads it (control characters and whitespace ignored).
     """
-    if name in {"title", "target", "rel"}:
-        return True
-    if name != "href":
-        return False
-    scheme = value.strip().lower().split(":", 1)[0] if ":" in value else ""
-    return scheme not in {"data", "cid"}
+    if tag != "a" or name != "href":
+        return value
+    compact = _URL_IGNORED.sub("", value)
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", compact)
+    if scheme and scheme.group(1).lower() not in _LINK_SCHEMES:
+        return None
+    return value
+
+
+_HTML_CLEANER = nh3.Cleaner(
+    tags=set(_ALLOWED_TAGS),
+    attributes=_ALLOWED_ATTRIBUTES,
+    attribute_filter=_filter_attribute,
+    url_schemes=set(_URL_SCHEMES),
+    # rel is on the allow-list and nofollow is added by linkify(), as bleach
+    # did; nh3 would otherwise replace rel with its own value.
+    link_rel=None,
+    strip_comments=True,
+)
 
 
 class S3EmailInbox:
@@ -336,47 +399,29 @@ class S3EmailInbox:
         )
         cleaned_source = re.sub(r"(?is)<!--\[if.*?<!\[endif\]-->", "", cleaned_source)
 
-        clean_html = bleach.clean(
-            cleaned_source,
-            tags=[
-                "a",
-                "b",
-                "blockquote",
-                "br",
-                "code",
-                "div",
-                "em",
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "h5",
-                "h6",
-                "hr",
-                "img",
-                "li",
-                "ol",
-                "p",
-                "pre",
-                "span",
-                "strong",
-                "table",
-                "tbody",
-                "td",
-                "th",
-                "thead",
-                "tr",
-                "ul",
-            ],
-            attributes={
-                "a": _allow_anchor_attribute,
-                "img": ["src", "alt", "title", "width", "height"],
-                "*": ["class"],
-            },
-            protocols=["http", "https", "mailto", "data", "cid"],
-            strip=True,
-        )
-        return clean_html[:max_chars]
+        clean_html = _HTML_CLEANER.clean(cleaned_source)
+        if len(clean_html) > max_chars:
+            # Re-clean the cut so a tag or entity split at the boundary is
+            # closed or dropped, never handed on half-open.
+            clean_html = _HTML_CLEANER.clean(clean_html[:max_chars])
+        return clean_html
+
+    @classmethod
+    def _render_html_preview(cls, body_html: str) -> str:
+        """Untrusted HTML body -> sanitized, linkified markup for ``| safe``."""
+        safe_html = cls._sanitize_html_preview(body_html) if body_html else ""
+        stripped = cls._strip_leading_css_noise(safe_html)
+        if stripped != safe_html:
+            # The CSS-noise strip is a regex over markup and can cut a tag
+            # pair in half; re-clean so linkify() only ever sees well-formed
+            # serialized markup.
+            stripped = _HTML_CLEANER.clean(stripped)
+        return linkify(stripped) if stripped else ""
+
+    @staticmethod
+    def _render_plain_preview(text: str) -> str:
+        """Plain-text body -> escaped, linkified markup."""
+        return linkify(html.escape(text)) if text else ""
 
     @staticmethod
     def _normalize_cid(content_id: str | None) -> str:
@@ -674,15 +719,11 @@ class S3EmailInbox:
                 flags=re.IGNORECASE,
             )
 
-        safe_html = self._sanitize_html_preview(body_html) if body_html else ""
-        safe_html = self._strip_leading_css_noise(safe_html)
-        safe_html_linked = bleach.linkify(safe_html) if safe_html else ""
+        safe_html_linked = self._render_html_preview(body_html)
         has_renderable_html = bool(safe_html_linked.strip())
         preview_text = body_plain or body_html or ""
         plain_preview = preview_text[:6000]
-        plain_preview_linked = (
-            bleach.linkify(html.escape(plain_preview)) if plain_preview else ""
-        )
+        plain_preview_linked = self._render_plain_preview(plain_preview)
 
         return {
             "s3_key": s3_key,

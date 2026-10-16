@@ -11,8 +11,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from app._vendor.dotenv import load_dotenv
 from app.central_auth import AccessDeniedError, CentralAuthStore, normalize_email
 
 ROOT_DIR = Path(__file__).resolve().parents[1]

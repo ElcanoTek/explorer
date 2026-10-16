@@ -64,7 +64,8 @@ missing. In order it:
 2. Creates the `explorer` system user and `/opt/explorer`.
 3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
    rsyncs the source into `/opt/explorer`.
-4. Builds `/opt/explorer/.venv` with `uv` and installs `requirements.txt`.
+4. Builds `/opt/explorer/.venv` with `uv` and installs the hashed
+   `requirements.txt` lock with `--require-hashes`.
 5. Prompts for an authentication mode and its required values, a TLS hostname,
    `EMAIL_S3_BUCKET`, and `AWS_REGION`; generates
    `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0600`, owned
@@ -736,7 +737,7 @@ sudo install -d -m 0700 -o explorer -g explorer /var/lib/explorer
 sudo install -d -o explorer -g explorer -m 0755 /opt/explorer/.venv
 sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv venv /opt/explorer/.venv
 sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv pip install \
-  --python /opt/explorer/.venv/bin/python -r /opt/explorer/requirements.txt
+  --python /opt/explorer/.venv/bin/python --require-hashes -r /opt/explorer/requirements.txt
 
 sudo install -o explorer -g explorer -m 0600 /dev/null /opt/explorer/.env
 sudo "$EDITOR" /opt/explorer/.env          # see .env.example

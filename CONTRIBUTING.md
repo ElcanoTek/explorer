@@ -18,15 +18,14 @@ will find another way to get the fix in. See
 
 ## Setup
 
-Python 3.11 or newer (CI runs 3.12).
+Python 3.11 or newer (CI runs 3.11 and 3.12).
 
 ```bash
 git clone https://github.com/ElcanoTek/explorer.git
 cd explorer
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install pytest httpx2 ruff
+pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 ```
 
 Copy `.env.example` to `.env` if you want to run the app. **Never commit a
@@ -85,7 +84,9 @@ Every first-party source file carries:
 ```
 
 New files need it too — after the shebang, if there is one. Vendored code
-under `app/static/vendor/` is left alone.
+under `app/static/vendor/` is left alone; Python copied in under
+`app/_vendor/` keeps its upstream license header and LICENSE file instead
+(see `NOTICE`).
 
 ## Branches and pull requests
 
@@ -101,8 +102,11 @@ under `app/static/vendor/` is left alone.
   weekly; a new alert on your branch is yours to look at.
 - Use the issue and pull-request templates under `.github/`; they ask for
   exactly what a reviewer needs.
-- Dependency bumps arrive via Dependabot (`.github/dependabot.yml`); please
-  don't hand-roll them.
+- Dependencies are locked with hashes: edit `requirements.in` (or
+  `requirements-dev.in`), then regenerate the `.txt` with the `pip-compile`
+  command in its header, under Python 3.11. Never edit a `.txt` by hand.
+  Dependabot proposes bumps daily (grouped, after a cooldown of 7 days (3 for patch releases)); read
+  AGENTS.md › Dependencies for when one is worth merging.
 
 ## Things worth knowing before you change them
 
@@ -115,9 +119,11 @@ under `app/static/vendor/` is left alone.
 - **Search jobs run in worker threads** and mutate module-level caches;
   `CACHE_LOCK` guards them. Read-modify-write on those dicts without the lock
   loses updates.
-- **HTML mail is hostile input.** Body rendering goes through `bleach` with an
+- **HTML mail is hostile input.** Body rendering goes through `nh3` with an
   explicit allow-list, and `data:`/`cid:` URLs are permitted for inline
   images but rejected for links. Widening that list needs a very good reason.
+  `app/linkify.py` runs only on that sanitized (or `html.escape`d) output;
+  `tests/test_html_render.py` pins the whole pipeline, XSS corpus included.
 - **Header reads are ranged GETs.** Keep the per-row cost proportional to
   `EMAIL_HEADER_FETCH_BYTES`; do not download whole objects to render a list.
 

@@ -81,7 +81,7 @@ layout_build() {
     PATH=/usr/local/bin:/usr/bin:/bin \
     HOME="$BUILD_CACHE" UV_CACHE_DIR="$BUILD_CACHE/uv" UV_NO_CONFIG=1 \
     "$uv_bin" pip install --python "$staging/.venv/bin/python" \
-      --reinstall -r "$staging/requirements.txt" || return 1
+      --reinstall --require-hashes -r "$staging/requirements.txt" || return 1
   [[ -d $staging/.venv && ! -L $staging/.venv ]] || {
     layout_die "$staging/.venv is not a real directory"
     return 1

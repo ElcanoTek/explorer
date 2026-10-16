@@ -40,10 +40,11 @@ def run(*args, timeout=15, cwd=None):
 
 
 # ── dotenv parsing ──────────────────────────────────────────────────────────
-# app/config.py loads .env.shared then .env via python-dotenv (interpolation
-# on, .env overriding). Doctor mirrors that with an in-process parser: the
-# venv's interpreter is service-writable and must never be executed by a
-# root-run check, so the probe cannot borrow the app's own dotenv. This is
+# app/config.py loads .env.shared then .env via the python-dotenv code
+# vendored in app/_vendor/dotenv (interpolation on, .env overriding).
+# Doctor mirrors that with an in-process parser: the venv's interpreter is
+# service-writable and must never be executed by a root-run check, and
+# doctor never imports app/, so the probe cannot borrow the app's dotenv. This is
 # the supported subset of python-dotenv semantics: comments, optional
 # `export`, whitespace around =, single/double quoting with the common
 # escapes, and ${VAR} / ${VAR:-default} interpolation resolved against the
@@ -255,7 +256,9 @@ def _requirements_pins(app):
     """name==version pins from the app's requirements.txt (normalized names).
 
     None when the file cannot be read. Version pins are not secret, but
-    only names are ever reported as diverged.
+    only names are ever reported as diverged. The file is pip-compile
+    output, so a pin line may end in a backslash continuation and its
+    ``--hash`` lines are skipped with the other option lines.
     """
     try:
         text = (app / "requirements.txt").read_text()
@@ -267,7 +270,8 @@ def _requirements_pins(app):
         if not line or line.startswith(("#", "-")):
             continue
         match = re.match(
-            r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==(\S+)(?:\s+#.*)?$",
+            r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==([^\s\\]+)"
+            r"(?:\s*\\|\s+#.*)?$",
             line,
         )
         if match:

@@ -8,8 +8,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PRs share a per-ref group (a new push cancels the old run); every other
+  # event gets its own per-commit group, so each push to main is tested.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -29,18 +31,19 @@ jobs:
         # ruff.toml targets; 3.12 is what CI ran before.
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Ruff is pinned so CI and contributors' local runs agree; the
-          # rule selection lives in ruff.toml.
-          pip install -r requirements.txt pytest httpx2 'ruff==0.16.5'
+        # Both files are pip-compile locks with hashes: the runtime tree the
+        # box installs, and the pinned tooling (Ruff, pytest, pip-tools,
+        # pip-audit). --require-hashes refuses anything not in them.
+        run: python -m pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 
       - name: Lint
         run: |
@@ -54,3 +57,33 @@ jobs:
 
       - name: Test privileged install lifecycle
         run: sudo env PATH="$PATH" bash scripts/test/layout_test.sh
+
+  dependencies:
+    name: Dependency lock and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The locks are compiled under the oldest supported Python.
+          python-version: "3.11"
+
+      - name: Install pinned tooling
+        run: python -m pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+
+      - name: Lock matches requirements.in
+        # pip-compile keeps existing pins, so a re-run only changes the files
+        # when a .in was edited without regenerating its lock.
+        run: |
+          pip-compile --quiet --generate-hashes --strip-extras --pip-args='--uploaded-prior-to=P7D' requirements.in
+          pip-compile --quiet --generate-hashes --strip-extras --allow-unsafe --pip-args='--uploaded-prior-to=P7D' requirements-dev.in
+          git diff --exit-code -- requirements.txt requirements-dev.txt
+
+      - name: Audit locked dependencies
+        run: |
+          pip-audit --strict --require-hashes --disable-pip -r requirements.txt
+          pip-audit --strict --require-hashes --disable-pip -r requirements-dev.txt
