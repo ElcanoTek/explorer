@@ -85,7 +85,9 @@ Every first-party source file carries:
 ```
 
 New files need it too — after the shebang, if there is one. Vendored code
-under `app/static/vendor/` is left alone.
+under `app/static/vendor/` is left alone; Python copied in under
+`app/_vendor/` keeps its upstream license header and LICENSE file instead
+(see `NOTICE`).
 
 ## Branches and pull requests
 

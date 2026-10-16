@@ -40,10 +40,11 @@ def run(*args, timeout=15, cwd=None):
 
 
 # ── dotenv parsing ──────────────────────────────────────────────────────────
-# app/config.py loads .env.shared then .env via python-dotenv (interpolation
-# on, .env overriding). Doctor mirrors that with an in-process parser: the
-# venv's interpreter is service-writable and must never be executed by a
-# root-run check, so the probe cannot borrow the app's own dotenv. This is
+# app/config.py loads .env.shared then .env via the python-dotenv code
+# vendored in app/_vendor/dotenv (interpolation on, .env overriding).
+# Doctor mirrors that with an in-process parser: the venv's interpreter is
+# service-writable and must never be executed by a root-run check, and
+# doctor never imports app/, so the probe cannot borrow the app's dotenv. This is
 # the supported subset of python-dotenv semantics: comments, optional
 # `export`, whitespace around =, single/double quoting with the common
 # escapes, and ${VAR} / ${VAR:-default} interpolation resolved against the

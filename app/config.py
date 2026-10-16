@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from app._vendor.dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 # Neither file is committed — see .env.example for the template. ".env.shared"

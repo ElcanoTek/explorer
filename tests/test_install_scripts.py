@@ -405,9 +405,10 @@ def test_doctor_py_never_imports_the_app():
     app/config.py reads the environment at import time, and the whole point
     of doctor is diagnosing a box where that environment is wrong. Secrets
     are parsed in-process and only key names/booleans/lengths ever leave it.
-    The venv's python-dotenv is deliberately NOT used: that interpreter is
-    service-writable and a root-run doctor must never execute it, so the
-    parser mirrors python-dotenv's supported semantics in stdlib code.
+    Nor does it borrow a dotenv parser from the venv (service-writable, so a
+    root-run doctor must never execute it) or from app/_vendor (that would
+    mean importing app/), so the parser mirrors python-dotenv's supported
+    semantics in stdlib code.
     """
     text = (SCRIPTS / "doctor.py").read_text()
     assert "SPDX-License-Identifier: BUSL-1.1" in text
