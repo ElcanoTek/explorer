@@ -56,11 +56,12 @@ synthetic (`.example` addresses only).
 ## Dependencies and in-housed code
 
 Policy: prefer the stdlib or a small piece of owned code; add a dependency
-only when it clearly earns its keep. Update one only for a specific fix we
-need or a CVE whose code path we actually reach — not on a schedule
-(Dependabot opens **security** updates only for pip). On a CVE, check
-reachability first; if the affected code is unused, delete it; if it is
-used, bump or adapt the patch.
+only when it clearly earns its keep. Dependabot proposes updates (daily,
+7-day cooldown, grouped; `.github/dependabot.yml`); a human merges them only
+when the bump earns it — a security fix whose code path we use, or a
+specific commit we need. In-housed code is ours and is not tracked by
+Dependabot. On a CVE, check reachability first; if the affected code is
+unused, delete it; if it is used, bump or adapt the patch.
 
 The tree is locked with hashes. Edit only `requirements.in` /
 `requirements-dev.in`, then regenerate under **Python 3.11** with pip-tools
@@ -83,3 +84,8 @@ uses `--require-hashes`. `uvicorn` is installed without `[standard]`
 
 `bleach` was replaced by `nh3` (maintained, MIT). There are no data files to
 refresh: the bare-domain TLD set in `app/linkify.py` is a short literal.
+
+Workflows pin every action by full commit SHA with a `# vX.Y.Z` comment
+(the same SHAs fleet uses); Dependabot's `github-actions` entry moves them.
+Checkouts use `persist-credentials: false`, permissions default to
+`contents: read`, and PR runs cancel superseded ones.

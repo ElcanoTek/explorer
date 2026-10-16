@@ -1,48 +1,58 @@
-# Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Dependabot proposes updates for Explorer's two dependency surfaces: the
+# hashed pip-compile locks at the repo root (requirements.in -> .txt, which
+# Dependabot regenerates with pip-compile, hashes included) and the GitHub
+# Actions pinned by SHA in .github/workflows/*. Modelled on fleet's file.
 #
-# Two ecosystems are in play: the hashed pip-compile locks
-# (requirements.in -> requirements.txt, requirements-dev.in ->
-# requirements-dev.txt), and the actions pinned in .github/workflows/*.yml.
-# Actions get weekly version updates bundled into one PR; pip gets security
-# updates only (see below).
+# Proposing is not merging. A human merges a bump only when it earns it: a
+# security fix whose code path Explorer uses, or a specific commit we need
+# (AGENTS.md › Dependencies). In-housed code (app/_vendor, app/linkify.py) is
+# ours and is not tracked here.
 #
-# Security updates are deliberately left ungrouped. Dependabot groups apply
-# to version updates only unless a group sets `applies-to: security-updates`,
-# and ungrouped is what we want here: an advisory fix arrives as its own
-# small PR that can land immediately instead of riding the weekly bundle.
-# Security PRs are not counted against `open-pull-requests-limit`, which is
-# why the pip limit of 0 below turns off only version updates.
+# Cadence: daily, with a supply-chain cooldown on pip so a freshly published
+# release has a week to be scrutinized (or yanked) before it is proposed.
+# Cooldown applies to version updates only, never to security updates.
+# Minor + patch bumps are grouped per ecosystem into one PR that Dependabot
+# updates in place; majors stay separate so breaking changes get their own
+# review. Security updates ignore grouping and prefixes, as GitHub documents.
 #
-# `labels: []` opts out of labelling entirely, including Dependabot's
-# default `dependencies` label. Dependabot only applies labels that already
-# exist in the repo, so naming any here would mean creating and maintaining
-# them by hand for no gain — these PRs are self-evident from their title.
+# Not covered: the Python interpreter itself (the CI matrix in ci.yml and the
+# python3 dnf ships on the box) — that is a deliberate, human-initiated move.
+#
+# Schema: https://docs.github.com/code-security/reference/supply-chain-security/dependabot-options-reference
 version: 2
-updates:
-  - package-ecosystem: pip
-    directory: /
-    schedule:
-      interval: weekly
-    # Security updates only. A limit of 0 disables version-update PRs while
-    # advisory PRs still open (they ignore this limit). Explorer bumps a
-    # dependency for a CVE whose code path it uses, or a specific fix it
-    # needs — not on a schedule. See AGENTS.md › Dependencies.
-    open-pull-requests-limit: 0
-    labels: []
-    commit-message:
-      prefix: chore(deps)
 
-  - package-ecosystem: github-actions
-    # For this ecosystem "/" means the whole repo — i.e. every workflow under
-    # .github/workflows — not a manifest sitting in the root directory.
-    directory: /
+updates:
+  # requirements.in / requirements.txt and requirements-dev.in / .txt.
+  - package-ecosystem: pip
+    directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: daily
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+      semver-major-days: 7
+      semver-minor-days: 7
+      semver-patch-days: 3
     labels: []
     commit-message:
-      prefix: chore(deps)
+      prefix: "deps(pip)"
     groups:
-      actions:
-        patterns:
-          - "*"
+      pip-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Actions referenced by .github/workflows/* (SHA pins with # vX.Y.Z).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    labels: []
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
