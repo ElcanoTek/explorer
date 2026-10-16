@@ -271,8 +271,68 @@ class TestLinkifyReviewCases:
             "x" + ")" * 6000,
             "https://e.example/" + "(" * 3000 + ")" * 3000,
             ("xn--a." * 1000),
+            "https://e.example/" + ")]}" * 2000,
+            "https://e.example/" + "[" * 6000,
+            "https://" + "a@" * 3000,
+            "https://e.example/" + ".;&amp;" * 1000,
+            "https://e.example/a https://e.example/b " * 300,
         ):
             start = time.perf_counter()
             S3EmailInbox._render_plain_preview(text)
             S3EmailInbox._render_html_preview(f"<p>{text}</p>")
             assert time.perf_counter() - start < 0.5, text[:20]
+
+
+def _a(url: str, href: str | None = None) -> str:
+    return f'<a href="{href or url}" rel="nofollow">{url}</a>'
+
+
+# (plain text, expected rendering) — scan, trim, then urlsplit-validate.
+LINKIFY_TABLE = [
+    # Codex round 2: userinfo is never linked (phishing shape), wholly text.
+    ("https://user@example.com/path", "https://user@example.com/path"),
+    ("https://user:pass@example.com/path", "https://user:pass@example.com/path"),
+    ("https://bank.example@evil.example/x", "https://bank.example@evil.example/x"),
+    ("see https://user@example.com.", "see https://user@example.com."),
+    # Codex round 2: brackets, braces and parens are balance-aware.
+    ("[https://example.com/path]", f"[{_a('https://example.com/path')}]"),
+    ("{https://example.com/path}", "{" + _a("https://example.com/path") + "}"),
+    (
+        "(https://example.com/a_(b))",
+        f"({_a('https://example.com/a_(b)')})",
+    ),
+    ("[https://example.com/a[1]].", f"[{_a('https://example.com/a[1]')}]."),
+    ("([https://example.com/x])", f"([{_a('https://example.com/x')}])"),
+    ("https://example.com/{id}", _a("https://example.com/{id}")),
+    # Trailing prose punctuation.
+    ("https://example.com/a.", _a("https://example.com/a") + "."),
+    ("https://example.com/a,", _a("https://example.com/a") + ","),
+    ("https://example.com/a!?", _a("https://example.com/a") + "!?"),
+    ("https://example.com/a;", _a("https://example.com/a") + ";"),
+    ("https://example.com/a:", _a("https://example.com/a") + ":"),
+    ("https://example.com/?a=1&b=2", _a("https://example.com/?a=1&amp;b=2")),
+    # Round 1: fragment, unmatched parens, any explicit host.
+    ("https://example.com#token=abc", _a("https://example.com#token=abc")),
+    (
+        "(https://en.wikipedia.org/wiki/Function_(mathematics)).",
+        f"({_a('https://en.wikipedia.org/wiki/Function_(mathematics)')}).",
+    ),
+    ("http://127.0.0.1/status", _a("http://127.0.0.1/status")),
+    ("http://localhost:8000/", _a("http://localhost:8000/")),
+    ("http://[::1]:8080/a", _a("http://[::1]:8080/a")),
+    ("https://xn--80ak6aa92e.xn--p1ai/", _a("https://xn--80ak6aa92e.xn--p1ai/")),
+    # Rejected by validation: left as text.
+    ("http://example.com:99999/", "http://example.com:99999/"),
+    ("http://[not-ipv6]/", "http://[not-ipv6]/"),
+    ("https://", "https://"),
+    # Bare domains keep the TLD rule.
+    ("example.com/a.", _a("example.com/a", "http://example.com/a") + "."),
+    ("config.yaml", "config.yaml"),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), LINKIFY_TABLE)
+def test_linkify_table(text, expected):
+    out = S3EmailInbox._render_plain_preview(text)
+    assert_neutralized(out)
+    assert out == expected

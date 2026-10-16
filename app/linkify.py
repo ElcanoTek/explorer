@@ -13,16 +13,21 @@ The guarantees the caller relies on:
 * Only text nodes are rewritten — never an attribute value, and never text
   that is already inside an ``<a>``.
 * A generated link's href is the escaped text it was found in, and the match
-  can contain no raw ``"``, ``<``, ``>`` or whitespace and stops at an escaped
-  quote or angle bracket, so it cannot leave its attribute. Its scheme is
-  always http or https (``http://`` is prefixed to a bare domain).
+  can contain no raw ``"``, ``'``, ``<``, ``>`` or whitespace and stops at an
+  escaped quote or angle bracket, so it cannot leave its attribute. Its
+  scheme is always http or https (``http://`` is prefixed to a bare domain),
+  it has a valid host and port per ``urllib.parse.urlsplit``, and it carries
+  no userinfo (such URLs are left as text).
 * Every ``<a>`` with a non-``mailto:`` href gets ``nofollow`` added to its
   ``rel`` tokens, exactly as bleach's default ``nofollow`` callback did.
 """
 
 from __future__ import annotations
 
+import html
+import ipaddress
 import re
+from urllib.parse import urlsplit
 
 # One serialized tag: quoted attribute values may contain ">".
 _TAG_RE = re.compile(r'<[^>"]*(?:"[^"]*"[^>"]*)*>')
@@ -37,58 +42,97 @@ _BARE_TLDS = frozenset(
     "name net org post pro tel travel xxx".split()
 )
 
-# Characters a URL path may contain: no whitespace, none of RFC 3986's
-# unsafe set, no raw quote or angle bracket, and no escaped one either.
-_PATH_CHAR = (
-    r"""(?:[^\s{}|\\^`<>"'&]|&(?!(?:quot|lt|gt|nbsp|\#x27|\#39|\#34|\#x22);))"""
-)
+# One character of a URL candidate in escaped text: anything but whitespace,
+# a raw quote or angle bracket, or an escaped one (``&quot;`` and kin). So a
+# candidate can never leave a double-quoted attribute.
+_URL_CHAR = r"""(?:[^\s<>"'&]|&(?!(?:quot|lt|gt|nbsp|\#x27|\#39|\#34|\#x22);))"""
 
 _URL_RE = re.compile(
     rf"""
     (?<![\w@.:/&#-])                   # not mid-word, an email, or another scheme
     (?:
-        # Explicit http(s): any host a browser accepts — a dotted name of any
-        # TLD (punycode included), a single label such as localhost, an IPv4
-        # address, or a bracketed IPv6 literal.
-        (?P<scheme>https?://)
-        (?:\[[0-9A-Fa-f:.]{{2,45}}\]|[\w-]+(?:\.[\w-]+)*)
+        # Explicit http(s): the maximal candidate run; trimmed and validated
+        # by _explicit_href, which accepts any host a browser does.
+        (?P<explicit>https?://{_URL_CHAR}+)
       |
         # Bare domain: needs a TLD from the short list (checked in code).
-        (?:[\w-]+\.)+(?P<tld>[^\W\d_]{{2,63}}|xn--[a-z0-9-]{{1,59}})
-        (?![\w-]|\.\w)
+        (?P<bare>
+            (?:[\w-]+\.)+(?P<tld>[^\W\d_]{{2,63}}|xn--[a-z0-9-]{{1,59}})
+            (?![\w-]|\.\w)
+            (?::[0-9]{{1,5}})?
+            (?:[/?\#]{_URL_CHAR}*)?
+        )
     )
-    (?::[0-9]{{1,5}})?
-    (?:[/?\#]{_PATH_CHAR}*)?
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
+_PAIRS = {")": "(", "]": "[", "}": "{"}
+_TRAILING_PROSE = ".,;:!?*"
+_ENTITY_AT_END = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]*|\#[0-9]+|\#x[0-9A-Fa-f]+);$")
+_HOSTNAME = re.compile(r"^[\w-]+(?:\.[\w-]+)*\.?$")
+
 
 def _strip_trailing(url: str) -> tuple[str, str]:
-    """Drop the trailing ``.``, ``,`` and unmatched ``)`` prose adds."""
-    suffix = ""
-    while url:
-        if (url.endswith(")") and url.count(")") > url.count("(")) or url.endswith(
-            (",", ".")
+    """Split off trailing prose punctuation and unmatched closing brackets.
+
+    Repeats until nothing changes, so ``(see https://x/a_(b)).`` keeps the
+    balanced ``(b)`` and drops ``).``. Counts are kept incrementally, so a
+    long run of closers stays linear.
+    """
+    opens = {o: url.count(o) for o in _PAIRS.values()}
+    closes = {c: url.count(c) for c in _PAIRS}
+    cut = len(url)
+    while cut:
+        char = url[cut - 1]
+        if char in _PAIRS and closes[char] > opens[_PAIRS[char]]:
+            closes[char] -= 1
+        elif char in _TRAILING_PROSE and not (
+            char == ";" and _ENTITY_AT_END.search(url, 0, cut)
         ):
-            suffix = url[-1] + suffix
-            url = url[:-1]
-            continue
-        break
-    return url, suffix
+            pass
+        else:
+            break
+        cut -= 1
+    return url[:cut], url[cut:]
+
+
+def _valid_href(href: str) -> bool:
+    """urlsplit check on the unescaped URL: scheme, host, port, no userinfo.
+
+    A URL with userinfo is never linked: in untrusted mail
+    ``https://bank.example@evil.example`` is a phishing shape, and linking
+    only part of it would point somewhere else again.
+    """
+    try:
+        parts = urlsplit(html.unescape(href))
+        parts.port  # raises ValueError on a bad port
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ("http", "https") or "@" in parts.netloc:
+        return False
+    host = parts.hostname or ""
+    if parts.netloc.startswith("["):
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+        return True
+    return bool(_HOSTNAME.match(host))
 
 
 def _linkify_text(text: str) -> str:
     out: list[str] = []
     end = 0
     for match in _URL_RE.finditer(text):
-        tld = (match.group("tld") or "").lower()
-        if not match.group("scheme") and not (
-            len(tld) == 2 or tld in _BARE_TLDS or tld.startswith("xn--")
-        ):
-            continue
+        if match.group("bare"):
+            tld = match.group("tld").lower()
+            if not (len(tld) == 2 or tld in _BARE_TLDS or tld.startswith("xn--")):
+                continue
         url, suffix = _strip_trailing(match.group(0))
-        href = url if match.group("scheme") else f"http://{url}"
+        href = url if match.group("explicit") else f"http://{url}"
+        if not _valid_href(href):
+            continue
         out.append(text[end : match.start()])
         out.append(f'<a href="{href}" rel="nofollow">{url}</a>{suffix}')
         end = match.end()
