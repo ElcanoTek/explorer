@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Operating guide for AI coding agents in **Explorer**. `CLAUDE.md` imports
-this file with `@AGENTS.md` — a regular file, not a symlink, because the
-install refuses any symlink in the source tree (`layout_require_trusted`).
+Operating guide for AI coding agents in **Explorer**. Claude Code reads this
+file directly, so there is no `CLAUDE.md` (and never a symlink alias: the
+install refuses any symlink in the source tree, `layout_require_trusted`).
 Humans: start with `README.md`, `CONTRIBUTING.md`,
 `SECURITY.md` and `docs/DEPLOYMENT.md`; this is the short version.
 
