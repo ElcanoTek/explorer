@@ -27,7 +27,8 @@ and attachment download over the archive you already own.
   need. See [How it works](#how-it-works).
 - **Cheap header reads.** Result rows come from a ranged `GET` over the first
   64 KB of each object, so listing a day never downloads whole messages.
-- **Safe HTML rendering.** Message bodies are sanitized with `bleach`;
+- **Safe HTML rendering.** Message bodies are sanitized with `nh3`
+  (ammonia) against an explicit allow-list and linkified by `app/linkify.py`;
   `<script>`/`<style>` blocks and event handlers are stripped, `data:` links
   are dropped while inline `data:` images survive, and `cid:` references are
   rewritten to Explorer's own attachment endpoint.

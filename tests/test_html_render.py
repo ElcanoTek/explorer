@@ -24,7 +24,46 @@ GOLDEN = json.loads(
 )
 
 # name -> (expected output, why it differs from the bleach recording)
-INTENTIONAL_DIFFERENCES: dict[str, tuple[str, str]] = {}
+INTENTIONAL_DIFFERENCES: dict[str, tuple[str, str]] = {
+    "entities_text": (
+        "<p>Tom &amp; Jerry &lt;3 \"q\" 's' café &nbsp;x</p>",
+        "nh3 decodes character references and re-escapes only what HTML "
+        "needs; bleach echoed the sender's entities verbatim. Same rendering.",
+    ),
+    "xss_script_unclosed": (
+        "<p>x</p>",
+        "nh3 drops the content of <script> as well as the tag; bleach left "
+        "an unclosed script's body behind as text.",
+    ),
+    "xss_svg_a": (
+        "",
+        "nh3 drops foreign (SVG) content wholesale; bleach kept an empty <a>.",
+    ),
+    "xss_math": (
+        "",
+        "nh3 drops foreign (MathML) content wholesale; bleach kept a <table>.",
+    ),
+    "xss_noscript": (
+        '&lt;p title="<img src="x">"&gt;',
+        "html5ever parses <noscript> as raw text (scripting on), as a browser "
+        "does; the <img> after it is real and loses its handler either way.",
+    ),
+    "xss_template": (
+        "",
+        "nh3 drops <template> content; bleach hoisted the <img> out of it.",
+    ),
+    "xss_textarea": (
+        "&lt;img src=x onerror=alert(1)&gt;",
+        "<textarea> content is text in HTML; nh3 keeps it as escaped text "
+        "where bleach re-parsed it into an <img>.",
+    ),
+    "plain_quote_url": (
+        '<a href="https://example.com/" rel="nofollow">https://example.com/</a>'
+        "&quot;&gt;&lt;img src=x onerror=alert(1)&gt;",
+        "Our linkify stops a URL at an escaped quote or angle bracket; bleach "
+        "carried the escaped markup into the href.",
+    ),
+}
 
 ALLOWED_TAGS = {
     "a", "b", "blockquote", "br", "code", "div", "em", "h1", "h2", "h3", "h4",
@@ -87,3 +126,100 @@ def test_recording_itself_is_neutralized():
     for section in ("html", "plain"):
         for case in GOLDEN[section].values():
             assert_neutralized(case["bleach"])
+
+
+class TestLinkFilter:
+    @pytest.mark.parametrize(
+        "href",
+        [
+            "javascript:alert(1)",
+            "da\tta:text/html,x",
+            "\x01data:text/html,x",
+            "c\nid:abc",
+            "vbscript:x",
+            "JAVASCRIPT:x",
+        ],
+    )
+    def test_dangerous_link_schemes_dropped(self, href):
+        out = S3EmailInbox._render_html_preview(f'<a href="{href}">x</a>')
+        assert out == "<a>x</a>"
+
+    @pytest.mark.parametrize(
+        "href", ["https://example.com", "/attachment?x=1", "#top", "mailto:a@b.example"]
+    )
+    def test_safe_hrefs_kept(self, href):
+        assert f'href="{href}"' in S3EmailInbox._render_html_preview(
+            f'<a href="{href}">x</a>'
+        )
+
+    def test_data_and_cid_images_still_render(self):
+        out = S3EmailInbox._render_html_preview(
+            '<img src="data:image/gif;base64,R0lGOD=="><img src="cid:logo">'
+        )
+        assert out == '<img src="data:image/gif;base64,R0lGOD=="><img src="cid:logo">'
+
+
+class TestTruncation:
+    def test_cut_inside_a_tag_is_closed_or_dropped(self):
+        source = "<p>" + "x" * 30 + '</p><a href="https://example.com/long">y</a>'
+        for limit in range(30, len(source) + 5):
+            out = S3EmailInbox._sanitize_html_preview(source, max_chars=limit)
+            assert_neutralized(out)
+            assert out.count("<a") == out.count("</a>")
+
+    def test_css_strip_cannot_leave_half_a_tag(self):
+        out = S3EmailInbox._render_html_preview("p{<b>x}</b><p>body</p>")
+        assert_neutralized(out)
+        assert "</b>" not in out or "<b>" in out
+
+
+class TestLinkify:
+    def render(self, text):
+        return S3EmailInbox._render_html_preview(f"<p>{text}</p>")
+
+    def test_explicit_scheme_links_any_tld(self):
+        assert self.render("https://app.example.dev/x") == (
+            '<p><a href="https://app.example.dev/x" rel="nofollow">'
+            "https://app.example.dev/x</a></p>"
+        )
+
+    def test_bare_domain_needs_a_known_tld(self):
+        assert self.render("config.yaml") == "<p>config.yaml</p>"
+
+    def test_other_schemes_not_linked(self):
+        assert "<a" not in self.render("ftp://files.example.com/a")
+
+    def test_userinfo_not_linked(self):
+        assert "<a" not in self.render("ada@example.com")
+
+    def test_existing_rel_gets_nofollow_once(self):
+        out = S3EmailInbox._render_html_preview(
+            '<a href="https://example.com" rel="NoFollow noopener">x</a>'
+        )
+        assert out == '<a href="https://example.com" rel="NoFollow noopener">x</a>'
+
+    def test_mailto_and_hrefless_anchor_untouched(self):
+        out = S3EmailInbox._render_html_preview(
+            '<a href="mailto:a@example.com">m</a><a title="t">n</a>'
+        )
+        assert out == '<a href="mailto:a@example.com">m</a><a title="t">n</a>'
+
+    def test_url_inside_attribute_never_linked(self):
+        out = S3EmailInbox._render_html_preview(
+            '<img alt="see https://example.com/a>b" src="https://img.example/a.png">'
+        )
+        assert out.count("<a") == 0
+
+    def test_url_never_leaves_the_href(self):
+        for payload in (
+            'https://example.com/a"onmouseover="x',
+            "https://example.com/a'onmouseover='x",
+            "https://example.com/a<img src=x>",
+        ):
+            for out in (
+                self.render(payload.replace("<", "&lt;").replace(">", "&gt;")),
+                S3EmailInbox._render_plain_preview(payload),
+            ):
+                assert_neutralized(out)
+                for href in re.findall(r'href="([^"]*)"', out):
+                    assert "onmouseover" not in href and "<" not in href

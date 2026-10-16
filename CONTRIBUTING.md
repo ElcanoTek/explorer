@@ -115,9 +115,11 @@ under `app/static/vendor/` is left alone.
 - **Search jobs run in worker threads** and mutate module-level caches;
   `CACHE_LOCK` guards them. Read-modify-write on those dicts without the lock
   loses updates.
-- **HTML mail is hostile input.** Body rendering goes through `bleach` with an
+- **HTML mail is hostile input.** Body rendering goes through `nh3` with an
   explicit allow-list, and `data:`/`cid:` URLs are permitted for inline
   images but rejected for links. Widening that list needs a very good reason.
+  `app/linkify.py` runs only on that sanitized (or `html.escape`d) output;
+  `tests/test_html_render.py` pins the whole pipeline, XSS corpus included.
 - **Header reads are ranged GETs.** Keep the per-row cost proportional to
   `EMAIL_HEADER_FETCH_BYTES`; do not download whole objects to render a list.
 
