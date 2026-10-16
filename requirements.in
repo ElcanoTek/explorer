@@ -3,13 +3,17 @@
 # requirements.txt is the locked, hashed tree generated from this file:
 #
 #   pip install -r requirements-dev.txt     # pins pip-tools itself
-#   pip-compile --generate-hashes --strip-extras requirements.in
+#   pip-compile --generate-hashes --strip-extras --pip-args='--uploaded-prior-to=P7D' requirements.in
+#
+# --uploaded-prior-to=P7D only considers releases at least 7 days old, the
+# same supply-chain cooldown Dependabot uses. Add --upgrade to bring the
+# transitive pins current.
 #
 # Run it under the oldest supported Python (3.11) so markers resolve for
 # every interpreter CI and production use. See AGENTS.md › Dependencies.
-fastapi==0.142.2
+fastapi==0.143.0
 starlette==1.7.0
-boto3==1.43.108
+boto3==1.43.110
 jinja2==3.1.6
 python-multipart==0.0.32
 itsdangerous==2.2.0
