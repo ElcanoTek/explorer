@@ -8,8 +8,9 @@
 # (AGENTS.md › Dependencies). In-housed code (app/_vendor, app/linkify.py) is
 # ours and is not tracked here.
 #
-# Cadence: daily, with a supply-chain cooldown on pip so a freshly published
-# release has a week to be scrutinized (or yanked) before it is proposed.
+# Cadence: daily, with a supply-chain cooldown on pip of 7 days (3 for patch
+# releases), so a fresh release can be scrutinized (or yanked) before it is
+# proposed.
 # Cooldown applies to version updates only, never to security updates.
 # Minor + patch bumps are grouped per ecosystem into one PR that Dependabot
 # updates in place; majors stay separate so breaking changes get their own

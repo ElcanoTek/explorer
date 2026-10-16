@@ -105,7 +105,7 @@ under `app/static/vendor/` is left alone; Python copied in under
 - Dependencies are locked with hashes: edit `requirements.in` (or
   `requirements-dev.in`), then regenerate the `.txt` with the `pip-compile`
   command in its header, under Python 3.11. Never edit a `.txt` by hand.
-  Dependabot proposes bumps daily (grouped, after a 7-day cooldown); read
+  Dependabot proposes bumps daily (grouped, after a cooldown of 7 days (3 for patch releases)); read
   AGENTS.md › Dependencies for when one is worth merging.
 
 ## Things worth knowing before you change them

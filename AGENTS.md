@@ -57,7 +57,7 @@ synthetic (`.example` addresses only).
 
 Policy: prefer the stdlib or a small piece of owned code; add a dependency
 only when it clearly earns its keep. Dependabot proposes updates (daily,
-7-day cooldown, grouped; `.github/dependabot.yml`); a human merges them only
+cooldown of 7 days (3 for patch releases), grouped; `.github/dependabot.yml`); a human merges them only
 when the bump earns it — a security fix whose code path we use, or a
 specific commit we need. In-housed code is ours and is not tracked by
 Dependabot. On a CVE, check reachability first; if the affected code is

@@ -5,8 +5,8 @@
 #   pip install -r requirements-dev.txt     # pins pip-tools itself
 #   pip-compile --generate-hashes --strip-extras --pip-args='--uploaded-prior-to=P7D' requirements.in
 #
-# --uploaded-prior-to=P7D only considers releases at least 7 days old, the
-# same supply-chain cooldown Dependabot uses. Add --upgrade to bring the
+# --uploaded-prior-to=P7D only considers releases at least 7 days old
+# (Dependabot's own cooldown is 7 days (3 for patch releases)). Add --upgrade to bring the
 # transitive pins current.
 #
 # Run it under the oldest supported Python (3.11) so markers resolve for
