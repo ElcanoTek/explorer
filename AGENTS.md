@@ -65,12 +65,14 @@ unused, delete it; if it is used, bump or adapt the patch.
 
 The tree is locked with hashes. Edit only `requirements.in` /
 `requirements-dev.in`, then regenerate under **Python 3.11** with pip-tools
-from `requirements-dev.txt` (add `--upgrade` to refresh transitive pins;
-`--uploaded-prior-to=P7D` skips releases younger than a week):
+from `requirements-dev.txt` (add `--upgrade` to refresh transitive pins).
+The lock header records the command, and CI's lock check re-runs exactly
+this one, so do not add flags. Release age is Dependabot's job: its cooldown
+holds version updates, and security updates skip it on purpose:
 
 ```sh
-pip-compile --generate-hashes --strip-extras --pip-args='--uploaded-prior-to=P7D' requirements.in
-pip-compile --generate-hashes --strip-extras --allow-unsafe --pip-args='--uploaded-prior-to=P7D' requirements-dev.in
+pip-compile --generate-hashes --strip-extras requirements.in
+pip-compile --generate-hashes --strip-extras --allow-unsafe requirements-dev.in
 ```
 
 Every install (CI, `layout.sh`, the manual steps in `docs/DEPLOYMENT.md`)
