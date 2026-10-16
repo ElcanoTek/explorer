@@ -18,7 +18,7 @@ will find another way to get the fix in. See
 
 ## Setup
 
-Python 3.11 or newer (CI runs 3.12).
+Python 3.11 or newer (CI runs 3.11 and 3.12).
 
 ```bash
 git clone https://github.com/ElcanoTek/explorer.git
