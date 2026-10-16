@@ -29,9 +29,9 @@ _TAG_RE = re.compile(r'<[^>"]*(?:"[^"]*"[^>"]*)*>')
 _ATTR_RE = re.compile(r'\s([^\s="]+)(?:="([^"]*)")?')
 
 # Bare domains (no scheme) only link for these TLDs — the generic set bleach
-# shipped plus any two-letter country code — so "report.final" or
-# "config.yaml" in prose stay text. A URL with an explicit http(s):// scheme
-# links for any alphabetic TLD.
+# shipped plus any two-letter country code or punycode TLD — so
+# "report.final" or "config.yaml" in prose stay text. A URL with an explicit
+# http(s):// scheme links for any host.
 _BARE_TLDS = frozenset(
     "aero arpa asia biz cat com coop edu gov info int jobs mil mobi museum "
     "name net org post pro tel travel xxx".split()
@@ -46,21 +46,31 @@ _PATH_CHAR = (
 _URL_RE = re.compile(
     rf"""
     (?<![\w@.:/&#-])                   # not mid-word, an email, or another scheme
-    (?P<scheme>https?://)?
-    (?:[\w-]+\.)+(?P<tld>[^\W\d_]{{2,63}})
+    (?:
+        # Explicit http(s): any host a browser accepts — a dotted name of any
+        # TLD (punycode included), a single label such as localhost, an IPv4
+        # address, or a bracketed IPv6 literal.
+        (?P<scheme>https?://)
+        (?:\[[0-9A-Fa-f:.]{{2,45}}\]|[\w-]+(?:\.[\w-]+)*)
+      |
+        # Bare domain: needs a TLD from the short list (checked in code).
+        (?:[\w-]+\.)+(?P<tld>[^\W\d_]{{2,63}}|xn--[a-z0-9-]{{1,59}})
+        (?![\w-]|\.\w)
+    )
     (?::[0-9]{{1,5}})?
-    (?![\w-]|\.\w)
-    (?:[/?]{_PATH_CHAR}*)?
+    (?:[/?\#]{_PATH_CHAR}*)?
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 
 def _strip_trailing(url: str) -> tuple[str, str]:
-    """Drop the trailing ``.``, ``,`` and unbalanced ``)`` prose adds."""
+    """Drop the trailing ``.``, ``,`` and unmatched ``)`` prose adds."""
     suffix = ""
     while url:
-        if url.endswith(")") and "(" not in url or url.endswith((",", ".")):
+        if (url.endswith(")") and url.count(")") > url.count("(")) or url.endswith(
+            (",", ".")
+        ):
             suffix = url[-1] + suffix
             url = url[:-1]
             continue
@@ -72,8 +82,9 @@ def _linkify_text(text: str) -> str:
     out: list[str] = []
     end = 0
     for match in _URL_RE.finditer(text):
+        tld = (match.group("tld") or "").lower()
         if not match.group("scheme") and not (
-            len(match.group("tld")) == 2 or match.group("tld").lower() in _BARE_TLDS
+            len(tld) == 2 or tld in _BARE_TLDS or tld.startswith("xn--")
         ):
             continue
         url, suffix = _strip_trailing(match.group(0))

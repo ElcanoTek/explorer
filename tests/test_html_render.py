@@ -223,3 +223,56 @@ class TestLinkify:
                 assert_neutralized(out)
                 for href in re.findall(r'href="([^"]*)"', out):
                     assert "onmouseover" not in href and "<" not in href
+
+
+class TestLinkifyReviewCases:
+    """Codex review on #38. bleach.linkify had all three gaps too."""
+
+    def link(self, url):
+        return f'<a href="{url}" rel="nofollow">{url}</a>'
+
+    def test_fragment_only_suffix_stays_in_the_link(self):
+        url = "https://example.com#token=abc"
+        assert S3EmailInbox._render_plain_preview(url) == self.link(url)
+
+    def test_only_unmatched_closing_parens_are_stripped(self):
+        url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
+        out = S3EmailInbox._render_plain_preview(f"see ({url}).")
+        assert out == f"see ({self.link(url)})."
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1/status",
+            "http://localhost:8000/",
+            "https://xn--80ak6aa92e.xn--p1ai/path",
+            "http://[::1]:8080/a",
+            "https://intranet",
+        ],
+    )
+    def test_explicit_scheme_links_any_host(self, url):
+        assert S3EmailInbox._render_plain_preview(url) == self.link(url)
+
+    def test_bare_punycode_tld_links(self):
+        out = S3EmailInbox._render_plain_preview("xn--80ak6aa92e.xn--p1ai")
+        assert 'href="http://xn--80ak6aa92e.xn--p1ai"' in out
+
+    def test_bare_hosts_still_need_a_tld(self):
+        for text in ("localhost:8000", "127.0.0.1", "config.yaml"):
+            assert "<a" not in S3EmailInbox._render_plain_preview(text)
+
+    def test_hostile_input_stays_linear(self):
+        import time
+
+        for text in (
+            "http://" + "a." * 3000,
+            "http://[" + ":" * 6000,
+            "https://" + "a-" * 3000,
+            "x" + ")" * 6000,
+            "https://e.example/" + "(" * 3000 + ")" * 3000,
+            ("xn--a." * 1000),
+        ):
+            start = time.perf_counter()
+            S3EmailInbox._render_plain_preview(text)
+            S3EmailInbox._render_html_preview(f"<p>{text}</p>")
+            assert time.perf_counter() - start < 0.5, text[:20]
