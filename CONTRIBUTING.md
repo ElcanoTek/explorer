@@ -25,8 +25,7 @@ git clone https://github.com/ElcanoTek/explorer.git
 cd explorer
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install pytest httpx2 ruff
+pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 ```
 
 Copy `.env.example` to `.env` if you want to run the app. **Never commit a
@@ -103,8 +102,11 @@ under `app/static/vendor/` is left alone; Python copied in under
   weekly; a new alert on your branch is yours to look at.
 - Use the issue and pull-request templates under `.github/`; they ask for
   exactly what a reviewer needs.
-- Dependency bumps arrive via Dependabot (`.github/dependabot.yml`); please
-  don't hand-roll them.
+- Dependencies are locked with hashes: edit `requirements.in` (or
+  `requirements-dev.in`), then regenerate the `.txt` with the `pip-compile`
+  command in its header, under Python 3.11. Never edit a `.txt` by hand.
+  Read AGENTS.md › Dependencies before adding or bumping one: Dependabot
+  opens security updates only, by design.
 
 ## Things worth knowing before you change them
 

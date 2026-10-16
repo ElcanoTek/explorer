@@ -96,7 +96,7 @@ git clone https://github.com/ElcanoTek/explorer.git
 cd explorer
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 
 cp .env.example .env
 $EDITOR .env          # bucket, prefix, AWS credentials, authentication mode

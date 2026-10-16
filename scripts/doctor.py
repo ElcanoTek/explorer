@@ -256,7 +256,9 @@ def _requirements_pins(app):
     """name==version pins from the app's requirements.txt (normalized names).
 
     None when the file cannot be read. Version pins are not secret, but
-    only names are ever reported as diverged.
+    only names are ever reported as diverged. The file is pip-compile
+    output, so a pin line may end in a backslash continuation and its
+    ``--hash`` lines are skipped with the other option lines.
     """
     try:
         text = (app / "requirements.txt").read_text()
@@ -268,7 +270,8 @@ def _requirements_pins(app):
         if not line or line.startswith(("#", "-")):
             continue
         match = re.match(
-            r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==(\S+)(?:\s+#.*)?$",
+            r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==([^\s\\]+)"
+            r"(?:\s*\\|\s+#.*)?$",
             line,
         )
         if match:

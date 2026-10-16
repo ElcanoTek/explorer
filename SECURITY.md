@@ -65,7 +65,8 @@ than a code report.
   supply — e.g. Explorer serves plain HTTP on loopback on purpose and
   requires a TLS-terminating proxy in front.
 - Third-party dependency CVEs with no demonstrated path through Explorer;
-  those are handled by Dependabot.
+  those are handled by Dependabot security updates and the `pip-audit` CI
+  gate over the hashed lock.
 - Automated-scanner output with no analysis attached.
 
 ## Known operational expectations

@@ -89,9 +89,10 @@ ElcanoTek brand assets
 Python dependencies
 ================================================================================
 
-Explorer depends on, but does not redistribute, the packages pinned in
+Explorer depends on, but does not redistribute, the packages locked in
 requirements.txt — FastAPI, Starlette, uvicorn, boto3/botocore, Jinja2,
-bleach, itsdangerous, python-dotenv, python-multipart and cryptography.
+nh3, itsdangerous, python-multipart and cryptography, plus their transitive
+dependencies.
 Each is installed from PyPI at build time under its own license (BSD-3-Clause,
-MIT or Apache-2.0). Run `pip-licenses` in your build environment for the
+MIT, Apache-2.0 or PSF-2.0). Run `pip-licenses` in your build environment for the
 authoritative list of the exact versions you installed.
