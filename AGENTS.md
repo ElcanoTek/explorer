@@ -15,7 +15,8 @@ A small FastAPI app (`app/`) that browses SES-delivered email stored in S3:
 date-partitioned search, ranged header reads, message view, attachments. It
 runs as one `python -m uvicorn app.main:app` process on loopback behind Caddy
 (`deploy/systemd/explorer.service`), installed by `install.sh` →
-`scripts/bootstrap.sh` (which also removes Cockpit, `scripts/lib/cockpit.sh`)
+`scripts/bootstrap.sh` (which also removes Cockpit, `scripts/lib/cockpit.sh`,
+and makes SSH key-only, `scripts/lib/ssh.sh`)
 and updated by `scripts/update.sh`, which build the
 venv with `uv` through `scripts/lib/layout.sh`. Licensed BSL 1.1; every
 first-party source file carries the SPDX header (CONTRIBUTING.md).

@@ -8,7 +8,9 @@
 # What this does:
 #   1. Installs system deps via dnf (python3, uv, ripgrep, etc.), then
 #      removes Cockpit when cockpit-ws is installed
-#      (EXPLORER_KEEP_COCKPIT=1 keeps it)
+#      (EXPLORER_KEEP_COCKPIT=1 keeps it), and makes SSH key-only with
+#      /etc/ssh/sshd_config.d/01-no-password-login.conf when at least one
+#      authorized key is installed (EXPLORER_KEEP_SSH_PASSWORDS=1 skips it)
 #   2. Creates 'explorer' system user + /opt/explorer
 #   3. Syncs source to /opt/explorer-src, then rsyncs into /opt/explorer
 #   4. Builds the venv via uv and installs Python deps
@@ -116,6 +118,8 @@ layout_require_trusted "$SRC_DIR" || die "untrusted bootstrap checkout"
 source "$SRC_DIR/scripts/lib/cockpit.sh"
 # shellcheck disable=SC1091
 source "$SRC_DIR/scripts/lib/hostname.sh"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/ssh.sh"
 
 cat <<EOF
 ${c_bold}Elcano Explorer — bootstrap${c_reset}
@@ -134,6 +138,11 @@ ok "installed: ${PKGS[*]}"
 
 # The Vultr Fedora image ships Cockpit's root-capable web login on :9090; our boxes are administered over ssh only.
 explorer_cockpit_uninstall
+
+# Vultr's cloud-init turns SSH password login on; make it key-only unless no
+# key is installed yet (scripts/lib/ssh.sh). EXPLORER_KEEP_SSH_PASSWORDS=1
+# skips it. Never fatal; update never touches sshd.
+explorer_ssh_key_only
 
 # ── step 2: source checkout + system user ───────────────────────────────
 step "2/7  Preparing $APP_DIR + '$APP_USER' user"
