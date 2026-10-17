@@ -546,7 +546,8 @@ only, so bootstrap and every `explorer update` run `explorer_cockpit_off`
 - only when systemd has a `cockpit.socket` unit (otherwise one line and nothing
   else, the firewall included);
 - `systemctl disable --now cockpit.socket` and `systemctl mask cockpit.socket`,
-  unless it is already masked;
+  unless it is already masked (a masked socket that is still listening gets
+  `systemctl stop cockpit.socket`);
 - blank Cockpit's login-banner notice ("Activate the web console with: …"),
   which masking leaves in the MOTD: `/etc/motd.d/cockpit` links to
   `/run/cockpit/issue`, recreated at boot by the package's
@@ -556,8 +557,10 @@ only, so bootstrap and every `explorer update` run `explorer_cockpit_off`
   and survives cockpit-ws upgrades) and applied with `systemd-tmpfiles
   --create`; skipped when already identical;
 - when firewalld is running, `firewall-cmd --permanent --zone=<zone>
-  --remove-service=cockpit` for each zone that lists it, then `firewall-cmd
-  --reload`.
+  --remove-service=cockpit` for each zone whose permanent config lists it and
+  `firewall-cmd --zone=<zone> --remove-service=cockpit` for each whose runtime
+  config does. There's no `--reload`, because a reload would also discard any
+  unrelated runtime-only rule.
 
 It never installs or removes a package, never touches ufw or iptables, and
 never fails the install or update: a failed command prints a warning with the

@@ -830,10 +830,17 @@ def diagnose(app, src, user):
     # bootstrap and every update mask cockpit.socket (scripts/lib/cockpit.sh):
     # the Vultr Fedora image's root-capable web login on :9090. Absent: no line.
     code, load = run("systemctl", "show", "--property=LoadState", "--value", "cockpit.socket")
-    if code == 0 and load == "masked":
+    listening = code == 0 and run("systemctl", "is-active", "--quiet", "cockpit.socket")[0] == 0
+    if code == 0 and load == "masked" and listening:
+        add(
+            "cockpit",
+            False,
+            "",
+            "cockpit.socket is masked but still LISTENING on :9090; run systemctl stop cockpit.socket",
+        )
+    elif code == 0 and load == "masked":
         add("cockpit", True, "cockpit.socket masked; no web console on :9090")
     elif code == 0 and load == "loaded":
-        listening = run("systemctl", "is-active", "--quiet", "cockpit.socket")[0] == 0
         add(
             "cockpit",
             False,

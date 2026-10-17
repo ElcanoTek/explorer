@@ -49,37 +49,52 @@ _explorer_cockpit_banner() {
 }
 
 explorer_cockpit_off() {
-  local zone zones="" services fw_failed=0
+  local zone hits="" services fw_failed=0
   if ! command -v systemctl >/dev/null 2>&1 \
-    || [[ -z $(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null) ]]; then
+    || [[ -z "$(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null)" ]]; then
     say "  cockpit is not installed — no web console to turn off"
     return 0
   fi
-  if [[ $(systemctl is-enabled cockpit.socket 2>/dev/null || true) == masked* ]]; then
-    ok "cockpit.socket already masked — no web console on :9090"
+  if [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" == masked* ]]; then
+    # Masking does not stop a running unit: a socket masked by hand while it
+    # was active keeps listening until stopped.
+    if ! systemctl is-active --quiet cockpit.socket 2>/dev/null; then
+      ok "cockpit.socket already masked — no web console on :9090"
+    elif _explorer_cockpit_do systemctl stop cockpit.socket; then
+      [[ "${DRY_RUN:-0}" == 1 ]] || ok "stopped cockpit.socket (masked, but it was still listening on :9090)"
+    else
+      warn "cockpit.socket is masked but still listening — run: systemctl stop cockpit.socket"
+    fi
   elif _explorer_cockpit_do systemctl disable --now cockpit.socket \
     && _explorer_cockpit_do systemctl mask cockpit.socket; then
-    [[ ${DRY_RUN:-0} == 1 ]] || ok "cockpit.socket disabled, stopped and masked — no web console on :9090"
+    [[ "${DRY_RUN:-0}" == 1 ]] || ok "cockpit.socket disabled, stopped and masked — no web console on :9090"
   else
     warn "could not turn cockpit off — run: systemctl disable --now cockpit.socket && systemctl mask cockpit.socket"
   fi
   _explorer_cockpit_banner
   command -v firewall-cmd >/dev/null 2>&1 || return 0
-  [[ $(firewall-cmd --state 2>/dev/null || true) == running ]] || return 0
+  [[ "$(firewall-cmd --state 2>/dev/null || true)" == running ]] || return 0
+  # Permanent and runtime config edited directly, with no --reload: a reload
+  # would also discard any unrelated runtime-only rule an operator added.
   for zone in $(firewall-cmd --permanent --get-zones 2>/dev/null || true); do
     # Captured, not piped into grep -q: under pipefail an early grep exit can
     # SIGPIPE the writer and turn a match into a miss.
-    services=$(firewall-cmd --permanent --zone="$zone" --list-services 2>/dev/null || true)
-    [[ " $services " == *" cockpit "* ]] || continue
-    zones+="$zone "
-    _explorer_cockpit_do firewall-cmd -q --permanent --zone="$zone" --remove-service=cockpit || fw_failed=1
+    services="$(firewall-cmd --permanent --zone="$zone" --list-services 2>/dev/null || true)"
+    if [[ " $services " == *" cockpit "* ]]; then
+      hits+="permanent $zone, "
+      _explorer_cockpit_do firewall-cmd -q --permanent --zone="$zone" --remove-service=cockpit || fw_failed=1
+    fi
+    services="$(firewall-cmd --zone="$zone" --list-services 2>/dev/null || true)"
+    if [[ " $services " == *" cockpit "* ]]; then
+      hits+="runtime $zone, "
+      _explorer_cockpit_do firewall-cmd -q --zone="$zone" --remove-service=cockpit || fw_failed=1
+    fi
   done
-  [[ -n $zones ]] || return 0
-  _explorer_cockpit_do firewall-cmd -q --reload || fw_failed=1
-  if [[ $fw_failed == 1 ]]; then
-    warn "could not remove cockpit from firewalld (zones: ${zones% }) — run: firewall-cmd --permanent --zone=<zone> --remove-service=cockpit && firewall-cmd --reload"
-  elif [[ ${DRY_RUN:-0} != 1 ]]; then
-    ok "removed the cockpit service from firewalld (zones: ${zones% })"
+  [[ -n "$hits" ]] || return 0
+  if [[ "$fw_failed" == 1 ]]; then
+    warn "could not remove cockpit from firewalld (${hits%, }) — run: firewall-cmd [--permanent] --zone=<zone> --remove-service=cockpit"
+  elif [[ "${DRY_RUN:-0}" != 1 ]]; then
+    ok "removed the cockpit service from firewalld (${hits%, })"
   fi
   return 0
 }
