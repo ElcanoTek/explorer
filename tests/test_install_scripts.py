@@ -1823,6 +1823,174 @@ def test_cockpit_is_removed_by_bootstrap_only():
     assert "cockpit" not in (SCRIPTS / "update.sh").read_text()
 
 
+_KEY_ONLY_CONF = (
+    "# Key-only SSH: no passwords, root by key only. Sorts before cloud-init's\n"
+    "# 50-cloud-init.conf so it wins (sshd keeps the first value it reads).\n"
+    "PasswordAuthentication no\n"
+    "KbdInteractiveAuthentication no\n"
+    "PermitRootLogin prohibit-password\n"
+)
+
+
+def _ssh_key_only(tmp_path: Path, keys: bool = True, sshd: bool = True, **env):
+    """Run explorer_ssh_key_only against a scratch root with stub sshd/systemctl.
+
+    Returns (output, calls, drop-in path). The stub sshd -T reports
+    AuthorizedKeysFile .ssh/authorized_keys plus STUB_PA as
+    passwordauthentication; sshd -t exits STUB_T_RC.
+    """
+    root = tmp_path / "root"
+    (root / "etc/ssh/sshd_config.d").mkdir(parents=True)
+    (root / "root/.ssh").mkdir(parents=True)
+    if keys:
+        (root / "root/.ssh/authorized_keys").write_text("ssh-ed25519 AAAA ops\n")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls.log"
+    stubs = {
+        "systemctl": "exit 0",
+        "sshd": 'if [ "$1" = -t ]; then exit "${STUB_T_RC:-0}"; fi\n'
+        'echo "authorizedkeysfile .ssh/authorized_keys"\n'
+        'echo "passwordauthentication ${STUB_PA:-no}"',
+    }
+    for name, body in stubs.items():
+        if name == "sshd" and not sshd:
+            continue
+        (bindir / name).write_text(
+            f'#!/bin/sh\necho "{name} $*" >> "$STUB_LOG"\n{body}\n'
+        )
+        (bindir / name).chmod(0o755)
+    # Only the tools the step uses, so a host sshd never leaks in.
+    for tool in ("cat", "cmp", "cp", "grep", "install", "mktemp", "mv", "rm"):
+        (bindir / tool).symlink_to(shutil.which(tool))
+    path = str(bindir)
+    result = subprocess.run(
+        [
+            shutil.which("bash"),
+            "-c",
+            'set -euo pipefail; . "$1"; info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; '
+            'warn() { echo "WARN $*"; }; explorer_ssh_key_only; echo "RC=$?"',
+            "test",
+            str(SCRIPTS / "lib/ssh.sh"),
+        ],
+        env={"PATH": path, "STUB_LOG": str(log), "SSH_KEY_ONLY_ROOT": str(root), **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and "RC=0" in result.stdout, (
+        result.stdout + result.stderr
+    )
+    conf = root / "etc/ssh/sshd_config.d/01-no-password-login.conf"
+    return result.stdout, log.read_text() if log.exists() else "", conf
+
+
+def test_ssh_key_only_installs_validates_and_reloads(tmp_path: Path):
+    out, calls, conf = _ssh_key_only(tmp_path)
+    assert conf.read_text() == _KEY_ONLY_CONF
+    assert conf.stat().st_mode & 0o777 == 0o600
+    assert "sshd -t" in calls and "systemctl reload sshd" in calls
+    assert "OK SSH is key-only" in out and "WARN" not in out
+
+
+def test_ssh_key_only_is_idempotent(tmp_path: Path):
+    _, _, conf = _ssh_key_only(tmp_path)
+    log = tmp_path / "calls.log"
+    log.unlink()
+    out = subprocess.run(
+        [
+            shutil.which("bash"),
+            "-c",
+            '. "$1"; info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; '
+            'warn() { echo "WARN $*"; }; explorer_ssh_key_only',
+            "test",
+            str(SCRIPTS / "lib/ssh.sh"),
+        ],
+        env={
+            "PATH": str(tmp_path / "bin"),
+            "STUB_LOG": str(log),
+            "SSH_KEY_ONLY_ROOT": str(tmp_path / "root"),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out == "" and not log.exists()
+    assert conf.read_text() == _KEY_ONLY_CONF
+
+
+@pytest.mark.parametrize(
+    "kwargs,expect",
+    [
+        ({"keys": False}, "WARN no SSH authorized keys found"),
+        ({"sshd": False}, ""),
+        ({"EXPLORER_KEEP_SSH_PASSWORDS": "1"}, "INFO EXPLORER_KEEP_SSH_PASSWORDS=1"),
+        ({"DRY_RUN": "1"}, "INFO [dry-run] would write"),
+    ],
+)
+def test_ssh_key_only_skips(tmp_path: Path, kwargs: dict, expect: str):
+    out, calls, conf = _ssh_key_only(tmp_path, **kwargs)
+    assert not conf.exists()
+    assert "reload" not in calls and "sshd -t" not in calls
+    if expect:
+        assert expect in out
+    else:
+        assert out.strip() == "RC=0"
+
+
+def test_ssh_key_only_removes_a_drop_in_sshd_rejects(tmp_path: Path):
+    out, calls, conf = _ssh_key_only(tmp_path, STUB_T_RC="1")
+    assert not conf.exists()
+    assert "reload" not in calls
+    assert "WARN sshd -t rejected the key-only drop-in" in out
+
+
+def test_ssh_key_only_warns_when_an_earlier_directive_wins(tmp_path: Path):
+    out, _, conf = _ssh_key_only(tmp_path, STUB_PA="yes")
+    assert conf.exists()
+    assert "WARN sshd still accepts passwords: an earlier directive wins" in out
+
+
+def test_ssh_key_only_runs_from_bootstrap_only():
+    assert "\nexplorer_ssh_key_only\n" in (SCRIPTS / "bootstrap.sh").read_text()
+    assert "ssh_key_only" not in (SCRIPTS / "update.sh").read_text()
+
+
+@pytest.mark.parametrize(
+    "euid,which,code,out,expect",
+    [
+        (
+            0,
+            True,
+            0,
+            "passwordauthentication no\npermitrootlogin prohibit-password",
+            True,
+        ),
+        (0, True, 0, "passwordauthentication yes\npermitrootlogin no", False),
+        (0, True, 0, "passwordauthentication no\npermitrootlogin yes", False),
+        (1000, True, 0, "passwordauthentication yes", None),
+        (0, False, 0, "passwordauthentication yes", None),
+        (0, True, 255, "", None),
+    ],
+)
+def test_doctor_sshd_password_check(monkeypatch, euid, which, code, out, expect):
+    doctor = _load_doctor()
+    monkeypatch.setattr(doctor.os, "geteuid", lambda: euid)
+    monkeypatch.setattr(
+        doctor.shutil, "which", lambda name: "/usr/sbin/sshd" if which else None
+    )
+    monkeypatch.setattr(doctor, "run", lambda *args, **kw: (code, out))
+    assert doctor.sshd_password_check() is expect
+
+
+def test_doctor_sshd_warning_text():
+    text = (SCRIPTS / "doctor.py").read_text()
+    assert (
+        "sshd accepts passwords — see production-support README, Access: SSH keys"
+        in text
+    )
+
+
 def test_set_hostname_keeps_other_loopback_aliases(tmp_path: Path):
     _, name, hosts, _ = set_hostname(
         tmp_path,

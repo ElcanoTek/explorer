@@ -306,6 +306,24 @@ def _installed_package_versions(app):
     return versions
 
 
+def sshd_password_check():
+    """True when sshd is key-only, False when it accepts passwords.
+
+    None (no check) without sshd, when not root (`sshd -T` needs the host
+    keys), or when `sshd -T` fails. Vultr's cloud-init turns
+    PasswordAuthentication on; bootstrap's scripts/lib/ssh.sh turns it off.
+    """
+    if os.geteuid() != 0 or not shutil.which("sshd"):
+        return None
+    code, out = run("sshd", "-T")
+    if code != 0:
+        return None
+    for line in out.lower().splitlines():
+        if line.strip() in ("passwordauthentication yes", "permitrootlogin yes"):
+            return False
+    return True
+
+
 def diagnose(app, src, user):
     checks = []
 
@@ -901,6 +919,15 @@ def diagnose(app, src, user):
             )
     except (OSError, ValueError, AttributeError):
         add("os-support", False, "", "Cannot read OS lifecycle metadata", warning=True)
+    sshd = sshd_password_check()
+    if sshd is not None:
+        add(
+            "sshd",
+            sshd,
+            "key-only (no password login)",
+            "sshd accepts passwords — see production-support README, Access: SSH keys",
+            warning=True,
+        )
     if shutil.which("dnf"):
         code, _ = run("dnf", "--refresh", "check-update", timeout=90)
         # DNF uses 100 for available updates; anything else nonzero is an error.

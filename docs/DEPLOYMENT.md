@@ -65,6 +65,19 @@ missing. In order it:
    ships Cockpit's root-capable web login on :9090, and Explorer hosts are
    administered over ssh only. `EXPLORER_KEEP_COCKPIT=1` keeps it; a failed
    removal only warns.
+   It also makes SSH key-only: Vultr's cloud-init writes
+   `/etc/ssh/sshd_config.d/50-cloud-init.conf` with `PasswordAuthentication
+   yes`, so bootstrap installs `/etc/ssh/sshd_config.d/01-no-password-login.conf`
+   (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
+   `PermitRootLogin prohibit-password`; it sorts first and sshd keeps the first
+   value it reads), checks it with `sshd -t` and reloads sshd. It skips with a
+   warning when no authorized key is installed for root or a `/home` user (so
+   nobody is locked out), removes the file again if `sshd -t` rejects it, and
+   warns when an earlier directive in `sshd_config` still allows passwords.
+   `EXPLORER_KEEP_SSH_PASSWORDS=1` skips the step; it never fails the install,
+   and `explorer update` never touches sshd. `explorer doctor` warns (as root)
+   when `sshd -T` still reports `passwordauthentication yes` or
+   `permitrootlogin yes`.
 2. Creates the `explorer` system user and `/opt/explorer`.
 3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
    rsyncs the source into `/opt/explorer`.
