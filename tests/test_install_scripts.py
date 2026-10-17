@@ -1821,3 +1821,143 @@ def test_cockpit_off_blanks_the_login_banner_once(tmp_path: Path):
     out, mutations, _ = _cockpit_off(tmp_path / "two", firewall=False, **env)
     assert mutations == []
     assert "already blank" in out
+
+
+VULTR_HOSTS = (
+    "127.0.0.1   localhost localhost.localdomain\n"
+    "::1         localhost localhost.localdomain\n"
+    "127.0.0.1 vultr.guest vultr\n"
+)
+PRESERVE_CFG = (
+    "# The hostname is set by hand; do not let cloud-init reset it from Vultr metadata.\n"
+    "preserve_hostname: true\n"
+    "manage_etc_hosts: false\n"
+)
+
+
+def set_hostname(
+    box: Path,
+    fqdn: str,
+    current="vultr.guest",
+    hostnamectl=True,
+    hosts=VULTR_HOSTS,
+    **env,
+):
+    """Run explorer_set_hostname on a scratch box; return (output, name, hosts, cloud cfg)."""
+    bindir = box / "bin"
+    bindir.mkdir()
+    name = box / "hostname"
+    hosts_file = box / "hosts"
+    cloud = box / "cloud"
+    cloud.mkdir()
+    name.write_text(current + "\n")
+    hosts_file.write_text(hosts)
+    for tool in ("awk", "cat", "mkdir"):
+        (bindir / tool).symlink_to(shutil.which(tool))
+    if hostnamectl:
+        (bindir / "hostnamectl").write_text(
+            "#!/bin/sh\n"
+            f"case \"$1\" in --static) cat '{name}' ;; "
+            f"set-hostname) printf '%s\\n' \"$2\" > '{name}' ;; esac\n"
+        )
+        (bindir / "hostnamectl").chmod(0o755)
+    result = subprocess.run(
+        [
+            shutil.which("bash"),
+            "-c",
+            'set -euo pipefail; . "$1"; info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; '
+            'warn() { echo "WARN $*"; }; explorer_set_hostname "$2"; echo "RC=$?"',
+            "test",
+            str(SCRIPTS / "lib/hostname.sh"),
+            fqdn,
+        ],
+        env={
+            "PATH": str(bindir),
+            "EXPLORER_HOSTS_FILE": str(hosts_file),
+            "EXPLORER_CLOUD_DIR": str(cloud),
+            **env,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and "RC=0" in result.stdout, (
+        result.stdout + result.stderr
+    )
+    cfg = cloud / "cloud.cfg.d/99-preserve-hostname.cfg"
+    return (
+        result.stdout,
+        name.read_text().strip(),
+        hosts_file.read_text(),
+        cfg.read_text() if cfg.exists() else "",
+    )
+
+
+def test_set_hostname_renames_a_vultr_default_once(tmp_path):
+    out, name, hosts, cfg = set_hostname(tmp_path, "Explorer.Example.com")
+    assert name == "explorer.example.com", out
+    assert cfg == PRESERVE_CFG
+    assert hosts == (
+        "127.0.0.1   localhost localhost.localdomain\n"
+        "::1         localhost localhost.localdomain\n"
+        "127.0.0.1 explorer.example.com explorer\n"
+    )
+    (tmp_path / "again").mkdir()
+    out, name, again, _ = set_hostname(
+        tmp_path / "again",
+        "explorer.example.com",
+        current="explorer.example.com",
+        hosts=hosts,
+    )
+    assert again == hosts
+    assert "hostname already explorer.example.com" in out
+
+
+def test_set_hostname_never_rewrites_a_localhost_line(tmp_path):
+    _, name, hosts, _ = set_hostname(
+        tmp_path,
+        "explorer.example.com",
+        current="localhost",
+        hosts="127.0.0.1 localhost\n::1 localhost\n",
+    )
+    assert name == "explorer.example.com"
+    assert hosts == (
+        "127.0.0.1 localhost\n::1 localhost\n"
+        "127.0.0.1 explorer.example.com explorer\n::1 explorer.example.com explorer\n"
+    )
+
+
+@pytest.mark.parametrize("current", ["yoga", "fedora", "explorer.client.example"])
+def test_set_hostname_leaves_a_deliberate_name(tmp_path, current):
+    out, name, hosts, cfg = set_hostname(
+        tmp_path, "explorer.example.com", current=current
+    )
+    assert (name, hosts, cfg) == (current, VULTR_HOSTS, "")
+    assert "hostnamectl set-hostname explorer.example.com" in out
+
+
+@pytest.mark.parametrize(
+    "fqdn,hostnamectl,env",
+    [
+        ("explorer.example.com", True, {"EXPLORER_SET_HOSTNAME": "0"}),
+        ("localhost", True, {}),
+        ("10.0.0.5", True, {}),
+        ("explorer.example.com", False, {}),
+        ("explorer.example.com", True, {"DRY_RUN": "1"}),
+    ],
+)
+def test_set_hostname_skips(tmp_path, fqdn, hostnamectl, env):
+    out, name, hosts, cfg = set_hostname(tmp_path, fqdn, hostnamectl=hostnamectl, **env)
+    assert (name, hosts, cfg) == ("vultr.guest", VULTR_HOSTS, ""), out
+
+
+def test_set_hostname_force_renames_a_deliberate_name(tmp_path):
+    _, name, _, _ = set_hostname(
+        tmp_path, "explorer.example.com", current="yoga", EXPLORER_SET_HOSTNAME="1"
+    )
+    assert name == "explorer.example.com"
+
+
+def test_only_bootstrap_sets_the_hostname():
+    assert "explorer_set_hostname" in (SCRIPTS / "bootstrap.sh").read_text()
+    assert "set_hostname" not in (SCRIPTS / "update.sh").read_text()

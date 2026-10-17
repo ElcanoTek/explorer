@@ -78,6 +78,20 @@ missing. In order it:
 8. Optionally installs Caddy with Let's Encrypt or `tls internal`.
 9. Installs `deploy/motd` to `/etc/motd`.
 
+Given a public hostname, bootstrap also names the box after it, so prompts stop
+reading `root@vultr`. It renames only when the current static hostname is an
+unset cloud-image default (`vultr.guest`, `localhost`, `localhost.localdomain`);
+any other name, short ones included, is left alone and bootstrap prints the
+`hostnamectl set-hostname <fqdn>` to run. `EXPLORER_SET_HOSTNAME=1` forces the
+rename, `EXPLORER_SET_HOSTNAME=0` skips the step. A rename runs `hostnamectl
+set-hostname`, writes `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg`
+(`preserve_hostname: true`, `manage_etc_hosts: false`) when `/etc/cloud`
+exists, and rewrites the `127.0.0.1`/`::1` lines in `/etc/hosts` that named the
+old hostname to `<addr> <fqdn> <short>` (appending both when no line names the
+FQDN; a line naming `localhost` is never rewritten). It is idempotent, never
+fails the install, and `explorer update` never renames a box
+(`scripts/lib/hostname.sh`).
+
 **AWS keys are deliberately not prompted for.** Bootstrap leaves
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` commented out in the generated
 `.env`. Add them with `sudo explorer env edit`, or skip them entirely and
@@ -109,6 +123,8 @@ For a client deployment, use `EXPLORER_AUTH_MODE='central'` and also provide
 
 Leave `EXPLORER_BOOTSTRAP_HOSTNAME` empty to skip the proxy entirely and
 front Explorer with your own.
+Set `EXPLORER_SET_HOSTNAME=0` to keep bootstrap from renaming the box, or `1`
+to rename it to `EXPLORER_BOOTSTRAP_HOSTNAME` whatever its current name.
 
 ### Optional: encrypted config bundles
 

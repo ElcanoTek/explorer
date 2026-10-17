@@ -17,6 +17,10 @@
 #   7. Installs /usr/local/bin/explorer operator CLI
 #   8. Enables and starts the service; health-checks /health
 #
+# Given a public hostname, it also names the box after it when the current
+# hostname is an unset cloud default (vultr.guest, localhost,
+# localhost.localdomain). EXPLORER_SET_HOSTNAME=1 forces, =0 skips.
+#
 # Usage:
 #   sudo bash scripts/bootstrap.sh
 #
@@ -110,6 +114,8 @@ source "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR" || die "untrusted bootstrap checkout"
 # shellcheck disable=SC1091
 source "$SRC_DIR/scripts/lib/cockpit.sh"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/hostname.sh"
 
 cat <<EOF
 ${c_bold}Elcano Explorer — bootstrap${c_reset}
@@ -217,6 +223,15 @@ if [[ -n "$HOSTNAME_FOR_TLS" && "$HOSTNAME_FOR_TLS" != "localhost" ]]; then
       LE_EMAIL="$(prompt EXPLORER_BOOTSTRAP_LE_EMAIL "LE contact email (blank to skip)" "${EXPLORER_BOOTSTRAP_LE_EMAIL:-}")"
     fi
   fi
+fi
+
+# A Vultr box comes up as "vultr.guest", so every prompt reads root@vultr.
+# Name it after the public hostname, but only from an unset cloud-image
+# default (vultr.guest, localhost[.localdomain]); any other name is left alone
+# with a hint. EXPLORER_SET_HOSTNAME=1 forces, =0 skips
+# (scripts/lib/hostname.sh). Never fatal; update never renames a box.
+if [[ -n "$HOSTNAME_FOR_TLS" ]]; then
+  explorer_set_hostname "$HOSTNAME_FOR_TLS"
 fi
 
 AUTH_ISSUER_URL="${AUTH_ISSUER_URL:-}"
