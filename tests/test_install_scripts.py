@@ -1616,223 +1616,6 @@ def test_layout_build_installs_with_require_hashes():
     assert '--require-hashes -r "$staging/requirements.txt"' in text
 
 
-SYSTEMCTL_STUB = """printf 'systemctl %s\\n' "$*" >> "$STUB_LOG"
-case "$1" in
-  list-unit-files)
-    case "$STUB_COCKPIT" in
-      live) echo 'cockpit.socket disabled disabled' ;;
-      masked) echo 'cockpit.socket masked enabled' ;;
-    esac ;;
-  is-enabled) [ "$STUB_COCKPIT" = masked ] && { echo masked; exit 1; }; echo disabled; exit 1 ;;
-  is-active) [ "${STUB_ACTIVE:-0}" = 1 ] ;;
-  show) case "$STUB_COCKPIT" in live) echo loaded ;; masked) echo masked ;; *) echo not-found ;; esac ;;
-  disable|mask|stop) [ "${STUB_FAIL:-0}" != 1 ] ;;
-esac
-"""
-
-FIREWALL_STUB = """printf 'firewall-cmd %s\\n' "$*" >> "$STUB_LOG"
-perm=0
-for a in "$@"; do [ "$a" = --permanent ] && perm=1; done
-for a in "$@"; do
-  case "$a" in
-    --state) [ "$STUB_FW" = running ] && { echo running; exit 0; }; echo 'not running'; exit 252 ;;
-    --get-zones) echo "$STUB_ZONES"; exit 0 ;;
-    --zone=*) zone="${a#--zone=}" ;;
-    --list-services)
-      if [ $perm = 1 ]; then eval "echo \\"\\$STUB_SVC_$zone\\""; else eval "echo \\"\\$STUB_RT_$zone\\""; fi
-      exit 0 ;;
-  esac
-done
-"""
-
-COCKPIT_FW = {
-    "STUB_FW": "running",
-    "STUB_ZONES": "public trusted",
-    "STUB_SVC_public": "ssh dhcpv6-client cockpit",
-    "STUB_SVC_trusted": "ssh",
-    "STUB_RT_public": "ssh cockpit",
-    "STUB_RT_trusted": "ssh",
-}
-MUTATIONS = (
-    "systemctl disable",
-    "systemctl mask",
-    "systemctl stop",
-    "--remove-service",
-    "--reload",
-    "systemd-tmpfiles --create",
-)
-
-
-def _cockpit_stubs(
-    tmp_path: Path, systemctl: bool = True, firewall: bool = True
-) -> Path:
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    for name, body, wanted in (
-        ("systemctl", SYSTEMCTL_STUB, systemctl),
-        ("firewall-cmd", FIREWALL_STUB, firewall),
-    ):
-        if wanted:
-            (bindir / name).write_text("#!/bin/sh\n" + body)
-            (bindir / name).chmod(0o755)
-    tmpfiles = bindir / "systemd-tmpfiles"
-    tmpfiles.write_text(
-        '#!/bin/sh\nprintf \'systemd-tmpfiles %s\\n\' "$*" >> "$STUB_LOG"\n'
-    )
-    tmpfiles.chmod(0o755)
-    return bindir
-
-
-def _cockpit_off(tmp_path: Path, systemctl: bool = True, firewall: bool = True, **env):
-    """Run explorer_cockpit_off against stubs; return (output, mutations, calls)."""
-    bindir = _cockpit_stubs(tmp_path, systemctl, firewall)
-    # Never the host's real cockpit-ws tmpfiles paths.
-    env = {
-        "EXPLORER_COCKPIT_PKG_TMPFILES": str(tmp_path / "absent.conf"),
-        "EXPLORER_COCKPIT_ETC_TMPFILES": str(
-            tmp_path / "etc/tmpfiles.d/cockpit-ws.conf"
-        ),
-        **env,
-    }
-    log = tmp_path / "calls.log"
-    result = subprocess.run(
-        [
-            shutil.which("bash"),
-            "-c",
-            'set -euo pipefail; . "$1"; say() { echo "$*"; }; ok() { echo "OK $*"; }; '
-            'warn() { echo "WARN $*"; }; explorer_cockpit_off; echo "RC=$?"',
-            "test",
-            str(SCRIPTS / "lib/cockpit.sh"),
-        ],
-        env={"PATH": f"{bindir}:/usr/bin:/bin", "STUB_LOG": str(log), **env},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "RC=0" in result.stdout
-    calls = log.read_text().splitlines() if log.exists() else []
-    return result.stdout, [c for c in calls if any(m in c for m in MUTATIONS)], calls
-
-
-def test_cockpit_off_masks_a_live_socket_and_closes_the_firewall(tmp_path: Path):
-    out, mutations, _ = _cockpit_off(tmp_path, STUB_COCKPIT="live", **COCKPIT_FW)
-    assert mutations == [
-        "systemctl disable --now cockpit.socket",
-        "systemctl mask cockpit.socket",
-        # Permanent and runtime edited directly: no --reload, which would
-        # drop unrelated runtime-only rules.
-        "firewall-cmd -q --permanent --zone=public --remove-service=cockpit",
-        "firewall-cmd -q --zone=public --remove-service=cockpit",
-    ]
-    assert "OK cockpit.socket disabled, stopped and masked" in out
-
-
-def test_cockpit_off_is_a_no_op_without_cockpit(tmp_path: Path):
-    out, mutations, calls = _cockpit_off(tmp_path, STUB_COCKPIT="absent", **COCKPIT_FW)
-    assert mutations == []
-    assert not any(c.startswith("firewall-cmd") for c in calls)
-    assert "cockpit is not installed" in out
-
-
-def test_cockpit_off_without_systemd_says_one_line(tmp_path: Path):
-    out, _, calls = _cockpit_off(tmp_path, systemctl=False, firewall=False)
-    assert calls == []
-    assert out.strip().splitlines() == [
-        "cockpit is not installed — no web console to turn off",
-        "RC=0",
-    ]
-
-
-def test_cockpit_off_is_idempotent_and_leaves_a_stopped_firewall_alone(tmp_path: Path):
-    out, mutations, _ = _cockpit_off(
-        tmp_path,
-        STUB_COCKPIT="masked",
-        STUB_FW="stopped",
-        STUB_ZONES="public",
-        STUB_SVC_public="cockpit",
-    )
-    assert mutations == []
-    assert "already masked" in out
-
-
-def test_cockpit_off_dry_run_and_failures_never_change_or_fail(tmp_path: Path):
-    out, mutations, _ = _cockpit_off(
-        tmp_path, STUB_COCKPIT="live", DRY_RUN="1", **COCKPIT_FW
-    )
-    assert mutations == []
-    assert "[dry-run] systemctl mask cockpit.socket" in out
-    assert (
-        "[dry-run] firewall-cmd -q --permanent --zone=public --remove-service=cockpit"
-        in out
-    )
-    (tmp_path / "failing").mkdir()
-    out, _, _ = _cockpit_off(
-        tmp_path / "failing", firewall=False, STUB_COCKPIT="live", STUB_FAIL="1"
-    )
-    assert "WARN could not turn cockpit off" in out
-
-
-@pytest.mark.parametrize("script", ["bootstrap.sh", "update.sh"])
-def test_installers_keep_cockpit_off(script: str):
-    text = (SCRIPTS / script).read_text()
-    assert 'source "$SRC_DIR/scripts/lib/cockpit.sh"' in text
-    assert "\nexplorer_cockpit_off\n" in text
-    if script == "update.sh":
-        # Before the fetch, so "already on <sha>" still heals the box, and a
-        # change to the helper re-execs the fresh update machinery.
-        assert text.index("\nexplorer_cockpit_off\n") < text.index('ok "already on ')
-        assert "scripts/lib/cockpit.sh; then" in text
-
-
-@pytest.mark.parametrize(
-    "state,active,status",
-    [
-        ("masked", "0", "ok"),
-        ("masked", "1", "fail"),
-        ("live", "1", "fail"),
-        ("live", "0", "warn"),
-        ("absent", "0", None),
-    ],
-)
-def test_doctor_reports_cockpit(tmp_path: Path, state: str, active: str, status):
-    bindir = _cockpit_stubs(tmp_path, firewall=False)
-    report = _run_doctor_json(
-        tmp_path,
-        tmp_path / "app",
-        tmp_path / "src",
-        path=f"{bindir}:/usr/bin:/bin",
-        extra_env={
-            "STUB_COCKPIT": state,
-            "STUB_ACTIVE": active,
-            "STUB_LOG": str(tmp_path / "calls.log"),
-        },
-    )
-    found = [c["status"] for c in report["checks"] if c["name"] == "cockpit"]
-    assert found == ([status] if status else [])
-
-
-def test_cockpit_off_blanks_the_login_banner_once(tmp_path: Path):
-    pkg = tmp_path / "pkg-cockpit-ws.conf"
-    pkg.write_text("L /run/cockpit/issue - - - - active.issue\n")
-    etc = tmp_path / "etc/tmpfiles.d/cockpit-ws.conf"
-    env = {
-        "STUB_COCKPIT": "masked",
-        "EXPLORER_COCKPIT_PKG_TMPFILES": str(pkg),
-        "EXPLORER_COCKPIT_ETC_TMPFILES": str(etc),
-    }
-    (tmp_path / "one").mkdir()
-    out, mutations, _ = _cockpit_off(tmp_path / "one", firewall=False, **env)
-    assert mutations == [f"systemd-tmpfiles --create {etc}"], out
-    assert (
-        etc.read_text() == (REPO_ROOT / "deploy/cockpit-ws.tmpfiles.conf").read_text()
-    )
-    (tmp_path / "two").mkdir()
-    out, mutations, _ = _cockpit_off(tmp_path / "two", firewall=False, **env)
-    assert mutations == []
-    assert "already blank" in out
-
-
 VULTR_HOSTS = (
     "127.0.0.1   localhost localhost.localdomain\n"
     "::1         localhost localhost.localdomain\n"
@@ -1973,8 +1756,81 @@ def test_only_bootstrap_sets_the_hostname():
     assert "set_hostname" not in (SCRIPTS / "update.sh").read_text()
 
 
-def test_cockpit_off_stops_a_masked_socket_that_still_listens(tmp_path):
-    out, mutations, _ = _cockpit_off(
-        tmp_path, firewall=False, STUB_COCKPIT="masked", STUB_ACTIVE="1"
+def _cockpit_uninstall(tmp_path: Path, rpm: bool = True, **env):
+    """Run explorer_cockpit_uninstall with stub rpm/dnf; return (output, calls)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls.log"
+    for name, body in (
+        ("rpm", '[ "${STUB_INSTALLED:-0}" = 1 ]'),
+        ("dnf", '[ "${STUB_FAIL:-0}" != 1 ]'),
+    ):
+        if name == "rpm" and not rpm:
+            continue
+        (bindir / name).write_text(
+            f'#!/bin/sh\necho "{name} $*" >> "$STUB_LOG"\n{body}\n'
+        )
+        (bindir / name).chmod(0o755)
+    result = subprocess.run(
+        [
+            shutil.which("bash"),
+            "-c",
+            'set -euo pipefail; . "$1"; info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; '
+            'warn() { echo "WARN $*"; }; explorer_cockpit_uninstall; echo "RC=$?"',
+            "test",
+            str(SCRIPTS / "lib/cockpit.sh"),
+        ],
+        env={"PATH": str(bindir), "STUB_LOG": str(log), **env},
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    assert mutations == ["systemctl stop cockpit.socket"], out
+    assert result.returncode == 0 and "RC=0" in result.stdout, (
+        result.stdout + result.stderr
+    )
+    return result.stdout, log.read_text() if log.exists() else ""
+
+
+def test_cockpit_uninstall_removes_an_installed_cockpit(tmp_path: Path):
+    out, calls = _cockpit_uninstall(tmp_path, STUB_INSTALLED="1")
+    assert "dnf -y remove cockpit*" in calls
+    assert "OK removed Cockpit" in out
+
+
+@pytest.mark.parametrize(
+    "rpm,env",
+    [
+        (True, {}),
+        (False, {"STUB_INSTALLED": "1"}),
+        (True, {"STUB_INSTALLED": "1", "EXPLORER_KEEP_COCKPIT": "1"}),
+        (True, {"STUB_INSTALLED": "1", "DRY_RUN": "1"}),
+    ],
+)
+def test_cockpit_uninstall_skips(tmp_path: Path, rpm: bool, env: dict):
+    out, calls = _cockpit_uninstall(tmp_path, rpm=rpm, **env)
+    assert "dnf" not in calls, out
+    if env.get("DRY_RUN"):
+        assert "[dry-run] dnf -y remove 'cockpit*'" in out
+
+
+def test_cockpit_uninstall_failure_only_warns(tmp_path: Path):
+    out, _ = _cockpit_uninstall(tmp_path, STUB_INSTALLED="1", STUB_FAIL="1")
+    assert "WARN could not remove Cockpit" in out
+
+
+def test_cockpit_is_removed_by_bootstrap_only():
+    assert "\nexplorer_cockpit_uninstall\n" in (SCRIPTS / "bootstrap.sh").read_text()
+    assert "cockpit" not in (SCRIPTS / "update.sh").read_text()
+
+
+def test_set_hostname_keeps_other_loopback_aliases(tmp_path: Path):
+    _, name, hosts, _ = set_hostname(
+        tmp_path,
+        "explorer.example.com",
+        hosts="127.0.0.1 localhost\n127.0.0.1 vultr.guest vultr myalias # note\n",
+    )
+    assert name == "explorer.example.com"
+    assert (
+        hosts
+        == "127.0.0.1 localhost\n127.0.0.1 explorer.example.com explorer myalias # note\n"
+    )

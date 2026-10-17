@@ -6,10 +6,6 @@
 # Staged update for an Explorer install. The checkout and installed source are
 # root-owned. Only the virtualenv and runtime state are writable by the service
 # account, and root never installs executable material from those paths.
-#
-# Every run first keeps the Cockpit web console off (scripts/lib/cockpit.sh,
-# the same step bootstrap runs), even when there is nothing new to deploy, so
-# existing boxes stay healed.
 
 set -euo pipefail
 
@@ -66,8 +62,6 @@ require_trusted_checkout "$SRC_DIR" \
 # shellcheck disable=SC1091
 source "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR" || die "untrusted update checkout"
-# shellcheck disable=SC1091
-source "$SRC_DIR/scripts/lib/cockpit.sh"
 
 install -d -o root -g root -m 0755 "$(dirname -- "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"
@@ -77,11 +71,6 @@ trusted_git() {
   git -c safe.directory="$SRC_DIR" -c core.hooksPath=/dev/null \
     -c core.fsmonitor=false -C "$SRC_DIR" "$@"
 }
-
-# Before the fetch: the "already on <sha>" exit below must not skip it.
-# Idempotent, a no-op without cockpit, and never fatal.
-step "Keeping the Cockpit web console off"
-explorer_cockpit_off
 
 # ── 1. fetch ────────────────────────────────────────────────────────────
 step "1/4  Fetching latest"
@@ -141,7 +130,7 @@ else
     require_trusted_checkout "$SRC_DIR" \
       || die "the updated checkout violates the root ownership policy"
     if ! trusted_git diff --quiet "$before_sha" "$after_sha" -- \
-      scripts/update.sh scripts/lib/layout.sh scripts/lib/cockpit.sh; then
+      scripts/update.sh scripts/lib/layout.sh; then
       warn "update machinery changed — re-executing the trusted new version"
       exec env EXPLORER_UPDATE_NO_PULL=1 EXPLORER_UPDATE_YES=1 \
         EXPLORER_UPDATE_BASE_SHA="$before_sha" bash "$SRC_DIR/scripts/update.sh"

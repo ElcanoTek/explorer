@@ -60,8 +60,11 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
 existing `/opt/explorer/.env` and only prompts for values that are still
 missing. In order it:
 
-1. Installs the dnf packages above, then keeps the Cockpit web console off
-   (see [Cockpit stays off](#cockpit-stays-off)).
+1. Installs the dnf packages above. Then, when `cockpit-ws` is installed, it
+   removes Cockpit with `dnf -y remove 'cockpit*'`: the Vultr Fedora image
+   ships Cockpit's root-capable web login on :9090, and Explorer hosts are
+   administered over ssh only. `EXPLORER_KEEP_COCKPIT=1` keeps it; a failed
+   removal only warns.
 2. Creates the `explorer` system user and `/opt/explorer`.
 3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
    rsyncs the source into `/opt/explorer`.
@@ -86,9 +89,9 @@ any other name, short ones included, is left alone and bootstrap prints the
 rename, `EXPLORER_SET_HOSTNAME=0` skips the step. A rename runs `hostnamectl
 set-hostname`, writes `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg`
 (`preserve_hostname: true`, `manage_etc_hosts: false`) when `/etc/cloud`
-exists, and rewrites the `127.0.0.1`/`::1` lines in `/etc/hosts` that named the
-old hostname to `<addr> <fqdn> <short>` (appending both when no line names the
-FQDN; a line naming `localhost` is never rewritten). It is idempotent, never
+exists, and replaces the old hostname on the `127.0.0.1`/`::1` lines in `/etc/hosts`
+with `<fqdn> <short>`, keeping every other alias on the line (localhost names
+are never replaced). When no line names the FQDN, it appends both loopback lines. It is idempotent, never
 fails the install, and `explorer update` never renames a box
 (`scripts/lib/hostname.sh`).
 
@@ -509,9 +512,7 @@ sudo EXPLORER_UPDATE_YES=1 explorer update  # unattended
 first verifies that `/opt/explorer-src`, all of its ancestors and every file
 inside it are root-owned, not group/other-writable and symlink-free. Do not
 run bootstrap, update or provision from a checkout writable by the service
-account. It then keeps the Cockpit web console off (see
-[Cockpit stays off](#cockpit-stays-off)) before the fetch, so even an update
-with nothing new to deploy heals the box.
+account.
 
 1. `git fetch` in `/opt/explorer-src`, resolve the target branch (following
    the attached branch or defaulting to `origin/HEAD` if HEAD is detached),
@@ -535,38 +536,6 @@ with nothing new to deploy heals the box.
    ownership layout. Any failure after the swap restores the snapshot and
    restarts the previous version; an incomplete restore preserves the path
    to the root-only backup in the error output.
-
-### Cockpit stays off
-
-The Vultr Fedora image ships Cockpit, whose `cockpit.socket` serves a
-root-capable web login on port 9090. Explorer hosts are administered over ssh
-only, so bootstrap and every `explorer update` run `explorer_cockpit_off`
-(`scripts/lib/cockpit.sh`):
-
-- only when systemd has a `cockpit.socket` unit (otherwise one line and nothing
-  else, the firewall included);
-- `systemctl disable --now cockpit.socket` and `systemctl mask cockpit.socket`,
-  unless it is already masked (a masked socket that is still listening gets
-  `systemctl stop cockpit.socket`);
-- blank Cockpit's login-banner notice ("Activate the web console with: …"),
-  which masking leaves in the MOTD: `/etc/motd.d/cockpit` links to
-  `/run/cockpit/issue`, recreated at boot by the package's
-  `/usr/lib/tmpfiles.d/cockpit-ws.conf`. When that file exists,
-  `deploy/cockpit-ws.tmpfiles.conf` is installed as
-  `/etc/tmpfiles.d/cockpit-ws.conf` (the same name overrides the package copy
-  and survives cockpit-ws upgrades) and applied with `systemd-tmpfiles
-  --create`; skipped when already identical;
-- when firewalld is running, `firewall-cmd --permanent --zone=<zone>
-  --remove-service=cockpit` for each zone whose permanent config lists it and
-  `firewall-cmd --zone=<zone> --remove-service=cockpit` for each whose runtime
-  config does. There's no `--reload`, because a reload would also discard any
-  unrelated runtime-only rule.
-
-It never installs or removes a package, never touches ufw or iptables, and
-never fails the install or update: a failed command prints a warning with the
-commands to run by hand. `explorer doctor` fails while `cockpit.socket` is
-listening and warns while it is installed but not masked. To use Cockpit
-deliberately, `systemctl unmask cockpit.socket`; the next update masks it again.
 
 ### Rollback
 
