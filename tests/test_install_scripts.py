@@ -1832,7 +1832,7 @@ _KEY_ONLY_CONF = (
 )
 
 
-def _ssh_key_only(tmp_path: Path, keys: bool = True, sshd: bool = True, **env):
+def _ssh_key_only(tmp_path: Path, keys: bool | str = True, sshd: bool = True, **env):
     """Run explorer_ssh_key_only against a scratch root with stub sshd/systemctl.
 
     Returns (output, calls, drop-in path). The stub sshd -T reports
@@ -1843,7 +1843,8 @@ def _ssh_key_only(tmp_path: Path, keys: bool = True, sshd: bool = True, **env):
     (root / "etc/ssh/sshd_config.d").mkdir(parents=True)
     (root / "root/.ssh").mkdir(parents=True)
     if keys:
-        (root / "root/.ssh/authorized_keys").write_text("ssh-ed25519 AAAA ops\n")
+        text = keys if isinstance(keys, str) else "ssh-ed25519 AAAAC3NzaC1lZDI1 ops\n"
+        (root / "root/.ssh/authorized_keys").write_text(text)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "calls.log"
@@ -1923,6 +1924,7 @@ def test_ssh_key_only_is_idempotent(tmp_path: Path):
     "kwargs,expect",
     [
         ({"keys": False}, "WARN no SSH authorized keys found"),
+        ({"keys": "ssh-ed25519 garbage\n"}, "WARN no SSH authorized keys found"),
         ({"sshd": False}, ""),
         ({"EXPLORER_KEEP_SSH_PASSWORDS": "1"}, "INFO EXPLORER_KEEP_SSH_PASSWORDS=1"),
         ({"DRY_RUN": "1"}, "INFO [dry-run] would write"),

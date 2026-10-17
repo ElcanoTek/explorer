@@ -36,7 +36,9 @@ explorer_ssh_count_authorized_keys() {
       [[ "$path" != /* ]] && path="$rel/$path"
       path="$root$path"
       [[ -r "$path" ]] || continue
-      count=$(( count + $(grep -cE '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$path" || true) ))
+      # A key type followed by its base64 blob ("AAAA..."), so a stray
+      # "ssh-ed25519 garbage" line does not pass the guard.
+      count=$(( count + $(grep -cE '^[[:space:]]*(ssh-|ecdsa-|sk-)[^[:space:]]+[[:space:]]+AAAA[A-Za-z0-9+/]+=*([[:space:]]|$)' "$path" || true) ))
     done
   done
   printf '%s' "$count"
