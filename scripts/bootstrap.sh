@@ -6,7 +6,9 @@
 # scripts/bootstrap.sh — interactive installer for Elcano Explorer.
 #
 # What this does:
-#   1. Installs system deps via dnf (python3, uv, ripgrep, etc.)
+#   1. Installs system deps via dnf (python3, uv, ripgrep, etc.), then keeps
+#      the Cockpit web console off (cockpit.socket masked, cockpit dropped
+#      from firewalld; a no-op without cockpit)
 #   2. Creates 'explorer' system user + /opt/explorer
 #   3. Syncs source to /opt/explorer-src, then rsyncs into /opt/explorer
 #   4. Builds the venv via uv and installs Python deps
@@ -106,6 +108,8 @@ require_trusted_checkout "$SRC_DIR" \
 # shellcheck disable=SC1091
 source "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR" || die "untrusted bootstrap checkout"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/cockpit.sh"
 
 cat <<EOF
 ${c_bold}Elcano Explorer — bootstrap${c_reset}
@@ -121,6 +125,11 @@ PKGS=(git curl jq python3 python3-devel gcc uv ripgrep rsync openssl)
 dnf install -y "${PKGS[@]}" >/dev/null
 command -v uv >/dev/null 2>&1 || die "uv missing after dnf install"
 ok "installed: ${PKGS[*]}"
+
+# The Vultr Fedora image ships cockpit: a root-capable web login on :9090.
+# Explorer is administered over ssh only (scripts/lib/cockpit.sh).
+step "Keeping the Cockpit web console off"
+explorer_cockpit_off
 
 # ── step 2: source checkout + system user ───────────────────────────────
 step "2/7  Preparing $APP_DIR + '$APP_USER' user"

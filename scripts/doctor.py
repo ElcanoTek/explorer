@@ -827,6 +827,26 @@ def diagnose(app, src, user):
                         f"certificate for {host} expired or expires within 30 days ({expiry.isoformat()})",
                         warning=0 < days <= 30,
                     )
+    # bootstrap and every update mask cockpit.socket (scripts/lib/cockpit.sh):
+    # the Vultr Fedora image's root-capable web login on :9090. Absent: no line.
+    code, load = run("systemctl", "show", "--property=LoadState", "--value", "cockpit.socket")
+    if code == 0 and load == "masked":
+        add("cockpit", True, "cockpit.socket masked; no web console on :9090")
+    elif code == 0 and load == "loaded":
+        listening = run("systemctl", "is-active", "--quiet", "cockpit.socket")[0] == 0
+        add(
+            "cockpit",
+            False,
+            "",
+            (
+                "cockpit.socket is LISTENING: a root-capable web login on :9090"
+                if listening
+                else "cockpit.socket is installed but not masked"
+            )
+            + " — run explorer update (or: systemctl disable --now cockpit.socket"
+            " && systemctl mask cockpit.socket)",
+            warning=not listening,
+        )
     for unit in (
         "explorer.service",
         "explorer-attachment-cleanup.service",

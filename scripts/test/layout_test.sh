@@ -67,6 +67,10 @@ EOF
 cat > "$BIN/systemctl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> '$LOG'
+# HARNESS_COCKPIT=1 makes cockpit.socket an installed, unmasked unit.
+if [[ \$1 == list-unit-files && \${HARNESS_COCKPIT:-0} == 1 ]]; then
+  printf 'cockpit.socket disabled disabled\n'
+fi
 exit 0
 EOF
 cat > "$BIN/systemd-tmpfiles" <<'EOF'
@@ -113,7 +117,10 @@ run_update() {
 }
 
 seed_legacy
-run_update 200 >/dev/null
+HARNESS_COCKPIT=1 run_update 200 >/dev/null
+# Every update keeps the Cockpit web console off (scripts/lib/cockpit.sh).
+assert grep -qx 'disable --now cockpit.socket' "$LOG"
+assert grep -qx 'mask cockpit.socket' "$LOG"
 assert_eq "$(stat -c '%U:%G %a' "$APP")" "root:root 755"
 assert_eq "$(stat -c %U "$APP/app")" root
 assert_eq "$(stat -c '%U:%G %a' "$APP/.env")" "$TEST_USER:$TEST_USER 600"
