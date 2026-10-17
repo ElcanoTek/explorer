@@ -1852,7 +1852,8 @@ def _ssh_key_only(tmp_path: Path, keys: bool | str = True, sshd: bool = True, **
         "systemctl": "exit 0",
         "sshd": 'if [ "$1" = -t ]; then exit "${STUB_T_RC:-0}"; fi\n'
         'echo "authorizedkeysfile .ssh/authorized_keys"\n'
-        'echo "passwordauthentication ${STUB_PA:-no}"',
+        'echo "passwordauthentication ${STUB_PA:-no}"\n'
+        'echo "pubkeyauthentication ${STUB_PUBKEY:-yes}"',
     }
     for name, body in stubs.items():
         if name == "sshd" and not sshd:
@@ -1916,7 +1917,7 @@ def test_ssh_key_only_is_idempotent(tmp_path: Path):
         text=True,
         check=True,
     ).stdout
-    assert out == "" and not log.exists()
+    assert out == "" and log.read_text() == "sshd -T\n"
     assert conf.read_text() == _KEY_ONLY_CONF
 
 
@@ -1925,6 +1926,7 @@ def test_ssh_key_only_is_idempotent(tmp_path: Path):
     [
         ({"keys": False}, "WARN no SSH authorized keys found"),
         ({"keys": "ssh-ed25519 garbage\n"}, "WARN no SSH authorized keys found"),
+        ({"STUB_PUBKEY": "no"}, "WARN no SSH authorized keys found"),
         ({"sshd": False}, ""),
         ({"EXPLORER_KEEP_SSH_PASSWORDS": "1"}, "INFO EXPLORER_KEEP_SSH_PASSWORDS=1"),
         ({"DRY_RUN": "1"}, "INFO [dry-run] would write"),

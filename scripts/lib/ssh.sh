@@ -21,9 +21,16 @@ PermitRootLogin prohibit-password"
 # guard.
 # SSH_KEY_ONLY_ROOT prefixes every path (tests only).
 explorer_ssh_count_authorized_keys() {
-  local root="${SSH_KEY_ONLY_ROOT:-}" line home rel f path count=0
+  local root="${SSH_KEY_ONLY_ROOT:-}" eff line home rel f path count=0
   local -a files=()
-  line="$(sshd -T 2>/dev/null | grep -i '^authorizedkeysfile ' || true)"
+  # Captured first: under pipefail, `sshd -T | grep` can lose to SIGPIPE.
+  eff="$(sshd -T 2>/dev/null || true)"
+  # Keys count for nothing when sshd refuses them.
+  if grep -qix 'pubkeyauthentication no' <<<"$eff"; then
+    printf '0'
+    return 0
+  fi
+  line="$(grep -i '^authorizedkeysfile ' <<<"$eff" || true)"
   [[ -n "$line" ]] && read -ra files <<<"${line#* }"
   [[ ${#files[@]} -eq 0 ]] && files=(.ssh/authorized_keys .ssh/authorized_keys2)
   for home in "$root"/root "$root"/home/*; do
@@ -47,8 +54,9 @@ explorer_ssh_count_authorized_keys() {
 # explorer_ssh_key_only — install /etc/ssh/sshd_config.d/01-no-password-login.conf
 # (passwords off, root by key only), check it with `sshd -t`, reload sshd.
 # EXPLORER_KEEP_SSH_PASSWORDS=1 skips it. Silent without sshd or sshd_config.d;
-# a no-op when the file already has this content; skips with a warning when
-# no authorized key is installed (it would lock everyone out). Honours
+# with the file already in place it only re-checks the effective config;
+# skips with a warning when no authorized key is installed or sshd refuses
+# keys (it would lock everyone out). Honours
 # DRY_RUN=1; never fails the caller. Uses the caller's info/ok/warn.
 explorer_ssh_key_only() {
   if [[ "${EXPLORER_KEEP_SSH_PASSWORDS:-0}" == "1" ]]; then
@@ -59,6 +67,7 @@ explorer_ssh_key_only() {
   local conf="$dir/01-no-password-login.conf" keys tmp old=""
   command -v sshd >/dev/null 2>&1 && [[ -d "$dir" ]] || return 0
   if [[ -f "$conf" ]] && printf '%s\n' "$SSH_KEY_ONLY_CONF" | cmp -s - "$conf"; then
+    _explorer_ssh_check_effective
     return 0
   fi
   keys="$(explorer_ssh_count_authorized_keys)"
@@ -93,7 +102,16 @@ explorer_ssh_key_only() {
   else
     warn "wrote $conf but could not reload sshd — run: systemctl reload sshd"
   fi
-  if sshd -T 2>/dev/null | grep -qiE '^(passwordauthentication|permitrootlogin) yes$'; then
+  _explorer_ssh_check_effective
+  return 0
+}
+
+# Warn when the effective config still takes passwords: an earlier directive
+# wins over the drop-in. Read-only; never edits sshd_config.
+_explorer_ssh_check_effective() {
+  local eff
+  eff="$(sshd -T 2>/dev/null || true)"
+  if grep -qiE '^(passwordauthentication|permitrootlogin) yes$' <<<"$eff"; then
     warn "sshd still accepts passwords: an earlier directive wins (e.g. 'PermitRootLogin yes' above the Include line in /etc/ssh/sshd_config) — fix it by hand"
   fi
   return 0
