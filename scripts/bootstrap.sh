@@ -6,7 +6,9 @@
 # scripts/bootstrap.sh — interactive installer for Elcano Explorer.
 #
 # What this does:
-#   1. Installs system deps via dnf (python3, uv, ripgrep, etc.)
+#   1. Installs system deps via dnf (python3, uv, ripgrep, etc.), then
+#      removes Cockpit when cockpit-ws is installed
+#      (EXPLORER_KEEP_COCKPIT=1 keeps it)
 #   2. Creates 'explorer' system user + /opt/explorer
 #   3. Syncs source to /opt/explorer-src, then rsyncs into /opt/explorer
 #   4. Builds the venv via uv and installs Python deps
@@ -14,6 +16,10 @@
 #   6. Installs the explorer + attachment-cleanup systemd units + timer
 #   7. Installs /usr/local/bin/explorer operator CLI
 #   8. Enables and starts the service; health-checks /health
+#
+# Given a public hostname, it also names the box after it when the current
+# hostname is an unset cloud default (vultr.guest, localhost,
+# localhost.localdomain). EXPLORER_SET_HOSTNAME=1 forces, =0 skips.
 #
 # Usage:
 #   sudo bash scripts/bootstrap.sh
@@ -106,6 +112,10 @@ require_trusted_checkout "$SRC_DIR" \
 # shellcheck disable=SC1091
 source "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR" || die "untrusted bootstrap checkout"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/cockpit.sh"
+# shellcheck disable=SC1091
+source "$SRC_DIR/scripts/lib/hostname.sh"
 
 cat <<EOF
 ${c_bold}Elcano Explorer — bootstrap${c_reset}
@@ -121,6 +131,9 @@ PKGS=(git curl jq python3 python3-devel gcc uv ripgrep rsync openssl)
 dnf install -y "${PKGS[@]}" >/dev/null
 command -v uv >/dev/null 2>&1 || die "uv missing after dnf install"
 ok "installed: ${PKGS[*]}"
+
+# The Vultr Fedora image ships Cockpit's root-capable web login on :9090; our boxes are administered over ssh only.
+explorer_cockpit_uninstall
 
 # ── step 2: source checkout + system user ───────────────────────────────
 step "2/7  Preparing $APP_DIR + '$APP_USER' user"
@@ -208,6 +221,15 @@ if [[ -n "$HOSTNAME_FOR_TLS" && "$HOSTNAME_FOR_TLS" != "localhost" ]]; then
       LE_EMAIL="$(prompt EXPLORER_BOOTSTRAP_LE_EMAIL "LE contact email (blank to skip)" "${EXPLORER_BOOTSTRAP_LE_EMAIL:-}")"
     fi
   fi
+fi
+
+# A Vultr box comes up as "vultr.guest", so every prompt reads root@vultr.
+# Name it after the public hostname, but only from an unset cloud-image
+# default (vultr.guest, localhost[.localdomain]); any other name is left alone
+# with a hint. EXPLORER_SET_HOSTNAME=1 forces, =0 skips
+# (scripts/lib/hostname.sh). Never fatal; update never renames a box.
+if [[ -n "$HOSTNAME_FOR_TLS" ]]; then
+  explorer_set_hostname "$HOSTNAME_FOR_TLS"
 fi
 
 AUTH_ISSUER_URL="${AUTH_ISSUER_URL:-}"

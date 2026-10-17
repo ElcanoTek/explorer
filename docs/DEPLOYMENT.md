@@ -60,7 +60,11 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
 existing `/opt/explorer/.env` and only prompts for values that are still
 missing. In order it:
 
-1. Installs the dnf packages above.
+1. Installs the dnf packages above. Then, when `cockpit-ws` is installed, it
+   removes Cockpit with `dnf -y remove 'cockpit*'`: the Vultr Fedora image
+   ships Cockpit's root-capable web login on :9090, and Explorer hosts are
+   administered over ssh only. `EXPLORER_KEEP_COCKPIT=1` keeps it; a failed
+   removal only warns.
 2. Creates the `explorer` system user and `/opt/explorer`.
 3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
    rsyncs the source into `/opt/explorer`.
@@ -76,6 +80,20 @@ missing. In order it:
    checks `http://127.0.0.1:8080/`.
 8. Optionally installs Caddy with Let's Encrypt or `tls internal`.
 9. Installs `deploy/motd` to `/etc/motd`.
+
+Given a public hostname, bootstrap also names the box after it, so prompts stop
+reading `root@vultr`. It renames only when the current static hostname is an
+unset cloud-image default (`vultr.guest`, `localhost`, `localhost.localdomain`);
+any other name, short ones included, is left alone and bootstrap prints the
+`hostnamectl set-hostname <fqdn>` to run. `EXPLORER_SET_HOSTNAME=1` forces the
+rename, `EXPLORER_SET_HOSTNAME=0` skips the step. A rename runs `hostnamectl
+set-hostname`, writes `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg`
+(`preserve_hostname: true`, `manage_etc_hosts: false`) when `/etc/cloud`
+exists, and replaces the old hostname on the `127.0.0.1`/`::1` lines in `/etc/hosts`
+with `<fqdn> <short>`, keeping every other alias on the line (localhost names
+are never replaced). When no line names the FQDN, it appends both loopback lines. It is idempotent, never
+fails the install, and `explorer update` never renames a box
+(`scripts/lib/hostname.sh`).
 
 **AWS keys are deliberately not prompted for.** Bootstrap leaves
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` commented out in the generated
@@ -108,6 +126,8 @@ For a client deployment, use `EXPLORER_AUTH_MODE='central'` and also provide
 
 Leave `EXPLORER_BOOTSTRAP_HOSTNAME` empty to skip the proxy entirely and
 front Explorer with your own.
+Set `EXPLORER_SET_HOSTNAME=0` to keep bootstrap from renaming the box, or `1`
+to rename it to `EXPLORER_BOOTSTRAP_HOSTNAME` whatever its current name.
 
 ### Optional: encrypted config bundles
 
