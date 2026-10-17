@@ -1840,7 +1840,7 @@ def _ssh_key_only(tmp_path: Path, keys: bool | str = True, sshd: bool = True, **
     passwordauthentication; sshd -t exits STUB_T_RC.
     """
     root = tmp_path / "root"
-    (root / "etc/ssh/sshd_config.d").mkdir(parents=True)
+    (root / "etc/ssh/sshd_config.d").mkdir(parents=True, exist_ok=True)
     (root / "root/.ssh").mkdir(parents=True)
     if keys:
         text = keys if isinstance(keys, str) else "ssh-ed25519 AAAAC3NzaC1lZDI1 ops\n"
@@ -1944,6 +1944,15 @@ def test_ssh_key_only_removes_a_drop_in_sshd_rejects(tmp_path: Path):
     out, calls, conf = _ssh_key_only(tmp_path, STUB_T_RC="1")
     assert not conf.exists()
     assert "reload" not in calls
+    assert "WARN sshd -t rejected the key-only drop-in" in out
+
+
+def test_ssh_key_only_restores_a_previous_drop_in_sshd_rejects(tmp_path: Path):
+    conf = tmp_path / "root/etc/ssh/sshd_config.d/01-no-password-login.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("PasswordAuthentication no\n")
+    out, _, conf = _ssh_key_only(tmp_path, STUB_T_RC="1")
+    assert conf.read_text() == "PasswordAuthentication no\n"
     assert "WARN sshd -t rejected the key-only drop-in" in out
 
 
