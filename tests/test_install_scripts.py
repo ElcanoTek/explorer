@@ -2019,8 +2019,8 @@ def test_set_hostname_keeps_other_loopback_aliases(tmp_path: Path):
 
 def _bootstrap_env_template() -> str:
     text = (SCRIPTS / "bootstrap.sh").read_text()
-    match = re.search(r'cat > "\$ENV_FILE" <<EOF\n(.*?)\nEOF\n', text, re.S)
-    assert match, "bootstrap no longer writes .env from a heredoc template"
+    match = re.search(r'cat > "\$env_template" <<EOF\n(.*?)\nEOF\n', text, re.S)
+    assert match, "bootstrap no longer renders .env from a heredoc template"
     return match.group(1)
 
 
@@ -2032,138 +2032,135 @@ def test_bootstrap_env_template_runs_no_commands():
 
 
 def test_bootstrap_managed_keys_match_its_env_template():
-    """Every key the template writes is listed as managed, and nothing else.
-
-    A key written but not listed would be duplicated on re-run; a key listed
-    but not written would be dropped, which is the bug this list exists to fix.
-    """
+    """ENV_MANAGED_KEYS is exactly what the template writes: those keys are
+    read back with the app's parser, escaped, and merged in place."""
     text = (SCRIPTS / "bootstrap.sh").read_text()
     listed = re.search(r"ENV_MANAGED_KEYS=\((.*?)\)", text, re.S)
     assert listed, "bootstrap no longer declares ENV_MANAGED_KEYS"
     written = set(re.findall(r"^([A-Z_][A-Z0-9_]*)=", _bootstrap_env_template(), re.M))
     assert set(listed.group(1).split()) == written
-    assert text.index("layout_env_lines_except") < text.index('cat > "$ENV_FILE" <<EOF')
-
-
-def test_rerun_keeps_settings_bootstrap_does_not_write(tmp_path: Path):
-    marker = tmp_path / "executed"
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "# a comment\n"
-        'EXPLORER_SESSION_SECRET="old"\n'
-        'AWS_ACCESS_KEY_ID="AKIAEXAMPLE"\n'
-        "AWS_SECRET_ACCESS_KEY='s3cr3t'\n"
-        "  EMAIL_S3_MAX_BODY_SEARCH_DAYS=30\n"
-        f'CUSTOM_KNOB="$(touch {marker})"\n'
-        'EMAIL_S3_BUCKET="managed-bucket"\n'
+    assert text.index("ENV_MANAGED_KEYS=(") < text.index('env_merge.py" values')
+    assert text.index('env_merge.py" values') < text.index(
+        'cat > "$env_template" <<EOF'
     )
-    result = subprocess.run(
-        [
-            "bash",
-            "-euo",
-            "pipefail",
-            "-c",
-            'APP_DIR=/unused APP_USER=nobody; source "$1"; '
-            'layout_env_lines_except "$2" EXPLORER_SESSION_SECRET EMAIL_S3_BUCKET',
-            "bash",
-            str(SCRIPTS / "lib/layout.sh"),
-            str(env_file),
-        ],
+
+
+def _env_merge(*args: str) -> subprocess.CompletedProcess:
+    # Same entry point bootstrap uses: system python, isolated mode.
+    return subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "lib/env_merge.py"), *args],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == [
-        'AWS_ACCESS_KEY_ID="AKIAEXAMPLE"',
-        "AWS_SECRET_ACCESS_KEY='s3cr3t'",
-        "  EMAIL_S3_MAX_BODY_SEARCH_DAYS=30",
-        f'CUSTOM_KNOB="$(touch {marker})"',
-    ]
-    assert not marker.exists()
 
 
-def test_rerun_keeps_nothing_from_a_symlinked_env(tmp_path: Path):
-    real = tmp_path / "real"
-    real.write_text('AWS_ACCESS_KEY_ID="x"\n')
-    link = tmp_path / ".env"
-    link.symlink_to(real)
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'APP_DIR=/unused APP_USER=nobody; source "$1"; layout_env_lines_except "$2"',
-            "bash",
-            str(SCRIPTS / "lib/layout.sh"),
-            str(link),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
+PROVISION_BEGIN = (
+    "# ── managed by explorer provision (acme) — do not edit, "
+    "run `explorer provision` to refresh ──"
+)
+PROVISION_END = "# ── end explorer provision (acme) ──"
 
 
-def _kept(env_file: Path, *managed: str) -> str:
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'APP_DIR=/unused APP_USER=nobody; source "$1"; shift; layout_env_lines_except "$@"',
-            "bash",
-            str(SCRIPTS / "lib/layout.sh"),
-            str(env_file),
-            *managed,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
-
-
-def test_rerun_keeps_dotenv_bindings_exactly_as_the_app_parses_them(tmp_path: Path):
-    """Whatever bootstrap keeps must mean to the app what it meant before."""
+def test_rerun_keeps_every_unmanaged_byte_and_updates_managed_keys(tmp_path: Path):
     from app._vendor.dotenv import dotenv_values
 
-    env_file = tmp_path / ".env"
-    env_file.write_text(
+    existing = (
+        "# operator notes\n"
         "export AWS_ACCESS_KEY_ID=AKIAEXAMPLE\n"
+        "'AWS_SECRET_ACCESS_KEY'=s3cr3t\n"
+        "CUSTOM-KEY=value\n"
         'MULTI="line one\nline two"\n'
-        'EMAIL_S3_BUCKET="managed\nacross lines"\n'
-        "SQ='a\\'b'\n"
-        'ESC="say \\"hi\\""\n'
-        'BROKEN="never closed\n'
-        "AFTER_BROKEN=kept\n"
+        "BASE=archive\n"
+        "EMAIL_S3_BUCKET=${BASE}-bucket\n"
+        'AWS_REGION="us-east-1"\n'
+        "AWS_REGION=us-west-2\n"
     )
-    kept_file = tmp_path / "kept"
-    kept_file.write_text(_kept(env_file, "EMAIL_S3_BUCKET"))
-    before = dotenv_values(env_file, interpolate=False)
-    after = dotenv_values(kept_file, interpolate=False)
-    assert "EMAIL_S3_BUCKET" not in after
-    expected = {k: v for k, v in before.items() if k != "EMAIL_S3_BUCKET"}
-    assert after == expected
-    assert after["MULTI"] == "line one\nline two"
-    assert after["AFTER_BROKEN"] == "kept"
+    env_file = tmp_path / ".env"
+    env_file.write_text(existing)
+    template = tmp_path / "template"
+    template.write_text(
+        '# Auto-generated\nEMAIL_S3_BUCKET="${BASE}-bucket"\nAWS_REGION="eu-west-1"\n'
+        'EXPLORER_AUTH_MODE="central"\n'
+    )
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    merged = tmp_path / "merged"
+    merged.write_text(result.stdout)
+
+    # Unchanged managed value keeps its exact spelling and its position, so
+    # ${BASE} still resolves; unmanaged lines are byte-for-byte the same.
+    assert result.stdout.startswith(existing.split('AWS_REGION="us-east-1"')[0])
+    assert result.stdout.count("AWS_REGION") == 1  # duplicate dropped
+    before = dotenv_values(env_file)
+    after = dotenv_values(merged)
+    assert after["EMAIL_S3_BUCKET"] == "archive-bucket"
+    assert after["AWS_REGION"] == "eu-west-1"
+    assert after["EXPLORER_AUTH_MODE"] == "central"
+    for key in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "CUSTOM-KEY",
+        "MULTI",
+        "BASE",
+    ):
+        assert after[key] == before[key], key
 
 
-def test_rerun_keeps_the_provision_block_whole(tmp_path: Path):
-    begin = (
-        "# ── managed by explorer provision (acme) — do not edit, "
-        "run `explorer provision` to refresh ──"
-    )
-    end = "# ── end explorer provision (acme) ──"
+def test_rerun_leaves_the_provision_block_to_provision(tmp_path: Path):
+    block = f"{PROVISION_BEGIN}\nEMAIL_S3_BUCKET=prov\nP=1\n{PROVISION_END}\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"KEEP=1\n\n{block}")
+    template = tmp_path / "template"
+    template.write_text('EMAIL_S3_BUCKET="prov"\nAWS_REGION="us-east-2"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert block in result.stdout
+    # The provisioned key is not copied out of the block, where it would
+    # outlive a later `explorer provision` that drops it.
+    outside = result.stdout.replace(block, "")
+    assert "EMAIL_S3_BUCKET" not in outside
+    assert 'AWS_REGION="us-east-2"' in outside
+
+
+def test_values_reads_managed_keys_as_the_app_does(tmp_path: Path):
     env_file = tmp_path / ".env"
     env_file.write_text(
-        f"KEEP=1\n\n{begin}\nEMAIL_S3_BUCKET=prov\nP=1\n{end}\nTAIL=2\n"
+        "export EMAIL_S3_BUCKET=prod-bucket\n"
+        'AUTH_CLIENT_SECRET="has \\"quotes\\" and \\\\"\n'
+        f"{PROVISION_BEGIN}\nAWS_REGION=from-provision\n{PROVISION_END}\n"
+        "NOT_ASKED=x\n"
     )
-    assert _kept(env_file, "EMAIL_S3_BUCKET").splitlines() == [
-        "KEEP=1",
-        begin,
-        "EMAIL_S3_BUCKET=prov",
-        "P=1",
-        end,
-        "TAIL=2",
-    ]
+    result = _env_merge(
+        "values", str(env_file), "EMAIL_S3_BUCKET", "AUTH_CLIENT_SECRET", "AWS_REGION"
+    )
+    assert result.returncode == 0, result.stderr
+    fields = result.stdout.split("\0")[:-1]
+    pairs = dict(zip(fields[::2], fields[1::2], strict=True))
+    assert pairs == {
+        "EMAIL_S3_BUCKET": "prod-bucket",
+        "AUTH_CLIENT_SECRET": 'has "quotes" and \\',
+    }
+
+
+def test_escaped_template_round_trips_awkward_values(tmp_path: Path):
+    """bootstrap escapes \\ and " before rendering KEY="$VAR"; the parser must
+    read back exactly the original value."""
+    from app._vendor.dotenv import dotenv_values
+
+    value = 'a"b\\c $d'
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'AUTH_CLIENT_SECRET="{escaped}"\n')
+    assert dotenv_values(env_file, interpolate=False)["AUTH_CLIENT_SECRET"] == value
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "env_value=${env_value//\\\\/\\\\\\\\}" in text
+    assert 'printf -v "$env_key" \'%s\' "${env_value//\\"/\\\\\\"}"' in text
+
+
+def test_bootstrap_refuses_linked_env_and_keeps_staging_cleanup():
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "[[ ! -L $ENV_FILE ]]" in text
+    assert 'stat -c %h "$ENV_FILE"' in text
+    assert "cleanup_staging' EXIT" in text
+    assert text.count("trap cleanup_staging EXIT") == 2
