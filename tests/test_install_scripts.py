@@ -2015,3 +2015,255 @@ def test_set_hostname_keeps_other_loopback_aliases(tmp_path: Path):
         hosts
         == "127.0.0.1 localhost\n127.0.0.1 explorer.example.com explorer myalias # note\n"
     )
+
+
+def _bootstrap_env_template() -> str:
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    match = re.search(r'cat > "\$env_template" <<EOF\n(.*?)\nEOF\n', text, re.S)
+    assert match, "bootstrap no longer renders .env from a heredoc template"
+    return match.group(1)
+
+
+def test_bootstrap_env_template_runs_no_commands():
+    """The template is an unquoted heredoc: a backtick or $( in it would run."""
+    template = _bootstrap_env_template()
+    assert "`" not in template
+    assert "$(" not in template.replace("$(date -Iseconds)", "")
+
+
+def test_bootstrap_managed_keys_match_its_env_template():
+    """ENV_MANAGED_KEYS is exactly what the template writes: those keys are
+    read back with the app's parser, escaped, and merged in place."""
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    listed = re.search(r"ENV_MANAGED_KEYS=\((.*?)\)", text, re.S)
+    assert listed, "bootstrap no longer declares ENV_MANAGED_KEYS"
+    written = set(re.findall(r"^([A-Z_][A-Z0-9_]*)=", _bootstrap_env_template(), re.M))
+    assert set(listed.group(1).split()) == written
+    assert text.index("ENV_MANAGED_KEYS=(") < text.index('env_merge.py" values')
+    assert text.index('env_merge.py" values') < text.index(
+        'cat > "$env_template" <<EOF'
+    )
+
+
+def _env_merge(*args: str) -> subprocess.CompletedProcess:
+    # Same entry point bootstrap uses: system python, isolated mode.
+    return subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "lib/env_merge.py"), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+PROVISION_BEGIN = (
+    "# ── managed by explorer provision (acme) — do not edit, "
+    "run `explorer provision` to refresh ──"
+)
+PROVISION_END = "# ── end explorer provision (acme) ──"
+
+
+def test_rerun_keeps_every_unmanaged_byte_and_updates_managed_keys(tmp_path: Path):
+    from app._vendor.dotenv import dotenv_values
+
+    existing = (
+        "# operator notes\n"
+        "export AWS_ACCESS_KEY_ID=AKIAEXAMPLE\n"
+        "'AWS_SECRET_ACCESS_KEY'=s3cr3t\n"
+        "CUSTOM-KEY=value\n"
+        'MULTI="line one\nline two"\n'
+        "BASE=archive\n"
+        "EMAIL_S3_BUCKET=${BASE}-bucket\n"
+        'AWS_REGION="us-east-1"\n'
+        "EARLY=${AWS_REGION}\n"
+        "AWS_REGION=us-west-2\n"
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text(existing)
+    template = tmp_path / "template"
+    template.write_text(
+        '# Auto-generated\nEMAIL_S3_BUCKET="${BASE}-bucket"\nAWS_REGION="eu-west-1"\n'
+        'EXPLORER_AUTH_MODE="central"\n'
+    )
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    merged = tmp_path / "merged"
+    merged.write_text(result.stdout)
+
+    # Unchanged managed value keeps its exact spelling and its position, so
+    # ${BASE} still resolves; unmanaged lines are byte-for-byte the same.
+    assert result.stdout.startswith(existing.split("AWS_REGION=us-west-2")[0])
+    # Only the live (last) AWS_REGION changes; the earlier one stays, so
+    # EARLY=${AWS_REGION} between them still resolves to us-east-1.
+    assert 'AWS_REGION="us-east-1"' in result.stdout
+    before = dotenv_values(env_file)
+    after = dotenv_values(merged)
+    assert after["EMAIL_S3_BUCKET"] == "archive-bucket"
+    assert after["AWS_REGION"] == "eu-west-1"
+    assert after["EXPLORER_AUTH_MODE"] == "central"
+    assert after["EARLY"] == "us-east-1"
+    for key in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "CUSTOM-KEY",
+        "MULTI",
+        "BASE",
+    ):
+        assert after[key] == before[key], key
+
+
+def test_rerun_leaves_the_provision_block_to_provision(tmp_path: Path):
+    block = f"{PROVISION_BEGIN}\nEMAIL_S3_BUCKET=prov\nP=1\n{PROVISION_END}\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"KEEP=1\n\n{block}")
+    template = tmp_path / "template"
+    template.write_text('EMAIL_S3_BUCKET="prov"\nAWS_REGION="us-east-2"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert block in result.stdout
+    # The provisioned key is not copied out of the block, where it would
+    # outlive a later `explorer provision` that drops it.
+    outside = result.stdout.replace(block, "")
+    assert "EMAIL_S3_BUCKET" not in outside
+    assert 'AWS_REGION="us-east-2"' in outside
+
+
+def test_values_reads_managed_keys_as_the_app_does(tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "export EMAIL_S3_BUCKET=prod-bucket\n"
+        'AUTH_CLIENT_SECRET="has \\"quotes\\" and \\\\"\n'
+        f"{PROVISION_BEGIN}\nAWS_REGION=from-provision\n{PROVISION_END}\n"
+        "NOT_ASKED=x\n"
+    )
+    result = _env_merge(
+        "values", str(env_file), "EMAIL_S3_BUCKET", "AUTH_CLIENT_SECRET", "AWS_REGION"
+    )
+    assert result.returncode == 0, result.stderr
+    fields = result.stdout.split("\0")[:-1]
+    pairs = dict(zip(fields[::2], fields[1::2], strict=True))
+    # The live value, provision block included: what prompts should default to.
+    assert pairs == {
+        "EMAIL_S3_BUCKET": "prod-bucket",
+        "AUTH_CLIENT_SECRET": 'has "quotes" and \\',
+        "AWS_REGION": "from-provision",
+    }
+
+
+def test_escaped_template_round_trips_awkward_values(tmp_path: Path):
+    """bootstrap escapes \\ and " before rendering KEY="$VAR"; the parser must
+    read back exactly the original value."""
+    from app._vendor.dotenv import dotenv_values
+
+    value = 'a"b\\c $d'
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'AUTH_CLIENT_SECRET="{escaped}"\n')
+    assert dotenv_values(env_file, interpolate=False)["AUTH_CLIENT_SECRET"] == value
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "env_value=${env_value//\\\\/\\\\\\\\}" in text
+    assert 'printf -v "$env_key" \'%s\' "${env_value//\\"/\\\\\\"}"' in text
+
+
+def test_bootstrap_refuses_linked_env_and_keeps_staging_cleanup():
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "[[ ! -L $ENV_FILE ]]" in text
+    assert 'stat -c %h "$ENV_FILE"' in text
+    assert "cleanup_staging' EXIT" in text
+    assert text.count("trap cleanup_staging EXIT") == 2
+
+
+def test_rerun_leaves_a_provisioned_key_alone_outside_the_block(tmp_path: Path):
+    """After install the outside binding is often empty and provision sets the
+    live value; bootstrap reads the live value, and must not write it outside."""
+    from app._vendor.dotenv import dotenv_values
+
+    block = f"{PROVISION_BEGIN}\nEMAIL_S3_BUCKET=prod-bucket\n{PROVISION_END}\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'EMAIL_S3_BUCKET=""\n\n{block}')
+    values = _env_merge("values", str(env_file), "EMAIL_S3_BUCKET")
+    assert values.stdout == "EMAIL_S3_BUCKET\0prod-bucket\0"
+    template = tmp_path / "template"
+    template.write_text('EMAIL_S3_BUCKET="prod-bucket"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == env_file.read_text()
+    merged = tmp_path / "merged"
+    merged.write_text(result.stdout)
+    assert dotenv_values(merged)["EMAIL_S3_BUCKET"] == "prod-bucket"
+
+
+def test_rerun_resolves_interpolated_managed_keys_and_keeps_them(tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("MODE=central\nEXPLORER_AUTH_MODE=${MODE}\n")
+    values = _env_merge("values", str(env_file), "EXPLORER_AUTH_MODE")
+    assert values.stdout == "EXPLORER_AUTH_MODE\0central\0"
+    template = tmp_path / "template"
+    template.write_text('EXPLORER_AUTH_MODE="central"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == env_file.read_text()  # ${MODE} kept as written
+
+
+def test_rerun_resolves_through_env_shared_like_the_app(tmp_path: Path):
+    """app/config.py loads .env.shared before .env; ${VAR} sees both layers."""
+    (tmp_path / ".env.shared").write_text("MODE=central\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("EXPLORER_AUTH_MODE=${MODE}\n")
+    values = _env_merge("values", str(env_file), "EXPLORER_AUTH_MODE")
+    assert values.stdout == "EXPLORER_AUTH_MODE\0central\0"
+    template = tmp_path / "template"
+    template.write_text('EXPLORER_AUTH_MODE="central"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == env_file.read_text()
+
+
+def _env_merge_with_env(extra_env: dict, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "lib/env_merge.py"), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, **extra_env},
+    )
+
+
+def test_shared_only_managed_key_is_read_and_stays_shared(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("EXPLORER_AUTH_MODE=central\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=1\n")
+    values = _env_merge("values", str(env_file), "EXPLORER_AUTH_MODE")
+    assert values.stdout == "EXPLORER_AUTH_MODE\0central\0"
+    template = tmp_path / "template"
+    template.write_text('EXPLORER_AUTH_MODE="central"\n')
+    unchanged = _env_merge("merge", str(env_file), str(template))
+    assert unchanged.stdout == "OTHER=1\n"  # not pinned locally
+    template.write_text('EXPLORER_AUTH_MODE="elcano"\n')
+    changed = _env_merge("merge", str(env_file), str(template))
+    assert 'EXPLORER_AUTH_MODE="elcano"' in changed.stdout  # an explicit override
+
+
+def test_bootstrap_shell_variables_do_not_leak_into_resolution(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("MODE=central\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("EXPLORER_AUTH_MODE=${MODE}\n")
+    result = _env_merge_with_env(
+        {"MODE": "ELCANO"}, "values", str(env_file), "EXPLORER_AUTH_MODE"
+    )
+    assert result.stdout == "EXPLORER_AUTH_MODE\0central\0"
+
+
+def test_shared_layer_interpolation_ignores_the_bootstrap_shell(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("EXPLORER_AUTH_MODE=${MODE:-central}\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    result = _env_merge_with_env(
+        {"MODE": "ELCANO"}, "values", str(env_file), "EXPLORER_AUTH_MODE"
+    )
+    assert result.stdout == "EXPLORER_AUTH_MODE\0central\0"
+
+
+def test_bootstrap_merges_into_an_existing_empty_env():
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "if [[ -f $ENV_FILE ]]; then" in text
+    assert "if [[ -s $ENV_FILE ]]; then" not in text

@@ -58,7 +58,10 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
 
 `bootstrap.sh` is interactive and **safe to re-run** — it re-reads the
 existing `/opt/explorer/.env` and only prompts for values that are still
-missing. In order it:
+missing. On a re-run it updates only the settings it manages, in place
+(`scripts/lib/env_merge.py`, using the app's own dotenv parser), and keeps every
+other line exactly as it was: AWS keys added with `explorer env edit`, tuning
+knobs, custom keys and the `explorer provision` block. In order it:
 
 1. Installs the dnf packages above. Then, when `cockpit-ws` is installed, it
    removes Cockpit with `dnf -y remove 'cockpit*'`: the Vultr Fedora image
