@@ -2015,3 +2015,91 @@ def test_set_hostname_keeps_other_loopback_aliases(tmp_path: Path):
         hosts
         == "127.0.0.1 localhost\n127.0.0.1 explorer.example.com explorer myalias # note\n"
     )
+
+
+def _bootstrap_env_template() -> str:
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    match = re.search(r'cat > "\$ENV_FILE" <<EOF\n(.*?)\nEOF\n', text, re.S)
+    assert match, "bootstrap no longer writes .env from a heredoc template"
+    return match.group(1)
+
+
+def test_bootstrap_env_template_runs_no_commands():
+    """The template is an unquoted heredoc: a backtick or $( in it would run."""
+    template = _bootstrap_env_template()
+    assert "`" not in template
+    assert "$(" not in template.replace("$(date -Iseconds)", "")
+
+
+def test_bootstrap_managed_keys_match_its_env_template():
+    """Every key the template writes is listed as managed, and nothing else.
+
+    A key written but not listed would be duplicated on re-run; a key listed
+    but not written would be dropped, which is the bug this list exists to fix.
+    """
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    listed = re.search(r"ENV_MANAGED_KEYS=\((.*?)\)", text, re.S)
+    assert listed, "bootstrap no longer declares ENV_MANAGED_KEYS"
+    written = set(re.findall(r"^([A-Z_][A-Z0-9_]*)=", _bootstrap_env_template(), re.M))
+    assert set(listed.group(1).split()) == written
+    assert text.index("layout_env_lines_except") < text.index('cat > "$ENV_FILE" <<EOF')
+
+
+def test_rerun_keeps_settings_bootstrap_does_not_write(tmp_path: Path):
+    marker = tmp_path / "executed"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# a comment\n"
+        'EXPLORER_SESSION_SECRET="old"\n'
+        'AWS_ACCESS_KEY_ID="AKIAEXAMPLE"\n'
+        "AWS_SECRET_ACCESS_KEY='s3cr3t'\n"
+        "  EMAIL_S3_MAX_BODY_SEARCH_DAYS=30\n"
+        f'CUSTOM_KNOB="$(touch {marker})"\n'
+        'EMAIL_S3_BUCKET="managed-bucket"\n'
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            'APP_DIR=/unused APP_USER=nobody; source "$1"; '
+            'layout_env_lines_except "$2" EXPLORER_SESSION_SECRET EMAIL_S3_BUCKET',
+            "bash",
+            str(SCRIPTS / "lib/layout.sh"),
+            str(env_file),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        'AWS_ACCESS_KEY_ID="AKIAEXAMPLE"',
+        "AWS_SECRET_ACCESS_KEY='s3cr3t'",
+        "  EMAIL_S3_MAX_BODY_SEARCH_DAYS=30",
+        f'CUSTOM_KNOB="$(touch {marker})"',
+    ]
+    assert not marker.exists()
+
+
+def test_rerun_keeps_nothing_from_a_symlinked_env(tmp_path: Path):
+    real = tmp_path / "real"
+    real.write_text('AWS_ACCESS_KEY_ID="x"\n')
+    link = tmp_path / ".env"
+    link.symlink_to(real)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'APP_DIR=/unused APP_USER=nobody; source "$1"; layout_env_lines_except "$2"',
+            "bash",
+            str(SCRIPTS / "lib/layout.sh"),
+            str(link),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""

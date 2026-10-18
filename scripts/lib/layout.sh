@@ -188,6 +188,25 @@ env_unquote() {
   esac
 }
 
+# The KEY=value lines of an existing environment file whose key is not one the
+# caller rewrites, verbatim and in order. bootstrap.sh regenerates .env from
+# its own template; without this, a re-run silently dropped every setting the
+# operator added later (AWS keys from `explorer env edit`, tuning knobs, custom
+# keys). Lines are returned as data and must be written with printf, never
+# re-evaluated.
+layout_env_lines_except() {
+  local file=$1 line key
+  shift
+  local -A managed=()
+  for key in "$@"; do managed[$key]=1; done
+  [[ -f $file && ! -L $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]] || continue
+    [[ -n ${managed[${BASH_REMATCH[1]}]:-} ]] && continue
+    printf '%s\n' "$line"
+  done < "$file"
+}
+
 layout_read_env() {
   local file=$1 line key value
   [[ -f $file && ! -L $file ]] || return 0
