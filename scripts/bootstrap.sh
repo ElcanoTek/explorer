@@ -326,8 +326,9 @@ EMAIL_S3_BUCKET="$EMAIL_S3_BUCKET"
 # AWS_SECRET_ACCESS_KEY=
 EOF
 for env_key in "${!env_raw[@]}"; do printf -v "$env_key" '%s' "${env_raw[$env_key]}"; done
-if [[ -s $ENV_FILE ]]; then
-  # Re-run: update only the managed keys, in place.
+if [[ -f $ENV_FILE ]]; then
+  # Re-run (even with an empty .env): update only the managed keys, in place,
+  # so keys .env.shared supplies stay shared.
   python3 -I "$SRC_DIR/scripts/lib/env_merge.py" merge "$ENV_FILE" "$env_template" > "$env_merged" ||
     die "could not merge settings into $ENV_FILE"
   cat "$env_merged" > "$ENV_FILE"

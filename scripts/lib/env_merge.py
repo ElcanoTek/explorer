@@ -78,6 +78,7 @@ def _load_shared(env_file: Path) -> dict[str, str]:
     sees, so they must not leak into ${VAR} resolution."""
     shared_values: dict[str, str] = {}
     shared = env_file.with_name(".env.shared")
+    os.environ.clear()  # before parsing: .env.shared may interpolate too
     if shared.is_file() and not shared.is_symlink():
         shared_values = {
             k: v for k, v in _pkg.dotenv_values(shared).items() if v is not None

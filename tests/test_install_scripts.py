@@ -2251,3 +2251,19 @@ def test_bootstrap_shell_variables_do_not_leak_into_resolution(tmp_path: Path):
         {"MODE": "ELCANO"}, "values", str(env_file), "EXPLORER_AUTH_MODE"
     )
     assert result.stdout == "EXPLORER_AUTH_MODE\0central\0"
+
+
+def test_shared_layer_interpolation_ignores_the_bootstrap_shell(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("EXPLORER_AUTH_MODE=${MODE:-central}\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("")
+    result = _env_merge_with_env(
+        {"MODE": "ELCANO"}, "values", str(env_file), "EXPLORER_AUTH_MODE"
+    )
+    assert result.stdout == "EXPLORER_AUTH_MODE\0central\0"
+
+
+def test_bootstrap_merges_into_an_existing_empty_env():
+    text = (SCRIPTS / "bootstrap.sh").read_text()
+    assert "if [[ -f $ENV_FILE ]]; then" in text
+    assert "if [[ -s $ENV_FILE ]]; then" not in text
