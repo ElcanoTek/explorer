@@ -2074,6 +2074,7 @@ def test_rerun_keeps_every_unmanaged_byte_and_updates_managed_keys(tmp_path: Pat
         "BASE=archive\n"
         "EMAIL_S3_BUCKET=${BASE}-bucket\n"
         'AWS_REGION="us-east-1"\n'
+        "EARLY=${AWS_REGION}\n"
         "AWS_REGION=us-west-2\n"
     )
     env_file = tmp_path / ".env"
@@ -2090,13 +2091,16 @@ def test_rerun_keeps_every_unmanaged_byte_and_updates_managed_keys(tmp_path: Pat
 
     # Unchanged managed value keeps its exact spelling and its position, so
     # ${BASE} still resolves; unmanaged lines are byte-for-byte the same.
-    assert result.stdout.startswith(existing.split('AWS_REGION="us-east-1"')[0])
-    assert result.stdout.count("AWS_REGION") == 1  # duplicate dropped
+    assert result.stdout.startswith(existing.split("AWS_REGION=us-west-2")[0])
+    # Only the live (last) AWS_REGION changes; the earlier one stays, so
+    # EARLY=${AWS_REGION} between them still resolves to us-east-1.
+    assert 'AWS_REGION="us-east-1"' in result.stdout
     before = dotenv_values(env_file)
     after = dotenv_values(merged)
     assert after["EMAIL_S3_BUCKET"] == "archive-bucket"
     assert after["AWS_REGION"] == "eu-west-1"
     assert after["EXPLORER_AUTH_MODE"] == "central"
+    assert after["EARLY"] == "us-east-1"
     for key in (
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
@@ -2137,9 +2141,11 @@ def test_values_reads_managed_keys_as_the_app_does(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     fields = result.stdout.split("\0")[:-1]
     pairs = dict(zip(fields[::2], fields[1::2], strict=True))
+    # The live value, provision block included: what prompts should default to.
     assert pairs == {
         "EMAIL_S3_BUCKET": "prod-bucket",
         "AUTH_CLIENT_SECRET": 'has "quotes" and \\',
+        "AWS_REGION": "from-provision",
     }
 
 
@@ -2164,3 +2170,23 @@ def test_bootstrap_refuses_linked_env_and_keeps_staging_cleanup():
     assert 'stat -c %h "$ENV_FILE"' in text
     assert "cleanup_staging' EXIT" in text
     assert text.count("trap cleanup_staging EXIT") == 2
+
+
+def test_rerun_leaves_a_provisioned_key_alone_outside_the_block(tmp_path: Path):
+    """After install the outside binding is often empty and provision sets the
+    live value; bootstrap reads the live value, and must not write it outside."""
+    from app._vendor.dotenv import dotenv_values
+
+    block = f"{PROVISION_BEGIN}\nEMAIL_S3_BUCKET=prod-bucket\n{PROVISION_END}\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'EMAIL_S3_BUCKET=""\n\n{block}')
+    values = _env_merge("values", str(env_file), "EMAIL_S3_BUCKET")
+    assert values.stdout == "EMAIL_S3_BUCKET\0prod-bucket\0"
+    template = tmp_path / "template"
+    template.write_text('EMAIL_S3_BUCKET="prod-bucket"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == env_file.read_text()
+    merged = tmp_path / "merged"
+    merged.write_text(result.stdout)
+    assert dotenv_values(merged)["EMAIL_S3_BUCKET"] == "prod-bucket"

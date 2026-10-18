@@ -66,12 +66,12 @@ def _quote(value: str) -> str:
 
 
 def values(text: str, keys: list[str]) -> dict[str, str]:
+    """The value the app actually uses for each key: the last binding, the
+    provision block included (so prompts default to what is live)."""
     wanted = set(keys)
     found: dict[str, str] = {}
-    for b, inside in _with_block_flags(_bindings(text)):
-        # provision.sh owns its block; reading its values here would copy them
-        # into the operator's own setting, where they'd outlive the block.
-        if not inside and b.key in wanted and b.value is not None:
+    for b in _bindings(text):
+        if b.key in wanted and b.value is not None:
             found[b.key] = b.value
     return found
 
@@ -82,29 +82,29 @@ def merge(existing: str, template: str) -> str:
         if b.key is not None and b.value is not None:
             desired[b.key] = b.value
 
-    provisioned = {
-        b.key
-        for b, inside in _with_block_flags(_bindings(existing))
-        if inside and b.key
-    }
-    written: set[str] = set()
+    flagged = _with_block_flags(_bindings(existing))
+    # provision.sh owns any key its block sets: that binding is the live one,
+    # and the block is replaced whole on the next `explorer provision`. Leave
+    # those keys alone everywhere rather than copy a provisioned value out.
+    provisioned = {b.key for b, inside in flagged if inside and b.key}
+    # Update only the effective (last) binding of each managed key, in place.
+    # Earlier duplicates stay: a ${VAR} between them still sees the old value.
+    last: dict[str, int] = {}
+    for i, (b, inside) in enumerate(flagged):
+        if not inside and b.key in desired and b.key not in provisioned:
+            last[b.key] = i
+
     out: list[str] = []
-    for b, inside in _with_block_flags(_bindings(existing)):
+    for i, (b, _inside) in enumerate(flagged):
         text = b.original.string
-        if inside or b.key not in desired:
-            out.append(text)
-            continue
-        if b.key in written:
-            continue  # a later duplicate would override the managed value
-        written.add(b.key)
-        if b.value == desired[b.key]:
-            out.append(text)  # unchanged: keep the operator's exact spelling
+        if last.get(b.key) != i or b.value == desired[b.key]:
+            out.append(text)  # not the live binding, or unchanged: keep as is
             continue
         lead = text[: len(text) - len(text.lstrip())]
         tail = "\n" if text.endswith(("\n", "\r")) else ""
         out.append(f"{lead}{b.key}={_quote(desired[b.key])}{tail}")
 
-    missing = [k for k in desired if k not in written and k not in provisioned]
+    missing = [k for k in desired if k not in last and k not in provisioned]
     if missing:
         merged = "".join(out)
         if merged and not merged.endswith("\n"):
