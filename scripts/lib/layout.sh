@@ -188,23 +188,69 @@ env_unquote() {
   esac
 }
 
-# The KEY=value lines of an existing environment file whose key is not one the
-# caller rewrites, verbatim and in order. bootstrap.sh regenerates .env from
-# its own template; without this, a re-run silently dropped every setting the
-# operator added later (AWS keys from `explorer env edit`, tuning knobs, custom
-# keys). Lines are returned as data and must be written with printf, never
-# re-evaluated.
+# The bindings of an existing environment file whose key is not one the caller
+# rewrites, verbatim and in order. bootstrap.sh regenerates .env from its own
+# template; without this, a re-run silently dropped every setting the operator
+# added later (AWS keys from `explorer env edit`, tuning knobs, custom keys).
+#
+# Follows the dotenv syntax app/_vendor/dotenv accepts: an optional `export`,
+# and quoted values that span lines (kept or skipped as one unit; an
+# unterminated quote is dropped, as the parser drops it). A block written by
+# provision.sh is kept whole, markers included, so provision still recognises
+# and replaces it. Lines are returned as data and must be written with printf,
+# never re-evaluated.
+_layout_quote_closes() {
+  local quote=$1 text=${2//\\\\/}
+  [[ $text =~ (^|[^\\])$quote ]]
+}
+
 layout_env_lines_except() {
-  local file=$1 line key
+  local file=$1 line key value quote keep in_block=0 i=0 j
+  local -a lines=()
   shift
   local -A managed=()
   for key in "$@"; do managed[$key]=1; done
   [[ -f $file && ! -L $file ]] || return 0
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ $line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]] || continue
-    [[ -n ${managed[${BASH_REMATCH[1]}]:-} ]] && continue
-    printf '%s\n' "$line"
-  done < "$file"
+  mapfile -t lines < "$file"
+  while ((i < ${#lines[@]})); do
+    line=${lines[i]}
+    i=$((i + 1))
+    if ((in_block)); then
+      printf '%s\n' "$line"
+      [[ $line == "# ── end explorer provision ("* ]] && in_block=0
+      continue
+    fi
+    if [[ $line == "# ── managed by explorer provision ("* ]]; then
+      printf '%s\n' "$line"
+      in_block=1
+      continue
+    fi
+    [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    key=${BASH_REMATCH[2]}
+    value=${BASH_REMATCH[3]}
+    keep=1
+    [[ -n ${managed[$key]:-} ]] && keep=0
+    quote=""
+    case $value in
+      \"*) _layout_quote_closes '"' "${value:1}" || quote='"' ;;
+      \'*) _layout_quote_closes "'" "${value:1}" || quote="'" ;;
+    esac
+    if [[ -z $quote ]]; then
+      ((keep)) && printf '%s\n' "$line"
+      continue
+    fi
+    # Find the closing line. Unterminated: drop just this binding and carry
+    # on from the next line, as the parser does.
+    for ((j = i; j < ${#lines[@]}; j++)); do
+      _layout_quote_closes "$quote" "${lines[j]}" && break
+    done
+    ((j < ${#lines[@]})) || continue
+    if ((keep)); then
+      printf '%s\n' "$line" "${lines[@]:i:j-i+1}"
+    fi
+    i=$((j + 1))
+  done
+  return 0
 }
 
 layout_read_env() {

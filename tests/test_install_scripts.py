@@ -2103,3 +2103,67 @@ def test_rerun_keeps_nothing_from_a_symlinked_env(tmp_path: Path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def _kept(env_file: Path, *managed: str) -> str:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'APP_DIR=/unused APP_USER=nobody; source "$1"; shift; layout_env_lines_except "$@"',
+            "bash",
+            str(SCRIPTS / "lib/layout.sh"),
+            str(env_file),
+            *managed,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_rerun_keeps_dotenv_bindings_exactly_as_the_app_parses_them(tmp_path: Path):
+    """Whatever bootstrap keeps must mean to the app what it meant before."""
+    from app._vendor.dotenv import dotenv_values
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "export AWS_ACCESS_KEY_ID=AKIAEXAMPLE\n"
+        'MULTI="line one\nline two"\n'
+        'EMAIL_S3_BUCKET="managed\nacross lines"\n'
+        "SQ='a\\'b'\n"
+        'ESC="say \\"hi\\""\n'
+        'BROKEN="never closed\n'
+        "AFTER_BROKEN=kept\n"
+    )
+    kept_file = tmp_path / "kept"
+    kept_file.write_text(_kept(env_file, "EMAIL_S3_BUCKET"))
+    before = dotenv_values(env_file, interpolate=False)
+    after = dotenv_values(kept_file, interpolate=False)
+    assert "EMAIL_S3_BUCKET" not in after
+    expected = {k: v for k, v in before.items() if k != "EMAIL_S3_BUCKET"}
+    assert after == expected
+    assert after["MULTI"] == "line one\nline two"
+    assert after["AFTER_BROKEN"] == "kept"
+
+
+def test_rerun_keeps_the_provision_block_whole(tmp_path: Path):
+    begin = (
+        "# ── managed by explorer provision (acme) — do not edit, "
+        "run `explorer provision` to refresh ──"
+    )
+    end = "# ── end explorer provision (acme) ──"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"KEEP=1\n\n{begin}\nEMAIL_S3_BUCKET=prov\nP=1\n{end}\nTAIL=2\n"
+    )
+    assert _kept(env_file, "EMAIL_S3_BUCKET").splitlines() == [
+        "KEEP=1",
+        begin,
+        "EMAIL_S3_BUCKET=prov",
+        "P=1",
+        end,
+        "TAIL=2",
+    ]
