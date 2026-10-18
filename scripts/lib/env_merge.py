@@ -26,14 +26,20 @@ import io
 import sys
 from pathlib import Path
 
-_PARSER = (
-    Path(__file__).resolve().parents[2] / "app" / "_vendor" / "dotenv" / "parser.py"
+# The app's vendored dotenv package, loaded by path as a package so its
+# relative imports work: the parser for bindings, main for interpolation.
+_DOTENV_DIR = Path(__file__).resolve().parents[2] / "app" / "_vendor" / "dotenv"
+_spec = importlib.util.spec_from_file_location(
+    "explorer_dotenv",
+    _DOTENV_DIR / "__init__.py",
+    submodule_search_locations=[str(_DOTENV_DIR)],
 )
-_spec = importlib.util.spec_from_file_location("explorer_dotenv_parser", _PARSER)
 assert _spec and _spec.loader
-_parser = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = _parser
-_spec.loader.exec_module(_parser)
+_pkg = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _pkg
+_spec.loader.exec_module(_pkg)
+_parser = sys.modules["explorer_dotenv.parser"]
+_dotenv_main = sys.modules["explorer_dotenv.main"]
 
 # provision.sh owns the keys inside its block and replaces the block whole.
 PROVISION_BEGIN = "# ── managed by explorer provision ("
@@ -65,15 +71,17 @@ def _quote(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _resolved(bindings: list) -> dict:
+    """Values as the app loads .env (override=True): ${VAR} resolved in order."""
+    pairs = [(b.key, b.value) for b in bindings if b.key is not None]
+    return dict(_dotenv_main.resolve_variables(pairs, override=True))
+
+
 def values(text: str, keys: list[str]) -> dict[str, str]:
-    """The value the app actually uses for each key: the last binding, the
-    provision block included (so prompts default to what is live)."""
-    wanted = set(keys)
-    found: dict[str, str] = {}
-    for b in _bindings(text):
-        if b.key in wanted and b.value is not None:
-            found[b.key] = b.value
-    return found
+    """The value the app actually uses for each key: interpolation resolved,
+    the provision block included (so prompts default to what is live)."""
+    resolved = _resolved(_bindings(text))
+    return {k: resolved[k] for k in keys if resolved.get(k) is not None}
 
 
 def merge(existing: str, template: str) -> str:
@@ -82,7 +90,9 @@ def merge(existing: str, template: str) -> str:
         if b.key is not None and b.value is not None:
             desired[b.key] = b.value
 
-    flagged = _with_block_flags(_bindings(existing))
+    bindings = _bindings(existing)
+    resolved = _resolved(bindings)
+    flagged = _with_block_flags(bindings)
     # provision.sh owns any key its block sets: that binding is the live one,
     # and the block is replaced whole on the next `explorer provision`. Leave
     # those keys alone everywhere rather than copy a provisioned value out.
@@ -97,8 +107,10 @@ def merge(existing: str, template: str) -> str:
     out: list[str] = []
     for i, (b, _inside) in enumerate(flagged):
         text = b.original.string
-        if last.get(b.key) != i or b.value == desired[b.key]:
-            out.append(text)  # not the live binding, or unchanged: keep as is
+        if last.get(b.key) != i or desired[b.key] in (b.value, resolved.get(b.key)):
+            # Not the live binding, or unchanged (literally or once ${VAR} is
+            # resolved): keep the operator's exact text.
+            out.append(text)
             continue
         lead = text[: len(text) - len(text.lstrip())]
         tail = "\n" if text.endswith(("\n", "\r")) else ""

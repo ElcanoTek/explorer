@@ -2190,3 +2190,15 @@ def test_rerun_leaves_a_provisioned_key_alone_outside_the_block(tmp_path: Path):
     merged = tmp_path / "merged"
     merged.write_text(result.stdout)
     assert dotenv_values(merged)["EMAIL_S3_BUCKET"] == "prod-bucket"
+
+
+def test_rerun_resolves_interpolated_managed_keys_and_keeps_them(tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("MODE=central\nEXPLORER_AUTH_MODE=${MODE}\n")
+    values = _env_merge("values", str(env_file), "EXPLORER_AUTH_MODE")
+    assert values.stdout == "EXPLORER_AUTH_MODE\0central\0"
+    template = tmp_path / "template"
+    template.write_text('EXPLORER_AUTH_MODE="central"\n')
+    result = _env_merge("merge", str(env_file), str(template))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == env_file.read_text()  # ${MODE} kept as written
