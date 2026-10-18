@@ -72,14 +72,19 @@ def _quote(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _load_shared(env_file: Path) -> None:
-    """Layer .env.shared under .env as app/config.py does: loaded first,
-    without overriding variables already in the environment."""
+def _load_shared(env_file: Path) -> dict[str, str]:
+    """Layer .env.shared under .env as app/config.py does, and resolve against
+    that alone: the bootstrap shell's own variables are not what the service
+    sees, so they must not leak into ${VAR} resolution."""
+    shared_values: dict[str, str] = {}
     shared = env_file.with_name(".env.shared")
     if shared.is_file() and not shared.is_symlink():
-        for key, value in _pkg.dotenv_values(shared).items():
-            if value is not None:
-                os.environ.setdefault(key, value)
+        shared_values = {
+            k: v for k, v in _pkg.dotenv_values(shared).items() if v is not None
+        }
+    os.environ.clear()
+    os.environ.update(shared_values)
+    return shared_values
 
 
 def _resolved(bindings: list) -> dict:
@@ -88,14 +93,21 @@ def _resolved(bindings: list) -> dict:
     return dict(_dotenv_main.resolve_variables(pairs, override=True))
 
 
-def values(text: str, keys: list[str]) -> dict[str, str]:
+def values(
+    text: str, keys: list[str], shared: dict[str, str] | None = None
+) -> dict[str, str]:
     """The value the app actually uses for each key: interpolation resolved,
-    the provision block included (so prompts default to what is live)."""
-    resolved = _resolved(_bindings(text))
-    return {k: resolved[k] for k in keys if resolved.get(k) is not None}
+    the provision block included, and .env.shared for keys .env doesn't set
+    (so prompts default to what is live)."""
+    effective = dict(shared or {})
+    effective.update(
+        {k: v for k, v in _resolved(_bindings(text)).items() if v is not None}
+    )
+    return {k: effective[k] for k in keys if k in effective}
 
 
-def merge(existing: str, template: str) -> str:
+def merge(existing: str, template: str, shared: dict[str, str] | None = None) -> str:
+    shared = shared or {}
     desired: dict[str, str] = {}
     for b in _bindings(template):
         if b.key is not None and b.value is not None:
@@ -127,7 +139,14 @@ def merge(existing: str, template: str) -> str:
         tail = "\n" if text.endswith(("\n", "\r")) else ""
         out.append(f"{lead}{b.key}={_quote(desired[b.key])}{tail}")
 
-    missing = [k for k in desired if k not in last and k not in provisioned]
+    # A key .env doesn't set but .env.shared does stays shared, unless the
+    # operator changed it; copying it locally would pin it against fleet-wide
+    # changes.
+    missing = [
+        k
+        for k in desired
+        if k not in last and k not in provisioned and shared.get(k) != desired[k]
+    ]
     if missing:
         merged = "".join(out)
         if merged and not merged.endswith("\n"):
@@ -140,16 +159,16 @@ def merge(existing: str, template: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "values":
-        _load_shared(Path(argv[1]))
+        shared = _load_shared(Path(argv[1]))
         text = Path(argv[1]).read_text(encoding="utf-8")
-        for key, value in values(text, argv[2:]).items():
+        for key, value in values(text, argv[2:], shared).items():
             sys.stdout.write(f"{key}\0{value}\0")
         return 0
     if len(argv) == 3 and argv[0] == "merge":
-        _load_shared(Path(argv[1]))
+        shared = _load_shared(Path(argv[1]))
         existing = Path(argv[1]).read_text(encoding="utf-8")
         template = Path(argv[2]).read_text(encoding="utf-8")
-        sys.stdout.write(merge(existing, template))
+        sys.stdout.write(merge(existing, template, shared))
         return 0
     sys.stderr.write(__doc__ or "")
     return 2

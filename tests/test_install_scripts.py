@@ -2216,3 +2216,38 @@ def test_rerun_resolves_through_env_shared_like_the_app(tmp_path: Path):
     result = _env_merge("merge", str(env_file), str(template))
     assert result.returncode == 0, result.stderr
     assert result.stdout == env_file.read_text()
+
+
+def _env_merge_with_env(extra_env: dict, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "lib/env_merge.py"), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, **extra_env},
+    )
+
+
+def test_shared_only_managed_key_is_read_and_stays_shared(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("EXPLORER_AUTH_MODE=central\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=1\n")
+    values = _env_merge("values", str(env_file), "EXPLORER_AUTH_MODE")
+    assert values.stdout == "EXPLORER_AUTH_MODE\0central\0"
+    template = tmp_path / "template"
+    template.write_text('EXPLORER_AUTH_MODE="central"\n')
+    unchanged = _env_merge("merge", str(env_file), str(template))
+    assert unchanged.stdout == "OTHER=1\n"  # not pinned locally
+    template.write_text('EXPLORER_AUTH_MODE="elcano"\n')
+    changed = _env_merge("merge", str(env_file), str(template))
+    assert 'EXPLORER_AUTH_MODE="elcano"' in changed.stdout  # an explicit override
+
+
+def test_bootstrap_shell_variables_do_not_leak_into_resolution(tmp_path: Path):
+    (tmp_path / ".env.shared").write_text("MODE=central\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("EXPLORER_AUTH_MODE=${MODE}\n")
+    result = _env_merge_with_env(
+        {"MODE": "ELCANO"}, "values", str(env_file), "EXPLORER_AUTH_MODE"
+    )
+    assert result.stdout == "EXPLORER_AUTH_MODE\0central\0"
