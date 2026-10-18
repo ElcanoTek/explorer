@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -69,6 +70,16 @@ def _with_block_flags(bindings: list) -> list[tuple[object, bool]]:
 def _quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _load_shared(env_file: Path) -> None:
+    """Layer .env.shared under .env as app/config.py does: loaded first,
+    without overriding variables already in the environment."""
+    shared = env_file.with_name(".env.shared")
+    if shared.is_file() and not shared.is_symlink():
+        for key, value in _pkg.dotenv_values(shared).items():
+            if value is not None:
+                os.environ.setdefault(key, value)
 
 
 def _resolved(bindings: list) -> dict:
@@ -129,11 +140,13 @@ def merge(existing: str, template: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "values":
+        _load_shared(Path(argv[1]))
         text = Path(argv[1]).read_text(encoding="utf-8")
         for key, value in values(text, argv[2:]).items():
             sys.stdout.write(f"{key}\0{value}\0")
         return 0
     if len(argv) == 3 and argv[0] == "merge":
+        _load_shared(Path(argv[1]))
         existing = Path(argv[1]).read_text(encoding="utf-8")
         template = Path(argv[2]).read_text(encoding="utf-8")
         sys.stdout.write(merge(existing, template))
