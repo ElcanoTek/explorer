@@ -10,9 +10,9 @@
 #
 # Run it under the oldest supported Python (3.11) so markers resolve for
 # every interpreter CI and production use. See AGENTS.md › Dependencies.
-fastapi==0.143.0
+fastapi==0.143.2
 starlette==1.7.0
-boto3==1.43.113
+boto3==1.43.114
 jinja2==3.1.6
 python-multipart==0.0.32
 itsdangerous==2.2.0
