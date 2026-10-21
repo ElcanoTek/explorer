@@ -1,0 +1,11 @@
+{{define "header_intro"}}{{- "" -}}{{end}}
+{{define "content"}}
+<section class="card auth-card" aria-labelledby="auth-error-heading">
+  <div class="featured-head">
+    <p class="featured-kicker">Explorer</p>
+    <h2 id="auth-error-heading">{{.Page.Heading}}</h2>
+  </div>
+  <p class="description">{{.Page.Message}}</p>
+  <p><a class="button" href="{{.Page.ActionURL}}">{{.Page.ActionLabel}}</a></p>
+</section>
+{{end}}

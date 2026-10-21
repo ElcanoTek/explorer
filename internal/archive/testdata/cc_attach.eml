@@ -1,0 +1,24 @@
+From: Reports <reporting@ssp.example>
+To: archive@example.com
+Subject: Daily report
+Cc: copy@example.com
+Reply-To: replies@ssp.example
+Date: Mon, 01 Jun 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1121307418114369790=="
+
+--===============1121307418114369790==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+plain body
+
+--===============1121307418114369790==
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="report.pdf"
+MIME-Version: 1.0
+
+UERGREFUQQ==
+
+--===============1121307418114369790==--

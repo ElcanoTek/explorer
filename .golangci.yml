@@ -1,0 +1,77 @@
+# golangci-lint v2 configuration, modelled on fleet's (same linter set, so
+# code moving between the repos meets one bar).
+#
+# CI pins golangci-lint v2.14.0 (.github/workflows/ci.yml). Keep a local
+# binary at that version: go1.27.2 raised the export data version, which
+# v2.13.x cannot read.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errname
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gocyclo
+    - goprintffuncname
+    - gosec
+    - misspell
+    - nakedret
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocyclo:
+      # The inbox handler and the update/bootstrap state machines are
+      # legitimately branchy; flag genuinely new complexity, not those.
+      min-complexity: 35
+    nolintlint:
+      # Every //nolint names the linter and says why; unused ones are flagged.
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+  exclusions:
+    generated: lax
+    warn-unused: true
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - noctx
+          - unparam
+      - text: 'shadow: declaration of "err"'
+        linters:
+          - govet
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: strict
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+
+run:
+  timeout: 5m
+  tests: true
+
+severity:
+  default: error

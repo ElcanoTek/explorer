@@ -43,13 +43,14 @@ than a code report.
 
 **In scope**
 
-- The application code in `app/` — authentication and cookie verification,
-  the S3 key confinement in `is_allowed_s3_key`, HTML sanitizing of message
+- The application code in `cmd/` and `internal/` — authentication and
+  cookie verification, the S3 key confinement in `isAllowedS3Key`, HTML
+  sanitizing of message
   bodies, the attachment endpoint and path handling, search-job and cursor
   ownership.
-- The deployment surface in `deploy/`, `scripts/` and `provision/` —
-  file permissions, the systemd hardening, secret handling, the temp-file
-  lifecycle.
+- The deployment surface in `deploy/`, `scripts/`, `internal/ops` and
+  `provision/` — the root-run installer and updater, file permissions, the
+  systemd hardening, secret handling.
 - Documented configuration that is insecure by default, or a default that
   fails open where it should fail closed.
 - Anything in this repository that leaks a credential or personal data.

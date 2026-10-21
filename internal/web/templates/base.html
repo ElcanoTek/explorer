@@ -1,0 +1,64 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{if .Title}}{{.Title}}{{else}}Explorer{{end}}</title>
+    <script nonce="{{.Nonce}}">
+      (function () {
+        const storageKey = "flag-theme-preference";
+        let preference = null;
+
+        try {
+          preference = window.localStorage.getItem(storageKey);
+        } catch (error) {
+          preference = null;
+        }
+
+        const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const theme = preference === "light" || preference === "dark" ? preference : (systemDark ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+    <link rel="icon" href="/static/design-system/logos/explorer-favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/design-system/fonts/fonts.css" />
+    <link rel="stylesheet" href="/static/design-system/tokens/design-tokens.css" />
+    <link rel="stylesheet" href="/static/styles.css?v={{.StaticVersion}}" />
+    {{- block "head" .}}{{end}}
+  </head>
+  <body>
+    <div id="global-loading-bar" class="global-loading-bar" aria-hidden="true">
+      <span class="global-loading-bar__line"></span>
+    </div>
+    <div id="global-loading-note" class="global-loading-note" role="status" aria-live="polite" aria-atomic="true">
+      Still working...
+    </div>
+    <div class="shell">
+      <header class="page-header">
+        <div class="ds-app-header" role="banner">
+          <div class="ds-app-header__brand">
+            <img class="ds-app-header__mark" src="/static/design-system/logos/elcano-mark-primary.svg" alt="Elcano" />
+            <div class="ds-app-header__text">
+              <p class="ds-app-header__eyebrow">Email archive</p>
+              <h1 class="ds-app-header__title">{{block "header_title" .}}Explorer{{end}}</h1>
+            </div>
+          </div>
+          <div class="ds-app-header__actions">
+            <button id="toggleTheme" class="icon-action theme-toggle" type="button" aria-label="Toggle color theme" aria-pressed="false">
+              <span class="theme-toggle__icon-wrap" aria-hidden="true">
+                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--sun" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#sun"></use></svg>
+                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--moon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#moon"></use></svg>
+              </span>
+            </button>
+            {{- block "topbar_actions" .}}{{end}}
+          </div>
+        </div>
+        <p class="page-header__intro">{{block "header_intro" .}}Search, review, and troubleshoot the SES to S3 inbox using the canonical Elcano UI system.{{end}}</p>
+      </header>
+      <main class="page">{{block "content" .}}{{end}}</main>
+    </div>
+    <script src="/static/js/base.js?v={{.StaticVersion}}"></script>
+    {{- block "scripts" .}}{{end}}
+  </body>
+</html>
+{{end}}

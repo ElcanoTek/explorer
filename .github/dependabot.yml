@@ -1,30 +1,26 @@
-# Dependabot proposes updates for Explorer's two dependency surfaces: the
-# hashed pip-compile locks at the repo root (requirements.in -> .txt, which
-# Dependabot regenerates with pip-compile, hashes included) and the GitHub
-# Actions pinned by SHA in .github/workflows/*. Modelled on fleet's file.
+# Dependabot proposes updates for Explorer's two dependency surfaces: the Go
+# module graph (go.mod / go.sum) and the GitHub Actions pinned by SHA in
+# .github/workflows/*. Modelled on fleet's file.
 #
 # Proposing is not merging. A human merges a bump only when it earns it: a
 # security fix whose code path Explorer uses, or a specific commit we need
-# (AGENTS.md › Dependencies). In-housed code (app/_vendor, app/linkify.py) is
-# ours and is not tracked here.
+# (AGENTS.md › Dependencies). In-housed code (internal/dotenv,
+# internal/htmlsafe) is ours and is not tracked here.
 #
-# Cadence: daily, with a supply-chain cooldown on pip of 7 days (3 for patch
+# Cadence: daily, with a supply-chain cooldown of 7 days (3 for patch
 # releases), so a fresh release can be scrutinized (or yanked) before it is
-# proposed.
-# Cooldown applies to version updates only, never to security updates.
-# Minor + patch bumps are grouped per ecosystem into one PR that Dependabot
-# updates in place; majors stay separate so breaking changes get their own
-# review. Security updates ignore grouping and prefixes, as GitHub documents.
+# proposed. Cooldown applies to version updates only, never to security
+# updates. Minor + patch bumps are grouped per ecosystem; majors stay
+# separate so breaking changes get their own review.
 #
-# Not covered: the Python interpreter itself (the CI matrix in ci.yml and the
-# python3 dnf ships on the box) — that is a deliberate, human-initiated move.
+# Not covered: the Go toolchain line in go.mod — a deliberate,
+# human-initiated move (govulncheck flags stdlib CVEs when it is due).
 #
 # Schema: https://docs.github.com/code-security/reference/supply-chain-security/dependabot-options-reference
 version: 2
 
 updates:
-  # requirements.in / requirements.txt and requirements-dev.in / .txt.
-  - package-ecosystem: pip
+  - package-ecosystem: gomod
     directory: "/"
     schedule:
       interval: daily
@@ -36,14 +32,13 @@ updates:
       semver-patch-days: 3
     labels: []
     commit-message:
-      prefix: "deps(pip)"
+      prefix: "deps(go)"
     groups:
-      pip-minor-patch:
+      go-minor-patch:
         update-types:
           - minor
           - patch
 
-  # Actions referenced by .github/workflows/* (SHA pins with # vX.Y.Z).
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

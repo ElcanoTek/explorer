@@ -17,7 +17,7 @@ main() {
     echo "$src already exists. Use explorer update, or run its scripts/bootstrap.sh to reconfigure." >&2
     exit 1
   fi
-  dnf install -y git ca-certificates
+  dnf install -y git golang ca-certificates
   # Clone beside the target (same filesystem, so the final mv is atomic)
   # and clean the partial clone up on failure: otherwise an interrupted
   # first run leaves $src behind and every retry stops at the existence

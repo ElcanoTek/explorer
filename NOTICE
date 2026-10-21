@@ -9,8 +9,8 @@ Third-party components redistributed in this repository
 ================================================================================
 
 flatpickr v4.6.13
-  Files:   app/static/vendor/flatpickr/flatpickr.min.js
-           app/static/vendor/flatpickr/flatpickr.min.css
+  Files:   internal/web/static/vendor/flatpickr/flatpickr.min.js
+           internal/web/static/vendor/flatpickr/flatpickr.min.css
   License: MIT
   Source:  https://github.com/flatpickr/flatpickr
   Copyright (c) 2017 Gregory Petrosyan
@@ -18,44 +18,45 @@ flatpickr v4.6.13
   Vendored rather than loaded from a CDN so the UI works on a host with no
   outbound internet access, and so no third party sees who is using it.
 
-python-dotenv 1.2.4 (parser, interpolation and load_dotenv; trimmed)
-  Files:   app/_vendor/dotenv/*.py
+python-dotenv 1.2.4 (parser and ${VAR} interpolation; ported to Go)
+  Files:   internal/dotenv/parser.go
   License: BSD-3-Clause. The full license text is at
-           app/_vendor/dotenv/LICENSE and must accompany the files.
+           internal/dotenv/LICENSE and must accompany the files.
   Source:  https://github.com/theskumar/python-dotenv
   Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken
            (django-dotenv-rw), 2013, Jacob Kaplan-Moss (django-dotenv)
 
-  Copied in (and trimmed to load_dotenv/dotenv_values) rather than installed,
-  so a two-function config loader is not a dependency to keep updating.
+  A line-for-line Go translation of the grammar Explorer vendored while it
+  was a Python service, kept so an existing .env file means exactly the same
+  thing to the Go binary.
 
 Nebula Sans (400, 500, 600, 700 upright; 400 and 700 italic)
-  Files:   app/static/design-system/fonts/nebula-sans/NebulaSans-400.woff2
-           app/static/design-system/fonts/nebula-sans/NebulaSans-500.woff2
-           app/static/design-system/fonts/nebula-sans/NebulaSans-600.woff2
-           app/static/design-system/fonts/nebula-sans/NebulaSans-700.woff2
-           app/static/design-system/fonts/nebula-sans/NebulaSans-400-italic.woff2
-           app/static/design-system/fonts/nebula-sans/NebulaSans-700-italic.woff2
+  Files:   internal/web/static/design-system/fonts/nebula-sans/NebulaSans-400.woff2
+           internal/web/static/design-system/fonts/nebula-sans/NebulaSans-500.woff2
+           internal/web/static/design-system/fonts/nebula-sans/NebulaSans-600.woff2
+           internal/web/static/design-system/fonts/nebula-sans/NebulaSans-700.woff2
+           internal/web/static/design-system/fonts/nebula-sans/NebulaSans-400-italic.woff2
+           internal/web/static/design-system/fonts/nebula-sans/NebulaSans-700-italic.woff2
   Copyright (c) 2024 Nebula Entertainment & Broadcasting LLC, with Reserved
            Font Name "Nebula". Based on Source Sans, copyright (c) 2010-2024
            Adobe, with Reserved Font Name "Source".
   License: SIL Open Font License, Version 1.1. The full license text is
            bundled alongside the fonts at
-           app/static/design-system/fonts/nebula-sans/OFL.txt and must
+           internal/web/static/design-system/fonts/nebula-sans/OFL.txt and must
            accompany the font files in any redistribution.
   Source:  https://www.nebulasans.com/
 
 Hack (Regular, Bold, Italic, Bold Italic)
-  Files:   app/static/design-system/fonts/hack/hack-regular.woff2 (+ .woff)
-           app/static/design-system/fonts/hack/hack-bold.woff2 (+ .woff)
-           app/static/design-system/fonts/hack/hack-italic.woff2 (+ .woff)
-           app/static/design-system/fonts/hack/hack-bolditalic.woff2 (+ .woff)
+  Files:   internal/web/static/design-system/fonts/hack/hack-regular.woff2 (+ .woff)
+           internal/web/static/design-system/fonts/hack/hack-bold.woff2 (+ .woff)
+           internal/web/static/design-system/fonts/hack/hack-italic.woff2 (+ .woff)
+           internal/web/static/design-system/fonts/hack/hack-bolditalic.woff2 (+ .woff)
   Copyright (c) 2018 Source Foundry Authors (MIT License). Bitstream Vera Sans
            Mono copyright (c) 2003 Bitstream, Inc. (Bitstream Vera License);
            DejaVu changes are in the public domain.
   License: MIT, with the Bitstream Vera License covering the Vera-derived
            glyphs. The full license text is bundled alongside the fonts at
-           app/static/design-system/fonts/hack/LICENSE.md and must accompany
+           internal/web/static/design-system/fonts/hack/LICENSE.md and must accompany
            the font files in any redistribution.
   Source:  https://sourcefoundry.org/hack/
 
@@ -78,21 +79,20 @@ Hack (Regular, Bold, Italic, Bold Italic)
 ElcanoTek brand assets
 ================================================================================
 
-  Files:   app/static/design-system/logos/*.svg
-           app/static/favicon.svg
+  Files:   internal/web/static/design-system/logos/*.svg
+           internal/web/static/favicon.svg
   These are ElcanoTek, Inc. trademarks and brand assets. The Business Source
   License grants no trademark rights (see LICENSE, "This License does not
   grant you any right in any trademark or logo of Licensor"). Replace them
   with your own marks if you deploy or redistribute a fork.
 
 ================================================================================
-Python dependencies
+Go module dependencies
 ================================================================================
 
-Explorer depends on, but does not redistribute, the packages locked in
-requirements.txt — FastAPI, Starlette, uvicorn, boto3/botocore, Jinja2,
-nh3, itsdangerous, python-multipart and cryptography, plus their transitive
-dependencies.
-Each is installed from PyPI at build time under its own license (BSD-3-Clause,
-MIT, Apache-2.0 or PSF-2.0). Run `pip-licenses` in your build environment for the
-authoritative list of the exact versions you installed.
+Explorer is built from, and its binary statically links, the Go modules
+pinned in go.mod and go.sum — chiefly the AWS SDK for Go v2 (Apache-2.0),
+modernc.org/sqlite and its runtime (BSD-3-Clause), and golang.org/x/net and
+golang.org/x/text (BSD-3-Clause), plus their transitive dependencies. Each is
+used under its own license. `go mod download -json` lists the exact versions,
+and each module's license file ships in the module cache.

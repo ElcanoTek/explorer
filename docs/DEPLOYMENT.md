@@ -4,10 +4,12 @@ The authoritative deployment guide. Every path and command below is taken
 from the scripts and unit files in this repository (`scripts/`, `deploy/`) —
 if you change those, change this document too.
 
-Explorer is a single-process FastAPI app. The email archive remains in S3.
-Elcano deployments keep only in-memory caches and temporary attachment files;
-central-auth deployments additionally keep a small SQLite access/session
-database under `/var/lib/explorer`. There is no queue or cache server.
+Explorer is one Go binary, `/opt/explorer/bin/explorer`, run as a single
+process. The email archive remains in S3. Elcano deployments keep only
+in-memory caches (attachments are streamed from memory and never written to
+disk); central-auth deployments additionally keep a small SQLite
+access/session database under `/var/lib/explorer`. There is no queue or cache
+server.
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
@@ -15,12 +17,13 @@ database under `/var/lib/explorer`. There is no queue or cache server.
 - [Environment variables](#environment-variables)
 - [Explorer access database and backups](#explorer-access-database-and-backups)
 - [AWS IAM policy](#aws-iam-policy)
-- [Attachment cleanup timer](#attachment-cleanup-timer)
+- [Attachments](#attachments)
 - [TLS and the reverse proxy](#tls-and-the-reverse-proxy)
 - [Managing the service](#managing-the-service)
 - [Updating and rolling back](#updating-and-rolling-back)
 - [Health checks](#health-checks)
 - [Troubleshooting](#troubleshooting)
+- [Upgrading from the Python release](#upgrading-from-the-python-release)
 - [Manual install](#manual-install-without-bootstrapsh)
 
 ## Prerequisites
@@ -32,11 +35,11 @@ rather than in `/tmp`, and runs `restorecon` after swapping files in). It
 will not run on Debian/Ubuntu without translating the package step; see
 [Manual install](#manual-install-without-bootstrapsh).
 
-**Packages** (installed for you by bootstrap): `git curl jq python3
-python3-devel gcc uv ripgrep rsync openssl`. Python dependency installation
-uses [`uv`](https://docs.astral.sh/uv/) rather than `pip` — on current Fedora,
-`pip` hits PEP 668 restrictions and resolver limits with this dependency
-graph. `uv` is in the Fedora repositories.
+**Packages** (installed for you by bootstrap): `git` and `golang`. The box
+builds Explorer from its own verified checkout. Fedora's `golang` is usually
+older than the release `go.mod` pins; the build sets `GOTOOLCHAIN=auto`, so
+Go downloads the pinned toolchain (checksum-verified against the Go
+checksum database) into Explorer's root-owned build cache.
 
 **You also need:**
 
@@ -59,7 +62,7 @@ sudo bash /opt/explorer-src/scripts/bootstrap.sh
 `bootstrap.sh` is interactive and **safe to re-run** — it re-reads the
 existing `/opt/explorer/.env` and only prompts for values that are still
 missing. On a re-run it updates only the settings it manages, in place
-(`scripts/lib/env_merge.py`, using the app's own dotenv parser), and keeps every
+(`internal/dotenv`, the same parser the service uses), and keeps every
 other line exactly as it was: AWS keys added with `explorer env edit`, tuning
 knobs, custom keys and the `explorer provision` block. In order it:
 
@@ -82,18 +85,19 @@ knobs, custom keys and the `explorer provision` block. In order it:
    when `sshd -T` still reports `passwordauthentication yes` or
    `permitrootlogin yes`.
 2. Creates the `explorer` system user and `/opt/explorer`.
-3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`) and
-   rsyncs the source into `/opt/explorer`.
-4. Builds `/opt/explorer/.venv` with `uv` and installs the hashed
-   `requirements.txt` lock with `--require-hashes`.
+3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`).
+4. Builds the binary from that checkout (`scripts/bootstrap.sh` does this
+   before handing over to `explorer bootstrap`) and installs it as
+   `/opt/explorer/bin/explorer`, with the commit it was built from recorded
+   in `/opt/explorer/.explorer-revision`.
 5. Prompts for an authentication mode and its required values, a TLS hostname,
    `EMAIL_S3_BUCKET`, and `AWS_REGION`; generates
    `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0600`, owned
    by `explorer`.
-6. Installs the systemd units, the tmpfiles rule and
-   `/usr/local/bin/explorer`.
-7. Enables and starts `explorer.service` and the cleanup timer, then health
-   checks `http://127.0.0.1:8080/`.
+6. Installs the systemd unit, the tmpfiles rule and `/usr/local/bin/explorer`
+   (a copy of the binary), all from the files compiled into it.
+7. Enables and starts `explorer.service`, then health checks
+   `http://127.0.0.1:8080/health`.
 8. Optionally installs Caddy with Let's Encrypt or `tls internal`.
 9. Installs `deploy/motd` to `/etc/motd`.
 
@@ -109,13 +113,13 @@ exists, and replaces the old hostname on the `127.0.0.1`/`::1` lines in `/etc/ho
 with `<fqdn> <short>`, keeping every other alias on the line (localhost names
 are never replaced). When no line names the FQDN, it appends both loopback lines. It is idempotent, never
 fails the install, and `explorer update` never renames a box
-(`scripts/lib/hostname.sh`).
+(`internal/ops/hostsetup.go`).
 
 **AWS keys are deliberately not prompted for.** Bootstrap leaves
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` commented out in the generated
 `.env`. Add them with `sudo explorer env edit`, or skip them entirely and
-attach an instance role — `boto3` falls back to the ambient credential chain
-when both are blank.
+attach an instance role — the AWS SDK falls back to the ambient credential
+chain when both are blank.
 
 ### Scripted installs
 
@@ -147,9 +151,9 @@ to rename it to `EXPLORER_BOOTSTRAP_HOSTNAME` whatever its current name.
 
 ### Optional: encrypted config bundles
 
-`scripts/provision.sh` (`sudo explorer provision`) decrypts
-`provision/clients/<name>.env.enc` with `openssl enc -aes-256-cbc -pbkdf2
--iter 600000` and merges the `KEY=VALUE` pairs into `/opt/explorer/.env`
+`sudo explorer provision` decrypts `provision/clients/<name>.env.enc` (the
+format `openssl enc -aes-256-cbc -pbkdf2 -iter 600000` writes; Explorer
+decrypts it natively) and merges the `KEY=VALUE` pairs into `/opt/explorer/.env`
 inside a marked block, leaving everything outside that block untouched. It is
 a convenience for pushing one shared config to several hosts and is entirely
 optional — a hand-written `.env` is equally valid.
@@ -164,43 +168,46 @@ present, bootstrap silently skips this step.
 
 | Path | Owner | What it is |
 |---|---|---|
-| `/opt/explorer-src` | `root:root`, not group/other-writable | Trusted Git checkout. `explorer update` fetches here. Root refuses symlinks or non-root-owned content before running its scripts. |
-| `/opt/explorer` | `root:root`, `0755` | Running source tree. Code is readable by the service but not writable by it. |
-| `/opt/explorer/.explorer-revision` | `root:root`, `0644` | Commit installed in the running tree; prevents a rolled-back install being mistaken for current. |
-| `/opt/explorer/.venv` | `explorer:explorer` | Virtualenv built by `uv` as the service account. Root never installs privileged files from it. |
+| `/opt/explorer-src` | `root:root`, not group/other-writable | Trusted Git checkout. `explorer update` fetches here. Root refuses symlinks or non-root-owned content before building from it. |
+| `/opt/explorer` | `root:root`, `0755` | Application directory. Holds only the binary, the revision marker and the dotenv files. |
+| `/opt/explorer/bin/explorer` | `root:root`, `0755` | The service binary. Templates, static assets, the systemd unit, the Caddy template and the motd are compiled into it. |
+| `/opt/explorer/.explorer-revision` | `root:root`, `0644` | Commit the installed binary was built from; prevents a rolled-back install being mistaken for current. |
 | `/opt/explorer/.env` | `explorer:explorer`, `0600` | Configuration and secrets. Never overwritten by an update. |
-| `/opt/explorer/.tmp/email_attachments` | `explorer:explorer`, `0750` | Writable scratch space for attachments in flight. |
-| `/var/cache/explorer-build` | `explorer:explorer`, `0700` | Home and `uv` cache used only for dependency builds. |
+| `/var/cache/explorer-build` | `root:root`, `0700` | Go module, build and toolchain cache used by `bootstrap`/`update`. |
 | `/var/lib/explorer/access.db` | `explorer:explorer`, `0600` | Central-mode email access list and app-scoped session hashes. Contains no passwords. |
-| `/etc/systemd/system/explorer*.{service,timer}` | root | Units, reinstalled on every update. |
-| `/etc/tmpfiles.d/explorer.conf` | root | Creates the attachment dir on boot. |
-| `/usr/local/bin/explorer` | root, `0755` | Operator CLI (`deploy/explorer-cli`). |
+| `/etc/systemd/system/explorer.service` | root | Unit, reinstalled on every update. |
+| `/etc/tmpfiles.d/explorer.conf` | root | Creates `/var/lib/explorer` on boot. |
+| `/usr/local/bin/explorer` | root, `0755` | Operator CLI: a copy of the same binary. |
 | Caddy's imported snippet directory | root | Explorer site block, if Caddy was installed (for example, Fedora uses `/etc/caddy/Caddyfile.d/explorer.caddyfile`). |
 
 The service runs as the unprivileged `explorer` user (`nologin` shell) under
-a hardened unit (`deploy/systemd/explorer.service`): `NoNewPrivileges`,
-`PrivateTmp`, `PrivateDevices`, `ProtectHome`, `ProtectSystem=full`,
-`ProtectKernelModules`, `ProtectKernelTunables`, `ProtectControlGroups`,
-`LockPersonality`, `UMask=027`, `RestrictAddressFamilies=AF_UNIX AF_INET
-AF_INET6`, and `ReadWritePaths=/opt/explorer/.tmp /var/lib/explorer` — so the
-process can write only attachment scratch space and its private auth state.
+a hardened unit (`deploy/systemd/explorer.service`): `NoNewPrivileges`, an
+empty capability bounding set, `PrivateTmp`, `PrivateDevices`,
+`ProtectSystem=strict`, `ProtectHome`, `ProtectKernel*`, `ProtectClock`,
+`ProtectHostname`, `ProtectProc=invisible`, `RestrictNamespaces`,
+`RestrictSUIDSGID`, `MemoryDenyWriteExecute`, `LockPersonality`,
+`SystemCallArchitectures=native`, `UMask=027` and
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The only writable path
+is its `StateDirectory`, `/var/lib/explorer`: the process cannot write its
+own binary, its configuration, or anywhere else on disk.
 
-Uvicorn binds **`127.0.0.1:8080`** with `--proxy-headers
---forwarded-allow-ips=127.0.0.1`. It is not reachable off-box without a
-reverse proxy, which is intentional; see
+`explorer serve` binds **`127.0.0.1:8080`** (`EXPLORER_LISTEN_ADDR`). It
+trusts `X-Forwarded-Proto` only from a loopback peer (the local proxy). It is
+not reachable off-box without a reverse proxy, which is intentional; see
 [TLS and the reverse proxy](#tls-and-the-reverse-proxy).
 
 ## Environment variables
 
 Written to `/opt/explorer/.env` (mode `0600`). Edit with `sudo explorer env
-edit`, then `sudo explorer restart` — values are read once at import.
+edit`, then `sudo explorer restart` — values are read once at startup.
 `sudo explorer env` prints the file with anything matching
 `TOKEN|KEY|SECRET|PASSWORD` redacted.
 
-`app/config.py` reads `/opt/explorer/.env.shared` first and then `.env` on
+`explorer serve` reads `/opt/explorer/.env.shared` first and then `.env` on
 top of it, so a fleet-wide file plus per-host overrides works. Values already
 in the process environment (a systemd `Environment=` line) beat `.env.shared`
-but lose to `.env`.
+but lose to `.env`. The merged values are exported to the process, so AWS SDK
+settings such as `AWS_PROFILE` or `AWS_ENDPOINT_URL_S3` work from `.env` too.
 
 ### Authentication
 
@@ -252,9 +259,13 @@ redirect-URI matching, state, nonce, and S256 PKCE:
    `application/x-www-form-urlencoded` with `grant_type=authorization_code`,
    `code`, `client_id`, exact `redirect_uri`, and `code_verifier`. It
    authenticates with HTTP Basic using the client ID and secret.
-4. A successful exchange returns JSON with string fields `sub`, `email`, and
-   `nonce`. Explorer requires the nonce to match before applying its local
-   allowlist and issuing an app session. Errors must not return identity data.
+4. A successful exchange returns JSON with an `id_token`: an EdDSA-signed
+   JWT (`typ` `JWT`, a `kid` naming one of Auth's keys) whose claims carry
+   `sub`, `email`, `nonce`, the exact issuer and audience, and a live
+   `iat`/`exp`. Explorer takes identity only from that signed token, requires
+   the nonce to match, then applies its local allowlist and issues an app
+   session. A `400` means the code was rejected (the user retries); any other
+   failure is reported as an outage. Errors must not return identity data.
 
 Auth also delivers signed, durable application-access and back-channel logout
 events to the same endpoint. Register this deployment's exact endpoint after
@@ -306,13 +317,14 @@ has been verified and your retention policy allows its secure disposal.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `EMAIL_S3_BUCKET` | **yes** | *(empty)* | Bucket holding SES-written MIME objects. Empty ⇒ every S3 call fails. |
+| `EMAIL_S3_BUCKET` | **yes** | *(empty)* | Bucket holding SES-written MIME objects. Empty ⇒ the service starts, but every search shows "EMAIL_S3_BUCKET is not set". |
 | `EMAIL_S3_PREFIX` | no | `emails/` | Archive prefix. Also a security boundary: `is_allowed_s3_key` refuses any key not under it (or under the literal head of the date format). Keep the trailing slash. |
 | `EMAIL_S3_DATE_PREFIX_FORMAT` | no | `emails/%Y/%m/%d/` | `strftime` pattern expanded to one prefix per day of the requested range. Must be a *key prefix* — normally starts with `EMAIL_S3_PREFIX` and ends with `/`. Empty string disables per-day scanning and lists the whole prefix on every search. |
 | `EMAIL_S3_MAX_DATE_PREFIX_DAYS` | no | `62` | Widest span still expanded per day. Wider spans fall back to one LIST of the root prefix, and also cap what the UI accepts in one search. |
 | `EMAIL_S3_MAX_BODY_SEARCH_DAYS` | no | `14` | Extra cap for a fuzzy search with **Body** ticked, which downloads whole objects instead of header ranges. |
 | `EMAIL_HEADER_FETCH_BYTES` | no | `65536` | Bytes per ranged `GET` when reading headers for a result row. Raise only if messages in your archive carry unusually large header blocks (long `Received:` chains, big DKIM sets); every extra byte is paid on every row. A zero-byte object answers `InvalidRange` and is treated as headerless rather than failing the page. |
-| `EMAIL_SEARCH_JOB_MAX_SECONDS` | no | `120` | A search job that exceeds this cancels itself server-side, so one wide query cannot pin a worker thread. |
+| `EMAIL_SEARCH_JOB_MAX_SECONDS` | no | `120` | A search job that exceeds this cancels itself server-side (in-flight S3 calls included), so one wide query cannot run on unbounded. |
+| `EMAIL_S3_FORCE_PATH_STYLE` | no | `0` | Path-style bucket addressing, for S3-compatible stores (MinIO, LocalStack) reached through `AWS_ENDPOINT_URL_S3`. |
 | `AWS_REGION` | no | `us-east-2` | Region of the bucket. |
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only access key. Leave **both** key variables blank to use the ambient chain (instance role, `~/.aws/credentials`, `AWS_PROFILE`) — preferred on EC2. |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
@@ -338,27 +350,13 @@ and no central auth cookie, but its identity data is still sensitive. Vultr
 instance backups are useful disaster recovery; keep a separate, regularly
 tested database backup as well.
 
-SQLite's online backup API produces a transactionally consistent copy while
-Explorer is running:
+`explorer access backup` makes a transactionally consistent copy (SQLite's
+`VACUUM INTO`) while Explorer is running, owner-only:
 
 ```bash
 sudo install -d -m 0700 -o explorer -g explorer /var/backups/explorer
-cd /opt/explorer
-sudo -u explorer .venv/bin/python - <<'PY'
-from datetime import UTC, datetime
-from pathlib import Path
-import sqlite3
-
-source = sqlite3.connect("/var/lib/explorer/access.db")
-target = Path("/var/backups/explorer") / f"access-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.db"
-destination = sqlite3.connect(target)
-with destination:
-    source.backup(destination)
-destination.close()
-source.close()
-target.chmod(0o600)
-print(target)
-PY
+sudo explorer access backup          # prints /var/backups/explorer/access-<UTC time>.db
+sudo explorer access backup /var/backups/explorer/before-migration.db
 ```
 
 Copy that file to access-controlled storage outside the VM and test restoration
@@ -405,40 +403,28 @@ Notes:
 - SSE-KMS bucket? Add `kms:Decrypt` on that key, or `GetObject` returns
   `AccessDenied`.
 - Prefer an EC2 instance profile over a long-lived key. With no keys in
-  `.env`, `boto3` picks the role up automatically.
+  `.env`, the AWS SDK picks the role up automatically.
 - Do **not** grant `s3:PutObject` or `s3:DeleteObject`. Explorer never
   writes to S3, and a read-only key limits the damage if the box is lost.
 
-## Attachment cleanup timer
+## Attachments
 
-Opening an attachment makes Explorer download that MIME part, write it to
-`/opt/explorer/.tmp/email_attachments/`, and stream it to the browser. A
-Starlette background task deletes the file right after the response
-completes, and `prune_attachment_cache()` sweeps anything older than 10
-minutes on startup and on each attachment request.
+Opening an attachment makes Explorer read the message, extract that MIME part
+in memory and stream it to the browser. **Nothing is written to disk**, so
+there is no scratch directory to sweep and no cleanup timer: an excerpt of
+private correspondence cannot be left behind by an aborted download or a
+crashed process.
 
-`explorer-attachment-cleanup.timer` is the third line of defence: every 15
-minutes (`OnBootSec=5m`, `OnUnitActiveSec=15m`, `Persistent=true`) it deletes
-files in that directory older than 60 minutes.
+Attachment responses carry `Content-Disposition: attachment`,
+`Content-Security-Policy: default-src 'none'; sandbox`,
+`X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`.
+Images (so `cid:` inline images render), plain text, CSV and PDF keep their
+type; anything a browser would execute (HTML, SVG, XML, JavaScript) is sent
+as `application/octet-stream`.
 
-This exists because **the files are excerpts of private correspondence.** An
-aborted download, a crashed worker or a killed process can leave one behind,
-and a spreadsheet from someone's inbox sitting indefinitely on a server disk
-is exactly the kind of quiet accumulation that turns one compromised host
-into a data-breach notification. The timer bounds how long any fragment can
-live. `explorer.tmpfiles.conf` sets the directory to `0750
-explorer:explorer` with a 1-hour age policy so `systemd-tmpfiles` enforces
-the same bound.
-
-```bash
-systemctl list-timers explorer-attachment-cleanup.timer
-sudo systemctl start explorer-attachment-cleanup.service   # sweep now
-sudo ls -la /opt/explorer/.tmp/email_attachments            # should be ~empty
-```
-
-If you handle regulated data, shorten `OnUnitActiveSec` and the `-mmin +60`
-in `deploy/systemd/explorer-attachment-cleanup.service` to match your
-retention rules.
+Boxes upgraded from the Python release had an
+`explorer-attachment-cleanup.timer`; `explorer update` disables and removes
+it, and `explorer doctor` warns if it is still installed.
 
 ## TLS and the reverse proxy
 
@@ -463,7 +449,7 @@ The rendered site block reverse-proxies to `127.0.0.1:8080` and sets HSTS,
 `X-Content-Type-Options`, `X-Frame-Options: DENY` and `Referrer-Policy`.
 Certificates renew automatically about 30 days before expiry — no cron.
 
-Bootstrap pre-checks DNS (comparing `dig +short <host> A` against the box's
+Bootstrap pre-checks DNS (comparing the host's A record against the box's
 public IP) and warns rather than aborting, so you can still choose
 `tls internal` (a self-signed cert) on a host with no public reachability.
 
@@ -478,8 +464,8 @@ explorer tls restart
 Answer "no" to the Caddy prompt and point nginx, HAProxy, an ALB or anything
 else at `127.0.0.1:8080`. Requirements: terminate TLS, use the hostname in
 `EXPLORER_PUBLIC_URL` (and, in Elcano mode, one under the auth cookie's
-domain), and forward `X-Forwarded-*` (the unit already trusts `127.0.0.1`).
-nginx equivalent:
+domain), and forward `X-Forwarded-Proto` from the same box (Explorer believes
+it only from a loopback peer). nginx equivalent:
 
 ```nginx
 location / {
@@ -496,62 +482,67 @@ Attachments can be large; raise `proxy_read_timeout` and
 
 ## Managing the service
 
-`/usr/local/bin/explorer` (source: `deploy/explorer-cli`) is a thin
-dispatcher over `systemctl`, `journalctl` and the update scripts. Everything
-it does is also doable by hand.
+`/usr/local/bin/explorer` is the same binary as the service, so the operator
+CLI and the server always agree on paths and configuration. Verbs that need
+root re-run themselves through `sudo`. Everything it does is also doable by
+hand.
 
 | Command | Equivalent |
 |---|---|
 | `explorer start` / `stop` / `restart` / `status` | `sudo systemctl <verb> explorer.service` |
 | `explorer logs` | `sudo journalctl -fu explorer.service` |
 | `explorer logs -n 200 --since '1 hour ago'` | extra args pass straight through to `journalctl` |
-| `explorer update` | `sudo bash /opt/explorer-src/scripts/update.sh` |
-| `explorer rebuild` | rebuild + restart the current checkout, no fetch |
-| `explorer provision [--client=NAME]` | `sudo bash /opt/explorer-src/scripts/provision.sh` |
+| `explorer update` | fetch, build, staged swap, health check, automatic rollback |
+| `explorer rebuild` | the same for the current checkout, no fetch |
+| `explorer doctor [--json] [--strict]` | read-only diagnostics; exits 1 when a check fails (`--strict`: or warns). `--check` is accepted and means the same |
+| `explorer bootstrap` | re-run the installer (safe; keeps every setting it does not manage) |
+| `explorer provision [--client=NAME]` | merge an encrypted config bundle into `.env` |
 | `explorer env` | print `/opt/explorer/.env`, secrets redacted |
 | `explorer env edit` | `$EDITOR /opt/explorer/.env` (creates it if missing) |
-| `explorer access grant\|list\|revoke` | manage the central-mode email access list |
+| `explorer access grant\|list\|revoke\|backup` | manage the central-mode email access list |
 | `explorer tls status` / `reload` / `restart` | Caddy controls |
+| `explorer version` | the commit the binary was built from |
 | `explorer --help` | full usage |
-
-The cleanup timer is managed with plain systemd:
-`systemctl status explorer-attachment-cleanup.timer`.
 
 ## Updating and rolling back
 
 ```bash
-sudo explorer update                      # shows incoming commits, asks to confirm
-sudo EXPLORER_UPDATE_YES=1 explorer update  # unattended
+sudo explorer update                        # shows incoming commits, asks to confirm
+sudo explorer update --yes                  # unattended
+echo y | sudo explorer update               # also works over a non-interactive ssh
+sudo EXPLORER_UPDATE_YES=1 explorer update
 ```
 
-`scripts/update.sh` is a **staged, automatically rolled-back** update. It
-first verifies that `/opt/explorer-src`, all of its ancestors and every file
-inside it are root-owned, not group/other-writable and symlink-free. Do not
-run bootstrap, update or provision from a checkout writable by the service
+The update is **staged and automatically rolled back**. It first verifies
+that `/opt/explorer-src`, all of its ancestors and every file inside it are
+root-owned, not group/other-writable and symlink-free, and takes
+`/run/lock/explorer-update.lock` so two updates cannot interleave. Do not run
+bootstrap, update or provision from a checkout writable by the service
 account.
 
 1. `git fetch` in `/opt/explorer-src`, resolve the target branch (following
    the attached branch or defaulting to `origin/HEAD` if HEAD is detached),
-   print the incoming commits, and confirm. Fast-forward only — a
-   diverged branch aborts rather than merging. HEAD is never detached.
-2. If the update machinery changed, re-verify the checkout and re-exec its
-   new copy in rebuild-only mode, because the running shell holds the old
-   inode.
-3. Parse `.env.shared` and `.env` as allow-listed data (never shell source)
-   and verify `AUTH_SIGNING_PUBKEY` is present.
-4. Copy root-owned source into `/opt/.explorer-build.XXXXXX` and build only
-   its `.venv` as `explorer` (deliberately beside
-   `/opt/explorer`, not in `/tmp`: a venv built under `/tmp` keeps its
-   SELinux `tmp_t` label after `mv` and systemd refuses to exec it with
-   `203/EXEC`). A failed `uv pip install` aborts here, untouched live install.
-5. Snapshot the installed source, venv, units, CLI, tmpfiles rule and MOTD in
-   a root-private directory. Stop the service, sync source directly from the
-   trusted checkout as `root:root`, move in the new venv, and install every
-   privileged file directly from that same checkout.
-6. Health check `http://127.0.0.1:8080/health` for up to 10s and verify the
+   print the incoming commits, and confirm. Fast-forward only — a diverged
+   branch aborts rather than merging. HEAD is never detached.
+2. Parse `.env.shared` and `.env` as data (never shell source) and check that
+   `AUTH_SIGNING_PUBKEY` is present; on a terminal it offers to add it.
+3. Build the new binary from the verified checkout into
+   `/opt/.explorer-build.XXXXXX` — beside `/opt/explorer`, not in `/tmp`, so
+   no `tmp_t` SELinux label follows it — with a clean environment
+   (`CGO_ENABLED=0`, `-trimpath`, `-mod=readonly`, root-owned caches, the
+   commit stamped in). A failed build aborts here; the live install is
+   untouched.
+4. Hand over to the **new** binary's apply step, so a release's own update
+   logic always performs its swap. It snapshots the installed binary, unit,
+   tmpfiles rule, CLI and MOTD in a root-private directory, stops the
+   service, installs the binary and revision marker, installs every
+   privileged file from the copies compiled into that binary, runs
+   `systemd-tmpfiles`, `restorecon` and `daemon-reload`, and starts the
+   service.
+5. Health check `http://127.0.0.1:8080/health` (10 attempts) and verify the
    ownership layout. Any failure after the swap restores the snapshot and
-   restarts the previous version; an incomplete restore preserves the path
-   to the root-only backup in the error output.
+   restarts the previous version; an incomplete restore leaves the path to
+   the root-only backup in the error output.
 
 ### Rollback
 
@@ -566,8 +557,10 @@ sudo git checkout -B rollback <previous-sha>
 sudo explorer rebuild
 ```
 
-`/opt/explorer/.env` is excluded from every rsync, so no update or rollback
-can lose your configuration.
+`/opt/explorer/.env` is never touched by an update, a rebuild or a rollback.
+Rolling back to a commit from before the Go rewrite works the same way:
+`explorer rebuild` sees a checkout without `go.mod` and hands over to that
+commit's own `scripts/update.sh`.
 
 ## Health checks
 
@@ -642,21 +635,17 @@ remain redacted in `sudo explorer env`.
 
 ### `AccessDenied` / `NoSuchBucket` from S3
 
-Symptom: searching shows an error banner, or `explorer logs` shows a
-`botocore` `ClientError`.
+Symptom: searching shows an error banner (the S3 error code is in it), or
+`explorer logs` shows the same `api error` line.
+
+Check from the box with the AWS CLI, using the same credentials Explorer has
+(or the instance role):
 
 ```bash
-sudo -u explorer /opt/explorer/.venv/bin/python - <<'PY'
-import boto3
-from app.config import settings
-s3 = boto3.client("s3", region_name=settings.aws_region)
-print(s3.list_objects_v2(Bucket=settings.email_s3_bucket,
-                         Prefix=settings.email_s3_prefix,
-                         MaxKeys=3))
-PY
+aws s3api list-objects-v2 --bucket my-email-archive --prefix emails/ --max-items 3
 ```
 
-(Run it from `/opt/explorer`.) Then check:
+Then check:
 
 - `AccessDenied` on **list** — the policy lacks `s3:ListBucket` on the
   *bucket* ARN, or your `s3:prefix` condition does not cover
@@ -667,8 +656,8 @@ PY
 - `NoSuchBucket` / `PermanentRedirect` — wrong `AWS_REGION` for the bucket.
 - `InvalidAccessKeyId` / `SignatureDoesNotMatch` — stale key, or a partly
   pasted secret. Rotate and re-enter.
-- Nothing in `.env` and no instance role — `boto3` finds no credentials and
-  fails on the first call.
+- Nothing in `.env` and no instance role — the AWS SDK finds no credentials
+  and fails on the first call.
 
 ### Search returns zero results but the archive is not empty
 
@@ -681,7 +670,7 @@ Compare a real key with a rendered prefix:
 
 ```bash
 aws s3 ls s3://my-email-archive/emails/ --recursive | head -3
-python3 -c "import datetime; print(datetime.date.today().strftime('emails/%Y/%m/%d/'))"
+date -u +'emails/%Y/%m/%d/'
 ```
 
 Things that bite:
@@ -713,7 +702,7 @@ sudo systemctl enable --now chronyd
 chronyc tracking
 ```
 
-Skew also skews dates: `date.today()` picks the default day for a search, and
+Skew also skews dates: the host's local date picks the default day for a search, and
 day prefixes are computed in **UTC**. A box on a non-UTC timezone with a
 correct clock is fine; a box with a wrong *date* searches the wrong partition.
 
@@ -724,25 +713,26 @@ sudo explorer status
 sudo explorer logs -n 100
 ```
 
-- `203/EXEC` — the venv or interpreter is not executable by the unit,
-  typically an SELinux label from building under `/tmp`. Re-run
-  `sudo explorer rebuild` (it stages beside `/opt/explorer` and runs
-  `restorecon`).
-- `ModuleNotFoundError` on boot — the venv is incomplete; `sudo explorer
-  rebuild`.
+- `203/EXEC` — the binary is not executable by the unit, typically an
+  SELinux label. Re-run `sudo explorer rebuild` (it stages beside
+  `/opt/explorer` and runs `restorecon`).
+- `startup refused` in the log — configuration the service will not run
+  with (central mode without `AUTH_SIGNING_PUBKEY`, a placeholder session
+  secret, an `http://` issuer, a short client secret, an unknown
+  `EXPLORER_AUTH_MODE`, a non-numeric setting). The message names the key;
+  `sudo explorer doctor` reports the same problems without restarting.
 - `Address already in use` — something else holds 8080:
   `sudo ss -ltnp | grep 8080`.
-- Permission errors writing attachments — `ReadWritePaths` grants only
-  `/opt/explorer/.tmp`; restore ownership with
-  `sudo chown -R explorer:explorer /opt/explorer/.tmp` and
-  `sudo systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf`.
+- `open access database` errors — `/var/lib/explorer` is not owned by
+  `explorer`; `sudo systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf`.
 
 ### Searches time out or feel slow
 
 Wide ranges mean many LISTs plus one ranged GET per candidate object.
 
 - Narrow the range, or raise `EMAIL_SEARCH_JOB_MAX_SECONDS` if 120s truly is
-  not enough.
+  not enough. Header reads run twelve at a time, so latency to the bucket's
+  region matters more than object count.
 - Untick **Body** in fuzzy search — body matching downloads whole objects.
 - Deploy in the **same region** as the bucket. Cross-region round-trips
   dominate at thousands of objects.
@@ -754,43 +744,66 @@ Wide ranges mean many LISTs plus one ranged GET per candidate object.
 Search jobs and pagination cursors are held in memory, keyed to a
 `search_owner_id` in the signed session cookie, and expire after 15 minutes.
 A restart, or changing `EXPLORER_SESSION_SECRET`, invalidates them. Run the
-search again. Note that these caches are per process — do not run Explorer
-with multiple uvicorn workers, or a poll can land on a worker that has never
-heard of the job.
+search again. These caches are per process — do not run several Explorer
+processes behind one load balancer, or a poll can land on a process that has
+never heard of the job.
+
+## Upgrading from the Python release
+
+Run the usual command on the box:
+
+```bash
+echo y | sudo explorer update
+```
+
+The Python-era `explorer update` fetches the new commits, sees that
+`scripts/update.sh` changed, and re-runs the new one. That script installs
+`golang` if needed, builds the binary from the verified checkout and hands
+over to `explorer update` in rebuild mode, which swaps it in exactly as
+above. On top of the normal update it:
+
+- moves the old Python tree (`app/`, `.venv`, `.tmp`, scripts) out of
+  `/opt/explorer` — into the rollback snapshot while the update runs, then
+  deletes it once the new version is healthy;
+- disables and removes `explorer-attachment-cleanup.timer` and its service;
+- replaces the bash `/usr/local/bin/explorer` with the binary.
+
+`/opt/explorer/.env`, `.env.shared` and `/var/lib/explorer/access.db` are
+kept as they are: the configuration format, the variable names and the
+database schema are unchanged, so existing sessions and the access list
+carry over. If the new version fails its health check, the Python install,
+its venv, the bash CLI and the cleanup timer are all restored.
+
+Afterwards, `sudo explorer doctor` should come back clean.
 
 ## Manual install (without bootstrap.sh)
 
-On a non-dnf distribution, reproduce what bootstrap does:
+On a non-dnf distribution, reproduce what bootstrap does (Go from your
+distribution or go.dev; `GOTOOLCHAIN=auto` fetches the exact release
+`go.mod` pins):
 
 ```bash
 sudo useradd --system --home-dir /opt/explorer --shell /usr/sbin/nologin explorer
 sudo git clone https://github.com/ElcanoTek/explorer.git /opt/explorer-src
-sudo install -d -o root -g root -m 0755 /opt/explorer
-sudo rsync -a --chown=root:root --chmod=go-w --exclude='/.git' /opt/explorer-src/ /opt/explorer/
-sudo install -d -o explorer -g explorer -m 0750 /opt/explorer/.tmp/email_attachments
+sudo install -d -o root -g root -m 0755 /opt/explorer /opt/explorer/bin
 sudo install -d -m 0700 -o explorer -g explorer /var/lib/explorer
 
-sudo install -d -o explorer -g explorer -m 0755 /opt/explorer/.venv
-sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv venv /opt/explorer/.venv
-sudo -u explorer env -C /opt/explorer UV_NO_CONFIG=1 uv pip install \
-  --python /opt/explorer/.venv/bin/python --require-hashes -r /opt/explorer/requirements.txt
+cd /opt/explorer-src
+sudo env GOTOOLCHAIN=auto CGO_ENABLED=0 go build -trimpath \
+  -ldflags "-X github.com/ElcanoTek/explorer/internal/version.revision=$(git rev-parse HEAD)" \
+  -o /opt/explorer/bin/explorer ./cmd/explorer
+sudo install -m 0755 /opt/explorer/bin/explorer /usr/local/bin/explorer
 
 sudo install -o explorer -g explorer -m 0600 /dev/null /opt/explorer/.env
 sudo "$EDITOR" /opt/explorer/.env          # see .env.example
 
-sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer.service /etc/systemd/system/
-sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer-attachment-cleanup.service /etc/systemd/system/
-sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer-attachment-cleanup.timer /etc/systemd/system/
-sudo install -m 0644 /opt/explorer-src/deploy/systemd/explorer.tmpfiles.conf /etc/tmpfiles.d/explorer.conf
-sudo install -m 0755 /opt/explorer-src/deploy/explorer-cli /usr/local/bin/explorer
+sudo install -m 0644 deploy/systemd/explorer.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/explorer.tmpfiles.conf /etc/tmpfiles.d/explorer.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/explorer.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now explorer.service explorer-attachment-cleanup.timer
+sudo systemctl enable --now explorer.service
 ```
 
-Then front it with a TLS-terminating proxy as above. Note that
-`explorer-attachment-cleanup.service` calls `/usr/bin/bash` and
-`/usr/bin/find`; on Debian-family systems these live at `/bin/bash` and
-`/usr/bin/find`, so adjust `ExecStart`. `scripts/update.sh` assumes `uv`,
-`rsync` and `runuser`; on other distributions rebuild the venv by hand and
-restart.
+Then front it with a TLS-terminating proxy as above. `explorer update` and
+`explorer bootstrap` assume `dnf` only for package installs; `explorer
+rebuild` works anywhere the trusted-checkout rules hold.

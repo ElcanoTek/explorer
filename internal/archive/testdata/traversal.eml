@@ -1,0 +1,22 @@
+From: Reports <reporting@ssp.example>
+To: archive@example.com
+Subject: Daily report
+Date: Mon, 01 Jun 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============5916519370724856662=="
+
+--===============5916519370724856662==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+plain body
+
+--===============5916519370724856662==
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="../../evil.txt"
+MIME-Version: 1.0
+
+WA==
+
+--===============5916519370724856662==--

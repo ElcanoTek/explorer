@@ -17,75 +17,84 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Tests (py${{ matrix.python-version }})
+  go:
+    name: Go (build, vet, lint, test)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      # Report every failing version, not just the first.
-      fail-fast: false
-      matrix:
-        # Production pins no interpreter — scripts/bootstrap.sh builds the
-        # venv from whatever python3 dnf ships — so cover the range we claim
-        # to support instead of a single version. 3.11 is the floor
-        # ruff.toml targets; 3.12 is what CI ran before.
-        python-version: ["3.11", "3.12"]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          # go.mod pins the exact patch release; govulncheck reports stdlib
+          # CVEs against whatever toolchain built the code.
+          go-version-file: go.mod
+          check-latest: true
 
-      - name: Install dependencies
-        # Both files are pip-compile locks with hashes: the runtime tree the
-        # box installs, and the pinned tooling (Ruff, pytest, pip-tools,
-        # pip-audit). --require-hashes refuses anything not in them.
-        run: python -m pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Modules are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Lint
-        run: |
-          ruff check app tests
-          ruff format --check app tests
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
 
-      - name: Run tests
-        # Auth cookie verifier, date parsing, S3 inbox layer (fake S3
-        # client), and the FastAPI endpoints via TestClient.
-        run: python -m pytest -q
+      - name: Test (race detector)
+        # No AWS account and no network: S3 goes through an in-memory fake,
+        # the auth service through httptest servers.
+        run: go test -race -count=1 ./...
 
-      - name: Test privileged install lifecycle
-        run: sudo env PATH="$PATH" bash scripts/test/layout_test.sh
+      - name: Test privileged install lifecycle (root)
+        # The update/rollback harness asserts ownership and modes, so it only
+        # runs as root; it confines itself to one mktemp directory.
+        run: sudo env "PATH=$PATH" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" go test -count=1 -run 'TestLifecycle|TestRequireTrusted|TestProvisionWritesPrivateFiles' ./internal/ops/
 
-  dependencies:
-    name: Dependency lock and audit
+  vulncheck:
+    name: govulncheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # The locks are compiled under the oldest supported Python.
-          python-version: "3.11"
+          go-version-file: go.mod
+          check-latest: true
+      - name: govulncheck (dependency and stdlib CVEs)
+        # Deliberately unpinned, as in fleet: it must read the live vuln
+        # database, and a call-graph scan only fails on reachable code.
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-      - name: Install pinned tooling
-        run: python -m pip install --require-hashes -r requirements.txt -r requirements-dev.txt
-
-      - name: Lock matches requirements.in
-        # pip-compile keeps existing pins, so a re-run only changes the files
-        # when a .in was edited without regenerating its lock. No release-age
-        # cutoff: Dependabot's cooldown holds version updates, and a security
-        # update (which skips the cooldown) must not fail CI for being fresh.
+  shell:
+    name: Shell lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        # install.sh and the scripts/ shims are the first thing a new box runs.
         run: |
-          pip-compile --quiet --generate-hashes --strip-extras requirements.in
-          pip-compile --quiet --generate-hashes --strip-extras --allow-unsafe requirements-dev.in
-          git diff --exit-code -- requirements.txt requirements-dev.txt
-
-      - name: Audit locked dependencies
-        run: |
-          pip-audit --strict --require-hashes --disable-pip -r requirements.txt
-          pip-audit --strict --require-hashes --disable-pip -r requirements-dev.txt
+          set -euo pipefail
+          mapfile -t sh_files < <(git ls-files '*.sh')
+          [ "${#sh_files[@]}" -gt 0 ] || { echo "::error::no shell scripts matched"; exit 1; }
+          shellcheck -S warning "${sh_files[@]}"

@@ -1,0 +1,84 @@
+{{define "header_title"}}Email Details{{end}}
+{{define "header_intro"}}Review message metadata, attachments, and body content with the shared Explorer visual system.{{end}}
+{{define "topbar_actions"}}
+<a href="/" class="btn btn-ghost">Back to Inbox</a>
+{{- end}}
+{{define "content"}}{{with .Page}}
+<section class="card message-thread">
+  <h1 class="message-thread__subject">{{if .Email.Subject}}{{.Email.Subject}}{{else}}(no subject){{end}}</h1>
+
+  <article class="message-card" aria-label="Email message">
+    <header class="message-card__header">
+      <div class="message-card__primary">
+        <div class="message-card__avatar" aria-hidden="true">{{.Sender.Avatar}}</div>
+        <div class="message-card__identity">
+          <p class="message-card__from-line">
+            <strong class="message-card__sender">{{.Sender.Display}}</strong>
+            {{- if and .Sender.Email (ne .Sender.Email .Sender.Display)}}
+            <span class="message-card__sender-email">&lt;{{.Sender.Email}}&gt;</span>
+            {{- end}}
+          </p>
+        </div>
+      </div>
+      <div class="message-card__meta-list">
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">To:</p>
+          <p class="message-card__meta-value message-card__to-line">{{.Email.To}}</p>
+        </div>
+        {{- if .Email.Cc}}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Cc</p>
+          <p class="message-card__meta-value message-card__cc-line">{{.Email.Cc}}</p>
+        </div>
+        {{- end}}
+        {{- if .Email.Bcc}}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Bcc</p>
+          <p class="message-card__meta-value message-card__bcc-line">{{.Email.Bcc}}</p>
+        </div>
+        {{- end}}
+        {{- if .Email.ReplyTo}}
+        <div class="message-card__meta-item">
+          <p class="message-card__meta-label">Reply-To</p>
+          <p class="message-card__meta-value message-card__reply-to-line">{{.Email.ReplyTo}}</p>
+        </div>
+        {{- end}}
+      </div>
+      <p class="message-card__timestamp"><span class="email-meta__date" data-email-date="{{.Email.Date}}">{{.Email.Date}}</span></p>
+    </header>
+
+    <div class="message-card__body-wrap">
+      <details class="message-advanced">
+        <summary>Advanced details</summary>
+        <div class="message-advanced__content">
+          <p class="email-meta__row"><strong>S3 key:</strong> <code>{{.Email.S3Key}}</code></p>
+          <p class="email-meta__row"><strong>Message ID:</strong> <code>{{.Email.MessageID}}</code></p>
+        </div>
+      </details>
+
+      {{- if .Email.Attachments}}
+      <div class="attachment-chips" aria-label="Attachments">
+        {{- range .Email.Attachments}}
+        <a class="attachment-chip" href="/attachment?s3_key={{$.Page.Email.S3Key}}&amp;filename={{.Filename}}" aria-label="Download {{.Filename}}">
+          <svg class="attachment-chip__icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+          <span class="attachment-chip__meta">
+            <span class="attachment-chip__name" title="{{.Filename}}">{{.Filename}}</span>
+            <span class="attachment-chip__size">{{.SizeBytes}} bytes</span>
+          </span>
+        </a>
+        {{- end}}
+      </div>
+      {{- end}}
+
+      {{if .BodyHTML -}}
+      <div class="body-preview body-preview-html message-body" id="message-body">{{.BodyHTML}}</div>
+      {{- else -}}
+      <pre class="body-preview message-body message-body--text" id="message-body">{{.Email.BodyPreview}}</pre>
+      {{- end}}
+    </div>
+  </article>
+</section>
+{{end}}{{end}}
+{{define "scripts"}}
+<script src="/static/js/email.js?v={{.StaticVersion}}"></script>
+{{- end}}
