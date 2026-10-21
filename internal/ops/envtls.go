@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -107,18 +108,28 @@ explorer tls reload     reload /etc/caddy/Caddyfile without dropping connections
 explorer tls restart    restart the Caddy service
 `
 
-// certInfo dials host:443 and returns the served leaf plus whether it
-// verifies for host against the system roots.
+// certInfo dials host:443 with normal verification and returns the served
+// leaf plus the verification error, if any. A certificate that does not
+// verify is still returned (Go hands back the served chain in
+// tls.CertificateVerificationError), so status can show what is wrong
+// without ever turning verification off.
 func certInfo(ctx context.Context, host string) (*x509.Certificate, error, error) {
+	return certInfoAt(ctx, host, net.JoinHostPort(host, "443"))
+}
+
+func certInfoAt(ctx context.Context, host, addr string) (*x509.Certificate, error, error) {
 	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: true, //nolint:gosec // G402: the served certificate is displayed, then verified explicitly.
-		MinVersion:         tls.VersionTLS12,
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
 	}}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, "443"))
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		var verr *tls.CertificateVerificationError
+		if errors.As(err, &verr) && len(verr.UnverifiedCertificates) > 0 {
+			return verr.UnverifiedCertificates[0], verr.Err, nil
+		}
 		return nil, nil, err
 	}
 	defer conn.Close()
@@ -126,13 +137,7 @@ func certInfo(ctx context.Context, host string) (*x509.Certificate, error, error
 	if len(state.PeerCertificates) == 0 {
 		return nil, nil, fmt.Errorf("%s served no certificate", host)
 	}
-	leaf := state.PeerCertificates[0]
-	inter := x509.NewCertPool()
-	for _, c := range state.PeerCertificates[1:] {
-		inter.AddCert(c)
-	}
-	_, verr := leaf.Verify(x509.VerifyOptions{DNSName: host, Intermediates: inter})
-	return leaf, verr, nil
+	return state.PeerCertificates[0], nil, nil
 }
 
 func runTLS(ctx context.Context, u *ui, r Runner, p Paths, args []string) int {

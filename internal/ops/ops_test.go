@@ -13,6 +13,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -661,5 +663,15 @@ func TestResolveGoUsesAnAbsoluteFallback(t *testing.T) {
 	}
 	if _, err := resolveGo(newFake(), filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("missing toolchain not reported")
+	}
+}
+
+func TestCertInfoShowsAnUnverifiableCertificateWithoutSkippingVerification(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer ts.Close()
+	addr := strings.TrimPrefix(ts.URL, "https://")
+	leaf, verr, err := certInfoAt(context.Background(), "example.com", addr)
+	if err != nil || leaf == nil || verr == nil {
+		t.Fatalf("leaf=%v verr=%v err=%v", leaf, verr, err)
 	}
 }
