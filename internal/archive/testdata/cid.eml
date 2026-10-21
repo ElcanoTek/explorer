@@ -1,0 +1,37 @@
+From: Reports <reporting@ssp.example>
+To: archive@example.com
+Subject: Daily report
+Date: Mon, 01 Jun 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============7640756753002541208=="
+
+--===============7640756753002541208==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+plain body
+
+--===============7640756753002541208==
+MIME-Version: 1.0
+Content-Type: multipart/related;
+ boundary="===============2392144456936925337=="
+
+--===============2392144456936925337==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<p>Logo: <img src="cid:logo123"></p>
+
+--===============2392144456936925337==
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-ID: <logo123>
+MIME-Version: 1.0
+Content-Disposition: inline
+
+iVBORy1mYWtlLWJ5dGVz
+
+--===============2392144456936925337==--
+
+--===============7640756753002541208==--

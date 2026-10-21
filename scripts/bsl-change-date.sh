@@ -20,14 +20,14 @@ fi
 
 commit_date="$(git show -s --format=%as "$ref")"
 commit_sha="$(git rev-parse --short "$ref")"
-change_date="$(python3 -c "
-import datetime, sys
-d = datetime.date.fromisoformat(sys.argv[1])
-try:
-    print(d.replace(year=d.year + 2))
-except ValueError:            # 29 Feb -> 28 Feb
-    print(d.replace(year=d.year + 2, day=28))
-" "$commit_date")"
+# Two years on; 29 February maps to 28 February (GNU date would roll over
+# to 1 March, so the leap day is handled explicitly).
+year=${commit_date:0:4} rest=${commit_date:4}
+if [[ $rest == "-02-29" ]]; then
+    change_date="$((10#$year + 2))-02-28"
+else
+    change_date="$((10#$year + 2))$rest"
+fi
 
 echo "commit:        $commit_sha ($commit_date)"
 echo "Change Date:   $change_date"

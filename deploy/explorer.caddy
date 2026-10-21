@@ -1,5 +1,5 @@
 # Caddy site block for Explorer, imported by /etc/caddy/Caddyfile via
-# `import conf.d/*.caddy`. bootstrap.sh substitutes {{HOSTNAME}} and
+# `import conf.d/*.caddy`. `explorer bootstrap` substitutes {{HOSTNAME}} and
 # injects `tls internal` when Let's Encrypt is disabled.
 
 {{HOSTNAME}} {

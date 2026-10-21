@@ -1,7 +1,7 @@
 # Contributing to Explorer
 
-Thanks for taking the time. Explorer is a small FastAPI app, so the loop is
-short: clone, make a venv, run the tests.
+Thanks for taking the time. Explorer is one small Go binary, so the loop is
+short: clone, build, run the tests.
 
 ## Licensing of contributions
 
@@ -18,45 +18,46 @@ will find another way to get the fix in. See
 
 ## Setup
 
-Python 3.11 or newer (CI runs 3.11 and 3.12).
+Go, new enough to fetch the toolchain `go.mod` pins (any Go 1.21+ with
+`GOTOOLCHAIN=auto`, which the Makefile sets).
 
 ```bash
 git clone https://github.com/ElcanoTek/explorer.git
 cd explorer
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+make build
 ```
 
-Copy `.env.example` to `.env` if you want to run the app. **Never commit a
-dotenv file** — every `.env*` variant except `.env.example` is gitignored,
-and a real one has been committed here before.
+Copy `.env.example` to `.env` if you want to run the app (`./explorer
+serve`; set `EXPLORER_UI_COOKIE_SECURE=0` for plain-HTTP development).
+**Never commit a dotenv file** — every `.env*` variant except `.env.example`
+is gitignored, and a real one has been committed here before.
 
 ## Tests
 
 ```bash
-python -m pytest -q
+go test -race ./...
+make test-root      # the install lifecycle harness; needs sudo
 ```
 
-The test suite runs in under a second with **no AWS account and no network
-needed**. Anything
-that would touch S3 goes through the fake client in `tests/test_s3_email.py`
-(`FakeS3`), and anything that needs a signed-in browser mints a throwaway
-Ed25519 key and its own session cookie (`tests/test_endpoints.py`). Please
-keep it that way: a test that needs credentials is a test nobody runs.
+The suite runs in seconds with **no AWS account and no network needed**.
+Anything that would touch S3 goes through the in-memory fake store in
+`internal/archive`, anything that talks to the central auth service uses an
+`httptest` server, and anything that needs a signed-in browser mints a
+throwaway Ed25519 key and its own session cookie. Please keep it that way: a
+test that needs credentials is a test nobody runs.
 
 The suite covers these areas, and a change in any of them should come with a
 test:
 
-| File | Covers |
+| Package | Covers |
 |---|---|
-| `tests/test_auth.py` | The cookie verifier — valid, expired, tampered, foreign-key, malformed. |
-| `tests/test_central_auth.py` | Local access-list enforcement, opaque app sessions, expiry, revocation, and CSRF. |
-| `tests/test_central_auth_endpoints.py` | Central redirect/callback, state/PKCE, allowlist denial, cookies, and logout. |
-| `tests/test_access_admin.py` | Operator-managed per-Explorer email access. |
-| `tests/test_date_parsing.py` | Date-range parsing, day counting, S3 key scoping, cursor cache. |
-| `tests/test_s3_email.py` | Prefix expansion, header parsing, search, HTML sanitizing, attachments. |
-| `tests/test_endpoints.py` | Routes end to end via `TestClient`, signed in and anonymous. |
+| `internal/auth` | The Elcano cookie verifier — valid, expired, tampered, foreign-key, malformed. |
+| `internal/centralauth` | Token verification, JWKS rotation, the code exchange, the access list, opaque app sessions, expiry, revocation, CSRF, and compatibility with existing `access.db` files. |
+| `internal/web` | Routes end to end via `httptest`, signed in and anonymous, both auth modes; date-range parsing, S3 key scoping, search jobs and cursors, security headers. |
+| `internal/archive`, `internal/mailmsg` | Prefix expansion, header parsing, search, message rendering, attachments, MIME edge cases. |
+| `internal/htmlsafe` | The sanitizer and linkifier: XSS corpus, golden output, linear-time behaviour on hostile input. |
+| `internal/dotenv`, `internal/config` | `.env` parsing identical to python-dotenv, layering, bootstrap's in-place merge. |
+| `internal/ops` | doctor checks, update/rollback, bootstrap helpers (Caddy, hostname, SSH, Cockpit), provision, env redaction. |
 
 **Fixtures must be synthetic.** This app reads real people's mail; invented
 senders and subjects only (`ada@example.com`, `reports@vendor.example`, the
@@ -66,27 +67,27 @@ attachment name into a test, a template placeholder or a screenshot.
 ## Lint and format
 
 ```bash
-ruff check app tests
-ruff format --check app tests
+gofmt -l .                       # must print nothing
+go vet ./...
+golangci-lint run                # v2.14.0; rules in .golangci.yml
+shellcheck -S warning $(git ls-files '*.sh')
 ```
 
-Rules live in `ruff.toml` (pinned selection, so your local Ruff matches CI).
-`ruff check --fix` and `ruff format` apply the fixes. Both commands must be
-clean; CI runs exactly these.
+CI runs exactly these. Every `//nolint` names the linter and says why.
 
 ## Source headers
 
 Every first-party source file carries:
 
-```python
-# SPDX-License-Identifier: BUSL-1.1
-# Copyright (c) 2026 ElcanoTek, Inc.
+```go
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 ElcanoTek, Inc.
 ```
 
-New files need it too — after the shebang, if there is one. Vendored code
-under `app/static/vendor/` is left alone; Python copied in under
-`app/_vendor/` keeps its upstream license header and LICENSE file instead
-(see `NOTICE`).
+(`#` comments in shell, after the shebang; `/* */` in CSS; `//` in JS). New
+files need it too. Vendored assets under `internal/web/static/vendor/` are
+left alone; code ported from another project keeps its upstream license
+header and LICENSE file instead (`internal/dotenv`, see `NOTICE`).
 
 ## Branches and pull requests
 
@@ -97,35 +98,39 @@ under `app/static/vendor/` is left alone; Python copied in under
   "updates"). Group related changes into one commit rather than one commit per
   file.
 - One topic per PR. Say what breaks and how you tested it.
-- CI (`.github/workflows/ci.yml`) must be green: lint, format check, tests.
+- CI (`.github/workflows/ci.yml`) must be green: format, vet, lint, race
+  tests, the root lifecycle test, govulncheck and shellcheck.
   CodeQL (`.github/workflows/codeql.yml`) scans on every push and PR and
   weekly; a new alert on your branch is yours to look at.
 - Use the issue and pull-request templates under `.github/`; they ask for
   exactly what a reviewer needs.
-- Dependencies are locked with hashes: edit `requirements.in` (or
-  `requirements-dev.in`), then regenerate the `.txt` with the `pip-compile`
-  command in its header, under Python 3.11. Never edit a `.txt` by hand.
-  Dependabot proposes bumps daily (grouped, after a cooldown of 7 days (3 for patch releases)); read
+- Dependencies are pinned by `go.mod`/`go.sum`; run `go mod tidy` after
+  changing imports (CI fails on an untidy module). Dependabot proposes bumps
+  daily (grouped, after a cooldown of 7 days (3 for patch releases)); read
   AGENTS.md › Dependencies for when one is worth merging.
 
 ## Things worth knowing before you change them
 
-- **`app/auth.py` is security-critical.** Every failure path must return
-  `None` (= logged out), never an exception that a caller might swallow into
-  a success. Add a test for any new path.
-- **`is_allowed_s3_key` in `app/main.py` is the prefix boundary.** It is what
+- **`internal/auth` and `internal/centralauth` are security-critical.** Every
+  failure path must come back as "logged out" (nil or an error), never a
+  partial identity a caller might accept. Add a test for any new path.
+- **`isAllowedS3Key` in `internal/web` is the prefix boundary.** It is what
   stops the `s3_key` query parameter being walked around the bucket. Do not
   loosen it without a test proving the new bound.
-- **Search jobs run in worker threads** and mutate module-level caches;
-  `CACHE_LOCK` guards them. Read-modify-write on those dicts without the lock
-  loses updates.
-- **HTML mail is hostile input.** Body rendering goes through `nh3` with an
-  explicit allow-list, and `data:`/`cid:` URLs are permitted for inline
-  images but rejected for links. Widening that list needs a very good reason.
-  `app/linkify.py` runs only on that sanitized (or `html.escape`d) output;
-  `tests/test_html_render.py` pins the whole pipeline, XSS corpus included.
+- **Search jobs run in goroutines** and share an in-memory store; every read
+  and write goes through its mutex, and a job's context is how Cancel and the
+  server-side timeout reach in-flight S3 calls.
+- **HTML mail is hostile input.** Body rendering goes through
+  `internal/htmlsafe` with an explicit allow-list, and `data:`/`cid:` URLs
+  are permitted for inline images but rejected for links. Widening that list
+  needs a very good reason. The linkifier runs only on sanitized (or escaped)
+  output; the tests pin the whole pipeline, XSS corpus included.
 - **Header reads are ranged GETs.** Keep the per-row cost proportional to
   `EMAIL_HEADER_FETCH_BYTES`; do not download whole objects to render a list.
+- **The operator tooling runs as root.** Anything in `internal/ops` that
+  touches the filesystem must refuse symlinks and hard links where the
+  existing code does, and must never execute or install from a path the
+  service account can write.
 
 ## Reporting security issues
 

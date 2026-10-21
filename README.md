@@ -27,15 +27,16 @@ and attachment download over the archive you already own.
   need. See [How it works](#how-it-works).
 - **Cheap header reads.** Result rows come from a ranged `GET` over the first
   64 KB of each object, so listing a day never downloads whole messages.
-- **Safe HTML rendering.** Message bodies are sanitized with `nh3`
-  (ammonia) against an explicit allow-list and linkified by `app/linkify.py`;
+- **Safe HTML rendering.** Message bodies are sanitized against an explicit
+  allow-list and linkified by Explorer's own `internal/htmlsafe`;
   `<script>`/`<style>` blocks and event handlers are stripped, `data:` links
   are dropped while inline `data:` images survive, and `cid:` references are
   rewritten to Explorer's own attachment endpoint.
 - **Attachment download**, including inline images referenced by
   `Content-ID` or `Content-Location`.
-- **Cancellable background searches.** Long scans run in a worker thread with
-  a live elapsed counter, a Cancel button, and a server-side timeout.
+- **Cancellable background searches.** Long scans run in the background with
+  a live elapsed counter, a Cancel button, and a server-side timeout; header
+  reads within a scan run concurrently, and Cancel stops in-flight S3 calls.
 - **Prefix confinement.** Every S3 key Explorer touches must sit under the
   configured prefix; anything else is a 404 regardless of what the URL asks
   for.
@@ -62,7 +63,7 @@ about one week.
 
 Instead, Explorer expands the requested date ranges into **one prefix per
 day** using `EMAIL_S3_DATE_PREFIX_FORMAT` and lists only those
-(`app/s3_email.py::build_search_prefixes`). A seven-day search issues seven
+(`internal/archive`, `BuildSearchPrefixes`). A seven-day search issues seven
 narrow LISTs whose combined result set is already close to the answer. Cost
 and latency then scale with the *window you asked for*, not with the size of
 the archive — which is the difference between a search that returns in a
@@ -88,35 +89,37 @@ each time. It works; it is just slower and costs more.
 
 ## Quick start
 
-Requires Python 3.11+ and read access to an S3 bucket holding SES-delivered
-messages.
+Requires Go (any release new enough to download the toolchain `go.mod`
+names: Go 1.21+ with `GOTOOLCHAIN=auto`) and read access to an S3 bucket
+holding SES-delivered messages.
 
 ```bash
 git clone https://github.com/ElcanoTek/explorer.git
 cd explorer
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --require-hashes -r requirements.txt
+make build            # ./explorer
 
 cp .env.example .env
 $EDITOR .env          # bucket, prefix, AWS credentials, authentication mode
 
-uvicorn app.main:app --host 127.0.0.1 --port 8080
+./explorer serve      # listens on 127.0.0.1:8080
 ```
 
-Then open <http://127.0.0.1:8080>. Elcano mode redirects to its existing
+Then open <http://127.0.0.1:8080>. For plain-HTTP local development set
+`EXPLORER_UI_COOKIE_SECURE=0`. Elcano mode redirects to its existing
 magic-link service. Central mode requires its configured public HTTPS origin
 because its app-scoped cookie is always `Secure`. See
 [Authentication](#authentication).
 
-Run the tests with `python -m pytest -q` and the linter with
-`ruff check app tests`. Neither needs AWS: `tests/` drives a fake S3 client.
+Run the tests with `go test -race ./...` and the linter with
+`golangci-lint run`. Neither needs AWS: the S3 layer is tested against an
+in-memory fake.
 
 ## Configuration
 
 Configuration is environment variables, read at import time by
-`app/config.py`, which loads two optional dotenv files from the repository
-root. Precedence, highest first:
+`internal/config`, which loads two optional dotenv files from the
+application directory (`EXPLORER_APP_DIR`, default the working directory;
+`/opt/explorer` on an installed box). Precedence, highest first:
 
 1. `.env` — per-host values; overrides everything.
 2. Whatever is already in the process environment (e.g. a systemd
@@ -134,6 +137,7 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `EMAIL_S3_MAX_DATE_PREFIX_DAYS` | no | `62` | Widest span that still gets per-day prefixes; wider spans list the root prefix. |
 | `EMAIL_S3_MAX_BODY_SEARCH_DAYS` | no | `14` | Cap on a body-inclusive fuzzy search, which downloads whole objects. |
 | `EMAIL_HEADER_FETCH_BYTES` | no | `65536` | Bytes fetched per object by the ranged header `GET`. |
+| `EMAIL_S3_FORCE_PATH_STYLE` | no | `0` | Path-style bucket addressing, for S3-compatible stores (MinIO, LocalStack) reached through `AWS_ENDPOINT_URL_S3`. |
 | `EMAIL_SEARCH_JOB_MAX_SECONDS` | no | `120` | Server-side cancellation for a runaway search job. |
 | `AWS_REGION` | no | `us-east-2` | Region of the archive bucket. |
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only key. Leave blank to use the ambient AWS credential chain (instance role, `~/.aws`, `AWS_PROFILE`). |
@@ -151,6 +155,7 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `EXPLORER_UI_COOKIE_SECURE` | no | `1` | Requires the search/CSRF cookie to travel over HTTPS. Keep enabled in production. |
 | `EXPLORER_SESSION_IDLE_SECONDS` | no | `43200` | Central-mode Explorer session idle lifetime (12 hours). |
 | `EXPLORER_SESSION_ABSOLUTE_SECONDS` | no | `86400` | Central-mode Explorer session absolute lifetime (24 hours). |
+| `EXPLORER_LISTEN_ADDR` | no | `127.0.0.1:8080` | Address `explorer serve` listens on. Keep it on loopback behind the proxy. |
 | `EXPLORER_SESSION_SECRET` | central: **yes**; Elcano: recommended | a dev placeholder | Signs central login state and the cookie scoping search jobs to one browser. Generate with `openssl rand -hex 32`. |
 
 ### Authentication
@@ -177,8 +182,8 @@ public half, a compromise of an Explorer host cannot mint sessions.
 Explorer ships pointed at ElcanoTek's auth service, but the format is
 deliberately small: anything that mints a cookie of that shape works. If you
 would rather front Explorer with your own SSO, terminate it at your reverse
-proxy and keep Explorer on loopback. The verifier lives in `app/auth.py` and
-its tests in `tests/test_auth.py`.
+proxy and keep Explorer on loopback. The verifier lives in `internal/auth`
+with its tests beside it.
 
 #### Central auth mode
 
@@ -227,7 +232,7 @@ The expected `/authorize` and `/token` contract is documented in
 ### AWS IAM permissions
 
 Explorer only ever lists and reads. The minimum policy, derived from the two
-API calls in `app/s3_email.py` (`ListObjectsV2` and `GetObject`), scoped to a
+API calls in `internal/archive` (`ListObjectsV2` and `GetObject`), scoped to a
 single prefix:
 
 ```json
@@ -272,11 +277,12 @@ curl -fsSL https://raw.githubusercontent.com/ElcanoTek/explorer/main/install.sh 
 ```
 
 The installer clones this repository into `/opt/explorer-src` and runs
-`scripts/bootstrap.sh`, which installs the dependencies, builds the venv,
-writes `/opt/explorer/.env`, installs the systemd units and the `explorer`
-operator CLI, and optionally sets up Caddy with automatic TLS. It asks for
-the authentication mode, the auth service's public key, and an optional
-S3 bucket; have those ready.
+`scripts/bootstrap.sh`, which builds the `explorer` binary from that verified
+checkout and hands over to `explorer bootstrap`: it installs the
+dependencies, writes `/opt/explorer/.env`, installs the binary, the systemd
+unit and the `explorer` operator CLI, and optionally sets up Caddy with
+automatic TLS. It asks for the authentication mode, the auth service's public
+key, and an optional S3 bucket; have those ready.
 
 Equivalent manual steps, if you'd rather clone yourself:
 
@@ -289,7 +295,7 @@ Then manage the install with:
 
 ```bash
 explorer doctor    # read-only diagnostics: config, service, readiness, TLS, disk
-explorer update    # git pull + rebuild + restart (staged, health-checked)
+explorer update    # git pull + build + swap + restart (staged, health-checked, rolled back on failure)
 ```
 
 ## Security posture
@@ -301,14 +307,15 @@ explorer update    # git pull + rebuild + restart (staged, health-checked)
   the global authentication middleware.
 - **Least-privilege AWS credentials.** Use the read-only policy above, on one
   prefix. An instance role beats a long-lived key.
-- **Prefix confinement.** `app/main.py::is_allowed_s3_key` rejects keys
+- **Prefix confinement.** `isAllowedS3Key` (`internal/web`) rejects keys
   outside `EMAIL_S3_PREFIX`, keys with control characters, and absurdly long
   keys — so the `s3_key` query parameter cannot be walked around the bucket.
 - **Sanitized bodies.** HTML mail is cleaned before rendering, and Explorer
   sets `X-Content-Type-Options`, `X-Frame-Options: DENY` and a
   `strict-origin-when-cross-origin` referrer policy.
-- **Attachments are transient.** Downloads land in a temp directory that a
-  systemd timer sweeps every 15 minutes; nothing is meant to persist on disk.
+- **Attachments never touch disk.** A download is extracted from the message
+  in memory and streamed to the browser, served sandboxed with active content
+  types downgraded to `application/octet-stream`.
 - **Loopback plus a proxy.** Bind `127.0.0.1` and terminate TLS in front. In
   Elcano mode, use a hostname within the external cookie's configured domain.
   Central mode uses a host-only app cookie and does not share it with other apps.

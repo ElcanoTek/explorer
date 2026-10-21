@@ -6,5 +6,8 @@
         ║  ║
         ▼  ▼
 
-Welcome to Explorer.
+Welcome to Explorer — the email-archive web UI (explorer.service).
+  Health    explorer doctor
+  Logs      explorer logs
+  Update    explorer update
 To manage Explorer → `explorer --help`

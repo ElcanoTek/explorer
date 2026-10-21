@@ -50,7 +50,7 @@ none: until the Change Date, **non-production use only**.
 - Claim the Change License (MIT) before that version's Change Date arrives.
 - Use ElcanoTek trademarks or logos. The licence grants no trademark rights,
   and this repository contains ElcanoTek branding assets under
-  `app/static/design-system/logos/`. You may keep them where the licence
+  `internal/web/static/design-system/logos/`. You may keep them where the licence
   requires attribution; do not use them to brand your own product.
 
 Violating the licence terminates your rights **for every version**, not just

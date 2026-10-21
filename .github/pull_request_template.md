@@ -4,8 +4,8 @@
 
 ## Checklist
 
-- [ ] `ruff check app tests && ruff format --check app tests` pass
-- [ ] `python -m pytest -q` passes, with no AWS account or network needed
+- [ ] `gofmt -l .` is empty, `go vet ./...` and `golangci-lint run` pass
+- [ ] `go test -race ./...` passes, with no AWS account or network needed
 - [ ] Fixtures stay synthetic (`.example` addresses; no real mail)
 - [ ] Docs updated where behaviour changed
 - [ ] New source files carry the SPDX header
