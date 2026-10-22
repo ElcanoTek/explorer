@@ -201,12 +201,16 @@ func (s *Server) requireAuthentication(next http.Handler) http.Handler {
 // reference remote images, so img-src allows https: and data:. No
 // form-action: Elcano-mode logout is a form POST that redirects to the auth
 // host, and browsers apply form-action to that redirect. frame-ancestors
-// 'none' mirrors X-Frame-Options: DENY.
+// 'none' mirrors X-Frame-Options: DENY. Nothing frames, plays media or
+// starts workers (the sanitizer drops iframe/video/audio, and the date
+// picker is our own plain script), so frame-src, media-src and worker-src
+// are 'none' rather than falling back to 'self'.
 const cspNonPage = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 func cspForPage(nonce string) string {
 	return "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self'; " +
 		"img-src 'self' data: https:; font-src 'self'; connect-src 'self'; " +
+		"media-src 'none'; frame-src 'none'; worker-src 'none'; " +
 		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 }
 

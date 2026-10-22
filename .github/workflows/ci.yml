@@ -17,6 +17,22 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: Frontend standard and JS tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Stack check (frontend standard, flag.lock, no CDNs)
+        # Offline: needs no flag checkout. The weekly flag-drift workflow
+        # reports upstream Flag changes.
+        run: scripts/stack-check.sh
+      - name: JS unit tests (date picker, range arithmetic)
+        # The runner image's Node; node:test needs no packages.
+        run: node --test internal/web/jstest/*.test.js
+
   go:
     name: Go (build, vet, lint, test)
     runs-on: ubuntu-latest

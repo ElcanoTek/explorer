@@ -7,15 +7,14 @@
   </button>
 </form>
 {{- end}}
-{{define "head"}}
-    <link rel="stylesheet" href="/static/vendor/flatpickr/flatpickr.min.css" />
-{{- end}}
 {{define "hidden_fields"}}{{range .}}
         <input type="hidden" name="{{.Key}}" value="{{.Value}}" />{{end}}{{end}}
 {{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.2 8.4 6.6 11.6 12.8 4.8"></path></svg></span>{{end}}
 {{define "date_input"}}<span class="date-input-wrap">
-                <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" required />
-                <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
+                <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
+                <button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">
+                  <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
+                </button>
               </span>{{end}}
 {{define "content"}}{{with .Page}}
 <section class="card">
@@ -57,10 +56,7 @@
       <fieldset class="date-ranges">
         <legend>Day</legend>
         <label aria-label="Day">
-          <span class="date-input-wrap">
-            <input type="text" class="custom-datepicker" name="day" value="{{.SelectedDay}}" required />
-            <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
-          </span>
+          {{template "date_input" (field "day" .SelectedDay)}}
         </label>
       </fieldset>
     </details>
@@ -231,9 +227,9 @@
       <span class="inbox-list__header-subject">Subject</span>
       <span class="inbox-list__header-time">Received</span>
     </div>
-    <div class="inbox-list" id="result-list" role="list" aria-label="Email results">
+    <div class="inbox-list" id="result-list" role="group" aria-label="Email results">
       {{- range .Rows}}
-      <button type="button" class="inbox-row" data-open-url="/email?s3_key={{.S3Key}}" role="listitem" aria-label="Open email from {{.From}}">
+      <button type="button" class="inbox-row" data-open-url="/email?s3_key={{.S3Key}}" aria-label="Open email from {{.From}}">
         <span class="inbox-row__sender" title="{{.From}}">{{.SenderLabel}}</span>
         <span class="inbox-row__subject" title="{{.SubjectOrPlaceholder}}">
           {{- if .LikelyAttachment}}
@@ -287,6 +283,7 @@
 {{- end}}
 {{end}}{{end}}
 {{define "scripts"}}
-<script src="/static/vendor/flatpickr/flatpickr.min.js"></script>
+<script src="/static/js/datepicker.js?v={{.StaticVersion}}"></script>
+<script src="/static/js/date-ranges.js?v={{.StaticVersion}}"></script>
 <script src="/static/js/inbox.js?v={{.StaticVersion}}"></script>
 {{- end}}

@@ -10,7 +10,7 @@ export GOTOOLCHAIN
 REVISION := $(shell git rev-parse HEAD 2>/dev/null)
 LDFLAGS := -X github.com/ElcanoTek/explorer/internal/version.revision=$(REVISION)
 
-.PHONY: all build test test-race test-root lint fmt vet vulncheck run ci clean
+.PHONY: all build test test-race test-root test-js lint fmt vet vulncheck stack-check flag-status run ci clean
 
 all: build
 
@@ -27,6 +27,10 @@ test-race:
 test-root:
 	sudo env "PATH=$$PATH" "GOCACHE=$$(go env GOCACHE)" "GOMODCACHE=$$(go env GOMODCACHE)" go test -count=1 -run 'TestLifecycle|TestRequireTrusted|TestProvisionWritesPrivateFiles' ./internal/ops/
 
+# The date picker and range arithmetic (plain JS) under Node's built-in runner.
+test-js:
+	node --test internal/web/jstest/*.test.js
+
 vet:
 	go vet ./...
 
@@ -37,6 +41,14 @@ lint:
 fmt:
 	gofmt -w .
 
+# The Elcano frontend standard (AGENTS.md): standard block, flag.lock, no CDNs.
+stack-check:
+	scripts/stack-check.sh
+
+# Vendored Flag files vs a sibling ../flag checkout (FLAG_DIR=... to override).
+flag-status:
+	scripts/flag-sync.sh status $(FLAG_DIR)
+
 vulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
@@ -45,7 +57,7 @@ vulncheck:
 run: build
 	./explorer serve
 
-ci: vet lint test-race vulncheck
+ci: stack-check vet lint test-race test-js vulncheck
 
 clean:
 	rm -f ./explorer

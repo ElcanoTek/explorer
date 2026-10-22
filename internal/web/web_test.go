@@ -555,9 +555,15 @@ func TestPagesCarryNonceCSPAndNoInlineHandlers(t *testing.T) {
 	if m == nil {
 		t.Fatalf("csp %q", csp)
 	}
-	for _, want := range []string{"default-src 'self'", "style-src 'self';", "img-src 'self' data: https:", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'self'", "style-src 'self';", "img-src 'self' data: https:", "frame-ancestors 'none'",
+		"object-src 'none'", "frame-src 'none'", "media-src 'none'", "worker-src 'none'", "base-uri 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("csp lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"unsafe-inline", "unsafe-eval", "http:", "*"} {
+		if strings.Contains(csp, bad) {
+			t.Errorf("csp allows %q: %s", bad, csp)
 		}
 	}
 	if strings.Contains(csp, "form-action") {
@@ -655,5 +661,104 @@ func TestSemicolonQueryKeepsTheJobUsable(t *testing.T) {
 	}
 	if page := e.get(loc); strings.Contains(page.body, "This search session expired") {
 		t.Fatal("job lost after redirect")
+	}
+}
+
+// The date fields are Explorer's own (static/js/datepicker.js): every mode
+// renders text inputs holding YYYY-MM-DD, each with its calendar button,
+// loads only same-origin scripts, and nothing of flatpickr remains.
+func TestDateFieldsUseTheInHousePicker(t *testing.T) {
+	e := elcanoEnv(t)
+	today := time.Now().UTC().Format(isoDate)
+	field := regexp.MustCompile(`<input type="text" class="custom-datepicker" name="(day|date_from|date_to)" value="([^"]*)" placeholder="YYYY-MM-DD" required />\s*<button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">`)
+	for mode, names := range map[string][]string{"view": {"day"}, "exact": {"date_from", "date_to"}, "fuzzy": {"date_from", "date_to"}} {
+		body := e.get("/?mode=" + mode).body
+		if strings.Contains(strings.ToLower(body), "flatpickr") {
+			t.Errorf("%s: flatpickr still referenced", mode)
+		}
+		for _, src := range []string{"/static/js/datepicker.js?v=", "/static/js/date-ranges.js?v=", "/static/js/inbox.js?v="} {
+			if !strings.Contains(body, `<script src="`+src) {
+				t.Errorf("%s: missing script %s", mode, src)
+			}
+		}
+		if strings.Index(body, "/static/js/datepicker.js") > strings.Index(body, "/static/js/inbox.js") ||
+			strings.Index(body, "/static/js/date-ranges.js") > strings.Index(body, "/static/js/inbox.js") {
+			t.Errorf("%s: helpers must load before inbox.js", mode)
+		}
+		got := field.FindAllStringSubmatch(body, -1)
+		if len(got) != len(names) {
+			t.Fatalf("%s: %d date fields, want %d:\n%s", mode, len(got), len(names), body)
+		}
+		for i, m := range got {
+			if m[1] != names[i] || m[2] != today {
+				t.Errorf("%s: field %d = %s=%q, want %s=%q", mode, i, m[1], m[2], names[i], today)
+			}
+		}
+	}
+
+	// A submitted range comes back as the same ISO values, ordered.
+	body := e.get("/?mode=exact&date_from=2026-03-09&date_to=2026-03-02").body
+	if !strings.Contains(body, `name="date_from" value="2026-03-02"`) || !strings.Contains(body, `name="date_to" value="2026-03-09"`) {
+		t.Errorf("range not echoed as ordered ISO dates")
+	}
+
+	for path, want := range map[string]int{
+		"/static/js/datepicker.js":                   http.StatusOK,
+		"/static/js/date-ranges.js":                  http.StatusOK,
+		"/static/vendor/flatpickr/flatpickr.min.js":  http.StatusNotFound,
+		"/static/vendor/flatpickr/flatpickr.min.css": http.StatusNotFound,
+	} {
+		resp := e.get(path)
+		if resp.StatusCode != want {
+			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
+		if want == http.StatusOK && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") {
+			t.Errorf("GET %s content type %q", path, resp.Header.Get("Content-Type"))
+		}
+	}
+}
+
+// inbox.js builds added range rows itself; they must match the template's
+// date_input markup so the picker attaches the same way.
+func TestAddedRangeRowsMatchTheTemplate(t *testing.T) {
+	js, err := staticFS.ReadFile("static/js/inbox.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := templateFS.ReadFile("templates/inbox.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frag := range []string{
+		`class="custom-datepicker"`,
+		`placeholder="YYYY-MM-DD" required />`,
+		`<button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">`,
+		`<svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>`,
+	} {
+		if !strings.Contains(string(js), frag) || !strings.Contains(string(tmpl), frag) {
+			t.Errorf("inbox.js and inbox.html disagree on %s", frag)
+		}
+	}
+}
+
+// axe findings fixed alongside the date picker: one banner landmark (the
+// page <header>), and result rows that are plain buttons in a labelled group
+// (a <button> may not take role="listitem").
+func TestLandmarksAndResultRoles(t *testing.T) {
+	e := elcanoEnv(t)
+	key, at := todayKey("msg1")
+	e.store.put(key, sampleMessage, at)
+	body := e.get("/?run_search=1&mode=view").body
+	if strings.Contains(body, `role="banner"`) || strings.Count(body, "<header") != 1 {
+		t.Error("expected exactly one banner landmark, the page <header>")
+	}
+	if !strings.Contains(body, `id="result-list" role="group" aria-label="Email results"`) {
+		t.Error("result list is not a labelled group")
+	}
+	if strings.Contains(body, `role="listitem"`) || strings.Contains(body, `role="list"`) {
+		t.Error("buttons must not carry list roles")
+	}
+	if !strings.Contains(body, `<button type="button" class="inbox-row" data-open-url="/email?s3_key=`) {
+		t.Error("result row markup changed")
 	}
 }

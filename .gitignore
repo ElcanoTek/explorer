@@ -24,3 +24,6 @@ provision/clients/*.env
 *.swp
 .DS_Store
 
+
+# Flag checkout used by the weekly flag-drift workflow
+.flag/
