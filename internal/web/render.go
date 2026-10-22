@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 //go:embed templates/*.html
@@ -29,16 +30,28 @@ var pageNames = []string{"inbox", "email_detail", "auth_error", "signed_out"}
 type kv struct{ Key, Value string }
 
 type pageView struct {
-	Title         string
-	Nonce         string
-	StaticVersion string
-	Page          any
+	Title string
+	Nonce string
+	Page  any
 }
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"field": func(name, value string) kv { return kv{name, value} },
+		"asset": assetURL,
 	}
+}
+
+// assetVersion is staticVersion(), computed once: the static tree is
+// embedded, so it cannot change while the binary runs.
+var assetVersion = sync.OnceValue(staticVersion)
+
+// assetURL is the versioned URL of a file under static/. Every page-level
+// reference to a static file goes through it, vendored Flag files included,
+// so a deploy never mixes a cached old token sheet or sprite with new
+// product CSS (the ?v= value changes whenever any static file does).
+func assetURL(path string) string {
+	return "/static/" + strings.TrimPrefix(path, "/") + "?v=" + assetVersion()
 }
 
 func parsePages() (map[string]*template.Template, error) {
@@ -78,7 +91,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 		return
 	}
 	var buf bytes.Buffer
-	view := pageView{Nonce: nonceFrom(r), StaticVersion: s.staticVersion, Page: data}
+	view := pageView{Nonce: nonceFrom(r), Page: data}
 	if err := t.ExecuteTemplate(&buf, "base", view); err != nil {
 		slog.Error("render template", "page", page, "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)

@@ -718,26 +718,81 @@ func TestDateFieldsUseTheInHousePicker(t *testing.T) {
 	}
 }
 
-// inbox.js builds added range rows itself; they must match the template's
-// date_input markup so the picker attaches the same way.
-func TestAddedRangeRowsMatchTheTemplate(t *testing.T) {
-	js, err := staticFS.ReadFile("static/js/inbox.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl, err := templateFS.ReadFile("templates/inbox.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, frag := range []string{
-		`class="custom-datepicker"`,
-		`placeholder="YYYY-MM-DD" required />`,
-		`<button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">`,
-		`<svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>`,
-	} {
-		if !strings.Contains(string(js), frag) || !strings.Contains(string(tmpl), frag) {
-			t.Errorf("inbox.js and inbox.html disagree on %s", frag)
+// inbox.js copies the first server-rendered range row rather than holding
+// its own markup, so it never hard-codes a static URL (which would miss the
+// ?v= version) or drifts from the date_input template.
+func TestScriptsHoldNoUnversionedStaticURLs(t *testing.T) {
+	for _, name := range []string{"inbox.js", "datepicker.js", "date-ranges.js", "base.js", "email.js"} {
+		js, err := staticFS.ReadFile("static/js/" + name)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if strings.Contains(string(js), "/static/") {
+			t.Errorf("%s hard-codes a /static/ URL", name)
+		}
+	}
+}
+
+// Every static file a page references carries the current ?v= version, the
+// vendored Flag token sheet, fonts sheet, icon sprite and logos included, so
+// a deploy never mixes cached old Flag files with new product CSS. The
+// versioned URL is immutable for a year; anything else revalidates by ETag.
+func TestStaticAssetsAreVersionedAndCached(t *testing.T) {
+	e := elcanoEnv(t)
+	key, at := todayKey("msg1")
+	e.store.put(key, sampleMessage, at)
+	v := assetVersion()
+	if len(v) != 12 {
+		t.Fatalf("asset version %q", v)
+	}
+	ref := regexp.MustCompile(`(?:src|href)="(/static/[^"]*)"`)
+	seen := map[string]bool{}
+	for _, path := range []string{"/?run_search=1&mode=view", "/?mode=exact", "/email?s3_key=" + url.QueryEscape(key), "/email?s3_key=nope"} {
+		for _, m := range ref.FindAllStringSubmatch(e.get(path).body, -1) {
+			u, err := url.Parse(m[1])
+			if err != nil || u.Query().Get("v") != v {
+				t.Errorf("%s: unversioned static URL %s", path, m[1])
+			}
+			seen[u.Path] = true
+		}
+	}
+	for _, want := range []string{
+		"/static/design-system/tokens/design-tokens.css", "/static/design-system/fonts/fonts.css",
+		"/static/design-system/icons/core-icons.svg", "/static/design-system/logos/elcano-mark-primary.svg",
+		"/static/design-system/logos/explorer-favicon.svg", "/static/styles.css", "/static/js/datepicker.js",
+	} {
+		if !seen[want] {
+			t.Errorf("pages never reference %s", want)
+		}
+	}
+
+	tokens := "/static/design-system/tokens/design-tokens.css"
+	current := e.get(tokens + "?v=" + v)
+	if current.StatusCode != http.StatusOK || current.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("versioned: %d %q", current.StatusCode, current.Header.Get("Cache-Control"))
+	}
+	etag := current.Header.Get("ETag")
+	if !regexp.MustCompile(`^"[0-9a-f]{24}"$`).MatchString(etag) {
+		t.Fatalf("etag %q", etag)
+	}
+	for _, path := range []string{tokens, tokens + "?v=0123456789ab", "/static/design-system/fonts/nebula-sans/NebulaSans-400.woff2"} {
+		resp := e.get(path)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-cache" || resp.Header.Get("ETag") == "" {
+			t.Errorf("%s: %d %q etag %q", path, resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("ETag"))
+		}
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, e.ts.URL+tokens, nil)
+	req.Header.Set("If-None-Match", etag)
+	resp, err := e.browser.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Errorf("revalidation: %d, want 304", resp.StatusCode)
+	}
+	if missing := e.get("/static/nope.css?v=" + v); missing.StatusCode != http.StatusNotFound || missing.Header.Get("Cache-Control") == "public, max-age=31536000, immutable" {
+		t.Errorf("missing file: %d %q", missing.StatusCode, missing.Header.Get("Cache-Control"))
 	}
 }
 

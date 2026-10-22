@@ -107,8 +107,10 @@ golangci-lint first.
 
 ## Frontend (Tier A)
 
-`stack.conf` declares Tier A, Go backend. Everything the browser gets is
-served by the binary from `internal/web` via `go:embed`:
+`stack.conf` declares Tier A, Go backend; its `web=` lists `internal/web`
+and `internal/htmlsafe` (the Go that builds HTML), which stack-check scans
+for third-party asset hosts. Everything the browser gets is served by the
+binary from `internal/web` via `go:embed`:
 
 - `templates/*.html` — `html/template` pages (`base.html` + one per page).
   No inline styles or handlers; the only inline script is the nonce'd theme
@@ -124,8 +126,14 @@ served by the binary from `internal/web` via `go:embed`:
   `styles.css` today. When Flag ships a vendorable component stylesheet
   mirroring its shadcn/ui registry, vendor it with `flag-sync.sh add` and
   drop the matching product rules rather than keeping two copies.
-- Asset URLs carry `?v=<content hash>` (`staticVersion` in `render.go`);
-  pages are `no-store`.
+- Every static URL in a page comes from the `asset` template func
+  (`assetURL` in `render.go`): `/static/<path>?v=<content hash of the whole
+  static tree>`, Flag's files included, so a deploy never mixes a cached old
+  token sheet with new product CSS. Never write a bare `/static/...` URL in a
+  template or script (tests reject it; `inbox.js` clones a rendered row
+  instead). `staticHandler` (`server.go`) makes the current `?v=` immutable
+  for a year and everything else `no-cache` with an ETag; pages are
+  `no-store`.
 
 **Date field.** In-house since flatpickr was removed (2026-10). The text input
 is the source of truth and always submits `YYYY-MM-DD`; the server parses
@@ -154,7 +162,9 @@ Then check the icon ids the templates use (`core-icons.svg#…`) still exist,
 render the pages in both themes, and commit files and lock together. The PR
 gate is `scripts/stack-check.sh` (offline: hand edits and CDN use fail it);
 `.github/workflows/flag-drift.yml` reports weekly whether flag `main` has
-moved past `flag.lock`. Flag is MIT (NOTICE). A gap in Flag is fixed upstream
+moved past `flag.lock`. Flag is MIT; its licence text is vendored as
+`static/design-system/FLAG-LICENSE` (locked like the rest) and NOTICE points
+at it. A gap in Flag is fixed upstream
 in ElcanoTek/flag, not patched here.
 
 ## Security notes (each is pinned by tests)

@@ -20,10 +20,10 @@
         document.documentElement.setAttribute("data-theme", theme);
       })();
     </script>
-    <link rel="icon" href="/static/design-system/logos/explorer-favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/design-system/fonts/fonts.css" />
-    <link rel="stylesheet" href="/static/design-system/tokens/design-tokens.css" />
-    <link rel="stylesheet" href="/static/styles.css?v={{.StaticVersion}}" />
+    <link rel="icon" href="{{asset "design-system/logos/explorer-favicon.svg"}}" type="image/svg+xml" />
+    <link rel="stylesheet" href="{{asset "design-system/fonts/fonts.css"}}" />
+    <link rel="stylesheet" href="{{asset "design-system/tokens/design-tokens.css"}}" />
+    <link rel="stylesheet" href="{{asset "styles.css"}}" />
     {{- block "head" .}}{{end}}
   </head>
   <body>
@@ -37,7 +37,7 @@
       <header class="page-header">
         <div class="ds-app-header">
           <div class="ds-app-header__brand">
-            <img class="ds-app-header__mark" src="/static/design-system/logos/elcano-mark-primary.svg" alt="Elcano" />
+            <img class="ds-app-header__mark" src="{{asset "design-system/logos/elcano-mark-primary.svg"}}" alt="Elcano" />
             <div class="ds-app-header__text">
               <p class="ds-app-header__eyebrow">Email archive</p>
               <h1 class="ds-app-header__title">{{block "header_title" .}}Explorer{{end}}</h1>
@@ -46,8 +46,8 @@
           <div class="ds-app-header__actions">
             <button id="toggleTheme" class="icon-action theme-toggle" type="button" aria-label="Toggle color theme" aria-pressed="false">
               <span class="theme-toggle__icon-wrap" aria-hidden="true">
-                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--sun" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#sun"></use></svg>
-                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--moon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#moon"></use></svg>
+                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--sun" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#sun"></use></svg>
+                <svg class="icon-inline theme-toggle__icon theme-toggle__icon--moon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#moon"></use></svg>
               </span>
             </button>
             {{- block "topbar_actions" .}}{{end}}
@@ -57,7 +57,7 @@
       </header>
       <main class="page">{{block "content" .}}{{end}}</main>
     </div>
-    <script src="/static/js/base.js?v={{.StaticVersion}}"></script>
+    <script src="{{asset "js/base.js"}}"></script>
     {{- block "scripts" .}}{{end}}
   </body>
 </html>

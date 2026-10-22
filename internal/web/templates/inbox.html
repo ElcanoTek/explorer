@@ -3,7 +3,7 @@
 <form method="post" action="/logout">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Log out" aria-label="Log out" title="Log out">
-    <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#logout"></use></svg>
+    <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#logout"></use></svg>
   </button>
 </form>
 {{- end}}
@@ -13,7 +13,7 @@
 {{define "date_input"}}<span class="date-input-wrap">
                 <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
                 <button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">
-                  <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
+                  <svg class="date-input-icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#calendar"></use></svg>
                 </button>
               </span>{{end}}
 {{define "content"}}{{with .Page}}
@@ -82,7 +82,7 @@
           {{- end}}
         </div>
         <button type="button" class="btn btn-secondary date-ranges__add" id="add-date-range">
-          <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#plus"></use></svg>
+          <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#plus"></use></svg>
           <span>Add range</span>
         </button>
       </fieldset>
@@ -207,14 +207,14 @@
       {{- if .Rows}}
       <div class="results-toolbar__filters">
         <button type="button" class="btn btn-ghost results-filter-toggle" id="results-filter-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="results-filter-menu">
-          <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#filter"></use></svg>
+          <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#filter"></use></svg>
           <span>Filters</span>
         </button>
         <div class="results-filter-menu" id="results-filter-menu" hidden>
           <input class="ds-checkbox-input" type="checkbox" id="filter-has-attachments" />
           <label class="ds-checkbox results-filter-check" for="filter-has-attachments">
             {{template "check"}}
-            <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+            <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#paperclip"></use></svg>
             <span class="ds-checkbox__label">Has attachments</span>
           </label>
         </div>
@@ -233,7 +233,7 @@
         <span class="inbox-row__sender" title="{{.From}}">{{.SenderLabel}}</span>
         <span class="inbox-row__subject" title="{{.SubjectOrPlaceholder}}">
           {{- if .LikelyAttachment}}
-          <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+          <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#paperclip"></use></svg>
           {{- end}}
           <span class="inbox-row__subject-text">{{.SubjectOrPlaceholder}}</span>
         </span>
@@ -260,7 +260,7 @@
     {{- end}}
     {{- else}}
     <div class="empty-state">
-      <svg class="empty-state__icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#search"></use></svg>
+      <svg class="empty-state__icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#search"></use></svg>
       <h3 class="empty-state__title">No emails matched this search</h3>
       <p class="empty-state__hint">Try broadening your date range, adjusting filters, or switching to Fuzzy Search for more flexible matching.</p>
       <a class="btn btn-secondary" href="/">Reset search</a>
@@ -272,7 +272,7 @@
     <div class="detail-panel__header">
       <p class="detail-panel__title">Email details</p>
       <button type="button" class="icon-action detail-panel__close" id="detail-panel-close" aria-label="Close details">
-        <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#close"></use></svg>
+        <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#close"></use></svg>
       </button>
     </div>
     <div id="detail-panel-body" class="detail-panel__body">
@@ -283,7 +283,7 @@
 {{- end}}
 {{end}}{{end}}
 {{define "scripts"}}
-<script src="/static/js/datepicker.js?v={{.StaticVersion}}"></script>
-<script src="/static/js/date-ranges.js?v={{.StaticVersion}}"></script>
-<script src="/static/js/inbox.js?v={{.StaticVersion}}"></script>
+<script src="{{asset "js/datepicker.js"}}"></script>
+<script src="{{asset "js/date-ranges.js"}}"></script>
+<script src="{{asset "js/inbox.js"}}"></script>
 {{- end}}

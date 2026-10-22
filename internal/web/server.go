@@ -9,7 +9,9 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,16 +30,15 @@ import (
 
 // Server holds everything a request needs. Build one with New.
 type Server struct {
-	settings      config.Settings
-	inbox         *archive.Inbox
-	auth          provider
-	sessions      sessionCodec
-	jobs          *jobStore
-	pages         map[string]*template.Template
-	staticVersion string
-	allowedRoots  []string
-	now           func() time.Time
-	handler       http.Handler
+	settings     config.Settings
+	inbox        *archive.Inbox
+	auth         provider
+	sessions     sessionCodec
+	jobs         *jobStore
+	pages        map[string]*template.Template
+	allowedRoots []string
+	now          func() time.Time
+	handler      http.Handler
 }
 
 // Options are the seams tests and the CLI use; zero values mean production.
@@ -74,15 +75,14 @@ func New(ctx context.Context, s config.Settings, opts Options) (*Server, error) 
 		return nil, err
 	}
 	srv := &Server{
-		settings:      s,
-		inbox:         archive.New(store, s),
-		auth:          prov,
-		sessions:      sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
-		jobs:          newJobStore(now),
-		pages:         pages,
-		staticVersion: staticVersion(),
-		allowedRoots:  s.AllowedKeyRoots(),
-		now:           now,
+		settings:     s,
+		inbox:        archive.New(store, s),
+		auth:         prov,
+		sessions:     sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
+		jobs:         newJobStore(now),
+		pages:        pages,
+		allowedRoots: s.AllowedKeyRoots(),
+		now:          now,
 	}
 	srv.handler = srv.routes()
 	return srv, nil
@@ -96,8 +96,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.S
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	static, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(filesOnly{static})))
+	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("GET /auth/login", s.handleLogin)
@@ -109,6 +108,40 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /attachment", s.handleAttachment)
 	mux.HandleFunc("GET /{$}", s.handleInbox)
 	return s.securityHeaders(s.withSession(s.requireAuthentication(mux)))
+}
+
+// staticHandler serves the embedded static tree. Pages reference it through
+// assetURL, which appends ?v=<content hash of the tree>: a request carrying
+// the current version is cached for a year as immutable, because a deploy
+// that changes any static file changes the version. Anything else (no or a
+// stale ?v=, or a font that fonts.css loads by relative URL) must revalidate,
+// which the per-file ETag makes a cheap 304.
+func staticHandler() http.Handler {
+	static, _ := fs.Sub(staticFS, "static")
+	etags := map[string]string{}
+	_ = fs.WalkDir(static, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(static, path)
+		if err == nil {
+			sum := sha256.Sum256(b)
+			etags[path] = `"` + hex.EncodeToString(sum[:12]) + `"`
+		}
+		return nil
+	})
+	files := http.StripPrefix("/static/", http.FileServerFS(filesOnly{static}))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tag, ok := etags[strings.TrimPrefix(r.URL.Path, "/static/")]; ok {
+			w.Header().Set("ETag", tag)
+			if r.URL.Query().Get("v") == assetVersion() {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 // filesOnly serves files and answers 404 for directories, so the static

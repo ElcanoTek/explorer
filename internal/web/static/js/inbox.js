@@ -525,30 +525,26 @@
     warning.textContent = "";
   };
 
-  // Same markup as the date_input template in inbox.html. Values are always
-  // the YYYY-MM-DD the page computed, never user text.
-  const dateInputHtml = (name, value) => `<span class="date-input-wrap">
-          <input type="text" class="custom-datepicker" name="${name}" value="${value}" placeholder="YYYY-MM-DD" required />
-          <button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">
-            <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
-          </button>
-        </span>`;
-
+  // A new range row is a clean copy of the first server-rendered one, so its
+  // markup (and the versioned icon-sprite URL) always matches the
+  // date_input template. The picker's own state is stripped so attach()
+  // wires the copy afresh.
   const renderRow = (fromValue, toValue) => {
-    const row = document.createElement("div");
-    row.className = "date-range-row";
-    row.setAttribute("data-range-row", "1");
-    row.innerHTML = `
-      <label>
-        From
-        ${dateInputHtml("date_from", fromValue)}
-      </label>
-      <label>
-        To
-        ${dateInputHtml("date_to", toValue)}
-      </label>
-      <button type="button" class="btn btn-ghost date-range-row__remove" data-remove-range>Remove</button>
-    `;
+    const template = rangeList.querySelector("[data-range-row]");
+    if (!template) {
+      return null;
+    }
+    const row = template.cloneNode(true);
+    row.querySelectorAll("input.custom-datepicker").forEach((input) => {
+      input.value = input.name === "date_to" ? toValue : fromValue;
+      input.removeAttribute("data-datepicker");
+      input.removeAttribute("aria-controls");
+      input.setAttribute("aria-expanded", "false");
+    });
+    row.querySelectorAll("[data-date-button]").forEach((button) => {
+      button.removeAttribute("aria-controls");
+      button.setAttribute("aria-expanded", "false");
+    });
     return row;
   };
 
@@ -592,6 +588,9 @@
 
   addButton.addEventListener("click", () => {
     const row = renderRow(todayValue, todayValue);
+    if (!row) {
+      return;
+    }
     rangeList.appendChild(row);
     initDatePickers(row);
     syncRemoveButtons();

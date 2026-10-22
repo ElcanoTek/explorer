@@ -29,7 +29,7 @@
 #                              (exit 3 when the vendor copy is stale).
 set -euo pipefail
 
-FLAG_SYNC_VERSION=2
+FLAG_SYNC_VERSION=5
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$ROOT/flag.lock"
 
@@ -46,7 +46,14 @@ flag_dir() {
   (cd "$d" && pwd)
 }
 
-flag_commit() { git -C "$1" rev-parse HEAD 2>/dev/null || echo unknown; }
+# clean_flag DIR: refuse a source the lock could not reproduce — not a git
+# checkout, or design-system/ has uncommitted or untracked changes.
+clean_flag() {
+  git -C "$1" rev-parse --verify -q HEAD >/dev/null 2>&1 || die "$1 is not a git checkout of ElcanoTek/flag; the lock must name a real commit"
+  [ -z "$(git -C "$1" status --porcelain --untracked-files=all -- design-system)" ] || die "$1 has uncommitted changes under design-system/; commit or stash them so flag.lock names a commit that reproduces the files"
+}
+
+flag_commit() { git -C "$1" rev-parse HEAD; }
 
 # write_lock COMMIT DIRS_FILE FILES_FILE
 write_lock() {
@@ -65,6 +72,10 @@ read_lock() { # emits: kind fields...
   grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$LOCK"
 }
 
+# has_dest LIST PATH: does LIST ("sha flag-path repo-path" records) lock PATH?
+# Exact string comparison, so paths with regex characters ([ ] . *) are safe.
+has_dest() { awk -v p="$2" '$3 == p { found = 1 } END { exit !found }' "$1"; }
+
 # dir_prefix REPO_DIR: the flag directory a locked `dir` mirrors, derived from
 # any locked file under it (repo path REPO_DIR/rel <-> flag path PREFIX/rel).
 dir_prefix() {
@@ -77,6 +88,10 @@ dir_prefix() {
 
 cmd_check() {
   local bad=0 kind a b c locked
+  # A truncated or emptied lock must not pass: exactly one flag record and at
+  # least one file record, or nothing below proves anything.
+  [ "$(read_lock | awk '$1 == "flag"' | wc -l)" -eq 1 ] || { echo "flag-sync: flag.lock must have exactly one 'flag <commit>' line" >&2; exit 1; }
+  [ "$(read_lock | awk '$1 == "file"' | wc -l)" -ge 1 ] || { echo "flag-sync: flag.lock locks no files" >&2; exit 1; }
   locked="$(mktemp)"; trap 'rm -f "$locked"' RETURN
   while read -r kind a b c; do
     case "$kind" in
@@ -104,7 +119,7 @@ cmd_check() {
 
 cmd_sync() {
   local fd dirs files kind a b c d prefix f rel
-  fd="$(flag_dir "${1:-}")"
+  fd="$(flag_dir "${1:-}")"; clean_flag "$fd"
   dirs="$(mktemp)"; files="$(mktemp)"; trap 'rm -f "$dirs" "$files"' RETURN
   while read -r kind a b c; do
     case "$kind" in
@@ -123,21 +138,21 @@ cmd_sync() {
     [ -d "$fd/design-system/$prefix" ] || die "flag no longer has design-system/$prefix (locked as dir $d)"
     while IFS= read -r f; do
       rel="${f#"$fd/design-system/$prefix"/}"
-      grep -q " $d/$rel\$" "$files" && continue
+      has_dest "$files" "$d/$rel" && continue
       mkdir -p "$(dirname "$ROOT/$d/$rel")"
       cp "$f" "$ROOT/$d/$rel"
       echo "$(sha "$ROOT/$d/$rel") $prefix/$rel $d/$rel" >> "$files"
     done < <(find "$fd/design-system/$prefix" -type f ! -name '.DS_Store' | sort)
     while IFS= read -r f; do
       rel="${f#"$ROOT"/}"
-      grep -q " $rel\$" "$files" || rm -f "$f"
+      has_dest "$files" "$rel" || rm -f "$f"
     done < <(find "$ROOT/$d" -type f | sort)
   done < "$dirs"
   # A single locked file flag removed is an error, not a silent drop.
   while read -r kind a b c; do
     [ "$kind" = file ] || continue
     while read -r d; do case "$c" in "$d"/*) continue 2 ;; esac; done < "$dirs"
-    grep -q " $c\$" "$files" || die "flag no longer has design-system/$b (locked as $c); remove that line or pick its replacement"
+    has_dest "$files" "$c" || die "flag no longer has design-system/$b (locked as $c); remove that line or pick its replacement"
   done < <(read_lock)
   write_lock "$(flag_commit "$fd")" "$dirs" "$files"
   echo "flag-sync: synced $(wc -l < "$files" | tr -d ' ') files from flag $(flag_commit "$fd" | cut -c1-12)"
@@ -146,6 +161,7 @@ cmd_sync() {
 cmd_add() {
   local fd src dest dirs files kind a b c f rel
   if [ $# -eq 3 ]; then fd="$(flag_dir "$1")"; shift; else fd="$(flag_dir "")"; fi
+  clean_flag "$fd"
   [ $# -eq 2 ] || die "usage: flag-sync.sh add [FLAG_DIR] <flag-path> <repo-path>"
   src="${1%/}"; dest="${2%/}"
   dirs="$(mktemp)"; files="$(mktemp)"; trap 'rm -f "$dirs" "$files"' RETURN
@@ -190,7 +206,7 @@ cmd_status() {
     [ -n "$prefix" ] && [ -d "$fd/design-system/$prefix" ] || continue
     while IFS= read -r f; do
       rel="${f#"$fd/design-system/$prefix"/}"
-      grep -q "^file [0-9a-f]* $prefix/$rel $a/$rel\$" "$LOCK" || { echo "NEW      design-system/$prefix/$rel (flag added it to vendored dir $a)"; stale=1; }
+      awk -v f="$prefix/$rel" -v r="$a/$rel" '$1 == "file" && $3 == f && $4 == r { found = 1 } END { exit !found }' "$LOCK" || { echo "NEW      design-system/$prefix/$rel (flag added it to vendored dir $a)"; stale=1; }
     done < <(find "$fd/design-system/$prefix" -type f ! -name '.DS_Store' | sort)
   done < <(read_lock)
   if [ "$stale" -ne 0 ]; then echo "flag-sync: vendored copy is behind flag $(flag_commit "$fd" | cut -c1-12); run scripts/flag-sync.sh sync" >&2; exit 3; fi

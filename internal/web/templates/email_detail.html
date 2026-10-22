@@ -60,7 +60,7 @@
       <div class="attachment-chips" aria-label="Attachments">
         {{- range .Email.Attachments}}
         <a class="attachment-chip" href="/attachment?s3_key={{$.Page.Email.S3Key}}&amp;filename={{.Filename}}" aria-label="Download {{.Filename}}">
-          <svg class="attachment-chip__icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+          <svg class="attachment-chip__icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#paperclip"></use></svg>
           <span class="attachment-chip__meta">
             <span class="attachment-chip__name" title="{{.Filename}}">{{.Filename}}</span>
             <span class="attachment-chip__size">{{.SizeBytes}} bytes</span>
@@ -80,5 +80,5 @@
 </section>
 {{end}}{{end}}
 {{define "scripts"}}
-<script src="/static/js/email.js?v={{.StaticVersion}}"></script>
+<script src="{{asset "js/email.js"}}"></script>
 {{- end}}

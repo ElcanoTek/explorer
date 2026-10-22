@@ -160,8 +160,9 @@ licences, listed with their full terms in [NOTICE](../NOTICE):
 - **The Flag design system** — everything under
   `internal/web/static/design-system/` (tokens, icon sprite, logos, font
   stylesheet), vendored from ElcanoTek/flag and listed in `flag.lock`.
-  Copyright (c) 2026 ElcanoTek, Inc., released under the **MIT** licence,
-  so you may reuse those files under MIT terms today. MIT covers the
+  Copyright (c) 2026 ElcanoTek, Inc., released under the **MIT** licence
+  (full text in `internal/web/static/design-system/FLAG-LICENSE`), so you
+  may reuse those files under MIT terms today. MIT covers the
   copyright only; the logos remain ElcanoTek trademarks (see above).
 - **The fonts** inside it keep their upstream licences: Nebula Sans under the
   SIL Open Font License 1.1, Hack under MIT plus the Bitstream Vera licence.

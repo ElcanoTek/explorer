@@ -62,13 +62,40 @@
 
   --color-overlay-soft: rgba(0, 0, 0, 0.2);
   --color-overlay-strong: rgba(0, 0, 0, 0.4);
+  /* Recessed in-flow surface: code and output wells, preview toolbars,
+   * tool-result panels. Not the modal scrim (--color-overlay-strong): the two
+   * match in dark, but a light well inside a card must stay near-white. */
+  --color-surface-inset: var(--color-overlay-strong);
 
   --color-success: #50fa7b;
   --color-warning: #ff8847;
-  --color-danger: #ff5555;
-  --color-info: #8a8bc0;
+  /* danger and info were #ff5555 / #8a8bc0, 4.49:1 and 4.39:1 as text on
+   * --color-surface-2; nudged toward white by the smallest step that clears
+   * 4.5:1 on every surface. */
+  --color-danger: #ff5757;
+  --color-info: #8e8ec2;
   /* Text color used on top of --color-success fills (e.g. success buttons). */
   --color-on-success: var(--color-black);
+
+  /* Filled controls. White on --color-primary is 4.46:1, just under WCAG AA,
+   * so a filled button, selected option or segmented choice paints its label
+   * (--color-on-primary-fill) on --color-primary-fill: the primary mixed 1%
+   * toward black, the smallest step that reaches 4.5:1 (4.53:1). Its hover is
+   * 11% toward black (5.43:1), so hovering only ever raises contrast. Every
+   * token here is a static value, precomputed rather than written as
+   * color-mix(): a browser without color-mix() would drop the whole custom
+   * property and paint a transparent button under a white label.
+   * The raw --color-primary stays for things with nothing painted on them
+   * (an active bar, a checkbox accent, tints, borders). From fleet's
+   * measured fill pair; see Flag's design-system/TOKENS.md "Filled controls". */
+  --color-primary-fill: #7171a9;
+  --color-primary-fill-hover: #656598;
+  /* The label color for primary fills. Pair it with --color-primary-fill
+   * (or --gradient-action-fill), not the raw primary (4.46:1). */
+  --color-on-primary: var(--color-white);
+  --color-on-primary-fill: var(--color-on-primary);
+  --color-secondary-fill: var(--color-secondary);
+  --color-secondary-fill-hover: #4f6470; /* secondary 10% toward black */
 
   --color-status-pending-fg: #d3dde6;
   --color-status-pending-bg: rgba(124, 140, 152, 0.2);
@@ -137,6 +164,14 @@
   --gradient-action-primary:
     linear-gradient(140deg, #7272ab, #586f7c);
 
+  /* The action gradient under a label: measured stops, so
+   * --color-on-primary-fill holds 4.5:1 at every point of the blend. Put a
+   * label on this, never on --gradient-action-primary. */
+  --gradient-action-fill:
+    linear-gradient(140deg, var(--color-primary-fill), var(--color-secondary-fill));
+  --gradient-action-fill-hover:
+    linear-gradient(140deg, var(--color-primary-fill-hover), var(--color-secondary-fill-hover));
+
   --gradient-action-success:
     linear-gradient(155deg, rgba(44, 78, 59, 0.82), rgba(32, 53, 41, 0.9));
 
@@ -188,6 +223,18 @@
   --transition-fast: 140ms ease;
   --transition-base: 200ms ease;
   --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+  /* Syntax highlighting for code blocks (keyword, string, ...). Every value
+   * holds 4.5:1 on a --color-surface-inset well over --color-bg,
+   * --color-surface-1 and --color-surface-2, in both themes. */
+  --color-syntax-keyword: #c49bff;
+  --color-syntax-string: #8fe7b8;
+  --color-syntax-number: #f1a976;
+  --color-syntax-comment: #8c8c8c;
+  --color-syntax-function: #f1d976;
+  --color-syntax-builtin: #7fc7ff;
+  --color-syntax-operator: #d2d9de;
+  --color-syntax-punctuation: #beb6cd;
 
   /* Connection picker components (switch, compact search, small pill, status
      kicker, group header, match highlight, state panels, scrim). Values from
@@ -246,6 +293,12 @@ body.theme-light {
   --color-text-disabled: rgba(92, 106, 135, 0.6);
   --color-overlay-soft: rgba(114, 114, 171, 0.08);
   --color-overlay-strong: rgba(20, 24, 36, 0.16);
+  /* The dark accent (#9da7ef) is 2.0-2.3:1 on the light surfaces, and accent
+   * marks focus rings, input focus borders and hover borders: state-bearing
+   * non-text that needs 3:1. Same hue, deep enough for 4.6:1+ (auth shipped
+   * this override first). */
+  --color-accent: #5a64b8;
+  --color-surface-inset: rgba(38, 55, 92, 0.045);
 
   /* Light-mode accent overrides: the dark-theme accents are tuned for dark
    * surfaces and fail WCAG AA as text on white (#ff5555 ≈ 2.9:1). These darker
@@ -283,7 +336,7 @@ body.theme-light {
   --color-status-error-fg: #7c1f1f;
   --color-status-error-bg: rgba(255, 85, 85, 0.18);
   --color-status-error-border: rgba(255, 85, 85, 0.44);
-  --color-status-cancelled-fg: #59657a;
+  --color-status-cancelled-fg: #556074; /* was #59657a, 4.24:1 on its tint over surface-2 */
   --color-status-cancelled-bg: rgba(108, 118, 130, 0.16);
   --color-status-cancelled-border: rgba(108, 118, 130, 0.34);
 
@@ -302,6 +355,16 @@ body.theme-light {
   --gradient-surface-panel: linear-gradient(165deg, #ffffff, #f2f6ff);
   --gradient-surface-card: linear-gradient(145deg, #ffffff, #eef3ff);
   --gradient-surface-elevated: linear-gradient(150deg, #ffffff, #e8efff);
+  /* Light keeps the deeper action surface: the hover stops, which move away
+   * from the white label. */
+  --gradient-action-fill:
+    linear-gradient(140deg, var(--color-primary-fill-hover), var(--color-secondary-fill-hover));
+  --gradient-action-fill-hover:
+    linear-gradient(
+      140deg,
+      #5b5b89,
+      #475a64
+    );
   --gradient-featured-top-accent:
     linear-gradient(90deg, rgba(114, 114, 171, 0.42), rgba(88, 111, 124, 0.22));
   --gradient-featured-top-accent-selected:
@@ -314,6 +377,15 @@ body.theme-light {
   --shadow-control-selected: 0 0 0 2px var(--color-status-running-border);
 
   --focus-ring: 0 0 0 2px var(--color-white), 0 0 0 4px var(--color-accent);
+
+  --color-syntax-keyword: #7b39eb;
+  --color-syntax-string: #0e7539;
+  --color-syntax-number: #9b5300;
+  --color-syntax-comment: #5f6572;
+  --color-syntax-function: #845f00;
+  --color-syntax-builtin: #0369a1;
+  --color-syntax-operator: #33415f;
+  --color-syntax-punctuation: #586682;
 
   /* Connection picker components (switch, compact search, small pill, status
      kicker, group header, match highlight, state panels, scrim). Values from
@@ -333,8 +405,6 @@ body.theme-light {
   --color-switch-track-off: #80829e;
   --color-switch-knob: #ffffff;
   --shadow-switch-knob: 0 1px 2px rgba(26, 11, 30, 0.28);
-  /* The base light ring (#9da7ef) is under 3:1 on picker surfaces. */
-  --focus-ring-picker: 0 0 0 2px var(--color-white), 0 0 0 4px var(--color-accent-strong);
   --color-match-bg: #9da7ef;
   --color-state-ok: #1b7950;
   --color-state-warn: #8e611e;
