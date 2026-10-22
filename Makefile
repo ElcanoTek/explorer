@@ -49,8 +49,11 @@ stack-check:
 flag-status:
 	scripts/flag-sync.sh status $(FLAG_DIR)
 
+# govulncheck must be built with the toolchain go.mod selects: with plain
+# GOTOOLCHAIN=auto the go command builds it with the older toolchain x/vuln
+# itself asks for, which then cannot load this module's packages.
 vulncheck:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	GOTOOLCHAIN=$$(go env GOVERSION) go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 # Local development server: reads ./.env (copy .env.example). Development
 # only: plain HTTP needs EXPLORER_UI_COOKIE_SECURE=0.
