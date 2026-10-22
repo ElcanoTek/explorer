@@ -36,6 +36,7 @@ is gitignored, and a real one has been committed here before.
 
 ```bash
 go test -race ./...
+make test-js        # plain-JS unit tests: node --test, no npm install
 make test-root      # the install lifecycle harness; needs sudo
 ```
 
@@ -53,7 +54,8 @@ test:
 |---|---|
 | `internal/auth` | The Elcano cookie verifier — valid, expired, tampered, foreign-key, malformed. |
 | `internal/centralauth` | Token verification, JWKS rotation, the code exchange, the access list, opaque app sessions, expiry, revocation, CSRF, and compatibility with existing `access.db` files. |
-| `internal/web` | Routes end to end via `httptest`, signed in and anonymous, both auth modes; date-range parsing, S3 key scoping, search jobs and cursors, security headers. |
+| `internal/web` | Routes end to end via `httptest`, signed in and anonymous, both auth modes; date-range parsing, S3 key scoping, search jobs and cursors, security headers, the date-field markup. |
+| `internal/web/jstest` | (Node) the date picker's date arithmetic, keyboard targets and placement; the search form's range-day counting. |
 | `internal/archive`, `internal/mailmsg` | Prefix expansion, header parsing, search, message rendering, attachments, MIME edge cases. |
 | `internal/htmlsafe` | The sanitizer and linkifier: XSS corpus, golden output, linear-time behaviour on hostile input. |
 | `internal/dotenv`, `internal/config` | `.env` parsing identical to python-dotenv, layering, bootstrap's in-place merge. |
@@ -71,6 +73,7 @@ gofmt -l .                       # must print nothing
 go vet ./...
 golangci-lint run                # v2.14.0; rules in .golangci.yml
 shellcheck -S warning $(git ls-files '*.sh')
+scripts/stack-check.sh           # Elcano frontend standard (AGENTS.md), flag.lock, no CDNs
 ```
 
 CI runs exactly these. Every `//nolint` names the linter and says why.
@@ -85,9 +88,14 @@ Every first-party source file carries:
 ```
 
 (`#` comments in shell, after the shebang; `/* */` in CSS; `//` in JS). New
-files need it too. Vendored assets under `internal/web/static/vendor/` are
-left alone; code ported from another project keeps its upstream license
-header and LICENSE file instead (`internal/dotenv`, see `NOTICE`).
+files need it too. The Flag files under `internal/web/static/design-system/`
+are vendored byte-for-byte (`flag.lock`; update them with
+`scripts/flag-sync.sh sync`, never by hand) and are left alone. Likewise
+`scripts/flag-sync.sh` and `scripts/stack-check.sh` are vendored MIT copies
+of Flag's `tools/product/` scripts, kept byte-identical: they keep Flag's
+`SPDX-License-Identifier: MIT` header (Flag is MIT; see `NOTICE`), and you
+replace them with a newer copy from Flag rather than editing them here. Code ported from another project keeps its upstream
+license header and LICENSE file instead (`internal/dotenv`, see `NOTICE`).
 
 ## Branches and pull requests
 
@@ -98,8 +106,9 @@ header and LICENSE file instead (`internal/dotenv`, see `NOTICE`).
   "updates"). Group related changes into one commit rather than one commit per
   file.
 - One topic per PR. Say what breaks and how you tested it.
-- CI (`.github/workflows/ci.yml`) must be green: format, vet, lint, race
-  tests, the root lifecycle test, govulncheck and shellcheck.
+- CI (`.github/workflows/ci.yml`) must be green: stack-check, JS tests,
+  format, vet, lint, race tests, the root lifecycle test, govulncheck and
+  shellcheck.
   CodeQL (`.github/workflows/codeql.yml`) scans on every push and PR and
   weekly; a new alert on your branch is yours to look at.
 - Use the issue and pull-request templates under `.github/`; they ask for

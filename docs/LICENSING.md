@@ -48,10 +48,11 @@ none: until the Change Date, **non-production use only**.
 - Offer it to others as a hosted or managed service.
 - Strip the licence, or relicense it under terms of your own.
 - Claim the Change License (MIT) before that version's Change Date arrives.
-- Use ElcanoTek trademarks or logos. The licence grants no trademark rights,
-  and this repository contains ElcanoTek branding assets under
-  `internal/web/static/design-system/logos/`. You may keep them where the licence
-  requires attribution; do not use them to brand your own product.
+- Use ElcanoTek trademarks or logos. Neither the BSL nor Flag's MIT licence
+  (below) grants trademark rights, and this repository contains ElcanoTek
+  branding assets under `internal/web/static/design-system/logos/`. You may
+  keep them where a licence requires attribution; do not use them to brand
+  your own product.
 
 Violating the licence terminates your rights **for every version**, not just
 the one you misused, and terminates them automatically.
@@ -150,6 +151,26 @@ If you think a file in this repository is missing a header, carries the wrong
 one, or bundles third-party code whose licence conflicts with BSL 1.1, open an
 issue. Third-party components we know about are listed in
 [NOTICE](../NOTICE).
+
+## Files that are not under the BSL
+
+Not everything in this repository is the Licensed Work. These carry their own
+licences, listed with their full terms in [NOTICE](../NOTICE):
+
+- **The Flag design system** — everything under
+  `internal/web/static/design-system/` (tokens, icon sprite, logos, font
+  stylesheet), vendored from ElcanoTek/flag and listed in `flag.lock`.
+  Copyright (c) 2026 ElcanoTek, Inc., released under the **MIT** licence
+  (full text in `internal/web/static/design-system/FLAG-LICENSE`), so you
+  may reuse those files under MIT terms today. MIT covers the
+  copyright only; the logos remain ElcanoTek trademarks (see above).
+  Icons: some glyphs in Flag's core-icons.svg are drawn after Lucide
+  (https://lucide.dev), ISC License — the full notice is retained at the top
+  of the vendored sprite (`internal/web/static/design-system/icons/core-icons.svg`).
+- **The fonts** inside it keep their upstream licences: Nebula Sans under the
+  SIL Open Font License 1.1, Hack under MIT plus the Bitstream Vera licence.
+- **The dotenv parser** in `internal/dotenv/` is a port of python-dotenv and
+  stays under its BSD-3-Clause licence.
 
 ## FAQ
 

@@ -264,21 +264,29 @@ summary:focus-visible,
   transform: none;
 }
 
+/* Flag's filled-control pair (COMPONENTS.md "Primary"): the label is
+   --color-on-primary-fill on --gradient-action-fill (dark) or a solid
+   --color-primary-fill (light), never on the raw primary (4.46:1). The
+   hover states are set here because .btn:hover would otherwise wash the
+   fill out to the ghost overlay. */
 .btn-primary {
-  background: var(--gradient-action-primary);
-  border-color: var(--color-primary);
-  color: var(--color-text-primary);
+  background: var(--gradient-action-fill);
+  border-color: var(--color-primary-fill);
+  color: var(--color-on-primary-fill);
 }
 
 .btn-primary:hover {
+  background: var(--gradient-action-fill-hover);
   border-color: var(--color-accent);
-  filter: brightness(1.04);
+  color: var(--color-on-primary-fill);
 }
 
 :root[data-theme="light"] .btn-primary {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: var(--color-white);
+  background: var(--color-primary-fill);
+}
+
+:root[data-theme="light"] .btn-primary:hover {
+  background: var(--color-primary-fill-hover);
 }
 
 .btn-secondary {
@@ -350,6 +358,15 @@ summary:focus-visible,
   opacity: 1;
 }
 
+/* The log-out button is the rightmost control in the top bar: a centred
+   tooltip ran past the viewport edge on phones and gave every inbox page a
+   sideways scroll (even while invisible). Anchor it to the button's right
+   edge instead. */
+.logout-icon-btn.has-tooltip::after {
+  right: 0;
+  transform: none;
+}
+
 .subtle {
   color: var(--color-text-secondary);
 }
@@ -419,23 +436,50 @@ select option {
   position: relative;
 }
 
-input.custom-datepicker,
-input.flatpickr-input,
-input.flatpickr-mobile {
-  padding-right: 2rem;
+input.custom-datepicker {
+  padding-right: 2.5rem;
   text-align: left;
   max-width: 100%;
   touch-action: manipulation;
 }
 
-.date-input-icon {
+input.custom-datepicker[readonly] {
+  cursor: pointer;
+}
+
+/* The calendar button sits inside the field's right edge, where the icon
+   always was; it is a real button so the calendar has a labelled way in. */
+.date-input-button {
   position: absolute;
-  right: 0.625rem;
+  right: 0.25rem;
   top: 50%;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.date-input-button:hover,
+.date-input-button[aria-expanded="true"] {
+  color: var(--color-text-primary);
+}
+
+.date-input-button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.date-input-icon {
   width: 1rem;
   height: 1rem;
-  transform: translateY(-50%);
-  color: var(--color-text-muted);
   pointer-events: none;
 }
 
@@ -1296,11 +1340,20 @@ input.flatpickr-mobile {
   font-family: var(--font-code) !important;
 }
 
+/* Links in mail bodies use Flag's link colour (--color-secondary was 3.1:1
+   on the dark card) and are underlined, since colour alone does not set
+   them apart from the body text. */
 .body-preview-html.message-body a,
 .body-preview-html.message-body a *,
 .message-body--text a,
 .message-body--text a * {
-  color: var(--color-secondary) !important;
+  color: var(--color-link) !important;
+}
+
+.body-preview-html.message-body a,
+.message-body--text a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .message-card__sender-email,
@@ -1340,71 +1393,181 @@ input.flatpickr-mobile {
   letter-spacing: 0.06em;
 }
 
-.flatpickr-calendar {
-  max-width: calc(100vw - 1rem);
-  background: var(--gradient-surface-elevated) !important;
-  border: 1px solid var(--color-border) !important;
-  box-shadow: var(--shadow-md) !important;
-  color: var(--color-text-primary) !important;
+/* Date picker calendar (static/js/datepicker.js). Fixed to the viewport
+   and placed by the script under its field; tokens only. The solid surface
+   under the elevated gradient keeps the page from showing through. */
+.datepicker {
+  position: fixed;
+  z-index: 1300;
+  width: 19.25rem;
+  max-width: calc(100vw - 2 * var(--space-2));
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--gradient-surface-elevated), var(--color-surface-1);
+  box-shadow: var(--shadow-md);
+  color: var(--color-text-primary);
 }
 
-.flatpickr-months .flatpickr-month,
-.flatpickr-current-month,
-.flatpickr-current-month .flatpickr-monthDropdown-months,
-.flatpickr-current-month input.cur-year,
-.flatpickr-months .flatpickr-prev-month,
-.flatpickr-months .flatpickr-next-month,
-.flatpickr-months .flatpickr-prev-month svg,
-.flatpickr-months .flatpickr-next-month svg {
-  color: var(--color-text-primary) !important;
-  fill: var(--color-text-primary) !important;
+.datepicker__header {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
 }
 
-.flatpickr-weekdays,
-span.flatpickr-weekday {
-  background: transparent !important;
-  color: var(--color-text-secondary) !important;
+/* The visible title is for screen readers (live region); sighted people
+   read and change the month and year in the controls beside it. */
+.datepicker__title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
-.flatpickr-day {
-  color: var(--color-text-primary) !important;
-  border: none !important;
+.datepicker__jump {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
-.flatpickr-day:hover,
-.flatpickr-day:focus {
-  background: var(--color-status-running-bg) !important;
-  border-radius: var(--radius-sm) !important;
+.datepicker__month,
+.datepicker__year {
+  width: auto;
+  min-height: 2rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  padding: 0 var(--space-1);
 }
 
-.flatpickr-day.selected,
-.flatpickr-day.startRange,
-.flatpickr-day.endRange,
-.flatpickr-day.selected:hover,
-.flatpickr-day.startRange:hover,
-.flatpickr-day.endRange:hover {
-  background: var(--gradient-action-primary) !important;
-  color: var(--color-text-primary) !important;
-  border-radius: var(--radius-sm) !important;
+.datepicker__month {
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
-:root[data-theme="light"] .flatpickr-day.selected,
-:root[data-theme="light"] .flatpickr-day.startRange,
-:root[data-theme="light"] .flatpickr-day.endRange,
-:root[data-theme="light"] .flatpickr-day.selected:hover,
-:root[data-theme="light"] .flatpickr-day.startRange:hover,
-:root[data-theme="light"] .flatpickr-day.endRange:hover {
-  background: var(--color-primary) !important;
-  color: var(--color-white) !important;
+.datepicker__year {
+  width: 4.75rem;
+  flex: 0 0 auto;
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
-.flatpickr-day.flatpickr-disabled,
-.flatpickr-day.prevMonthDay,
-.flatpickr-day.nextMonthDay,
-.flatpickr-day.notAllowed,
-.flatpickr-day.notAllowed.prevMonthDay,
-.flatpickr-day.notAllowed.nextMonthDay {
-  color: var(--color-text-disabled) !important;
+.datepicker__year::-webkit-inner-spin-button,
+.datepicker__year::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.datepicker__nav {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.datepicker__nav svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.datepicker__nav:hover {
+  background: var(--color-status-running-bg);
+}
+
+.datepicker__grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.datepicker__grid th {
+  padding: 0 0 var(--space-1);
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-align: center;
+}
+
+.datepicker__grid td {
+  padding: 0;
+  text-align: center;
+}
+
+.datepicker__day {
+  width: 100%;
+  max-width: 2.5rem;
+  height: 2.4375rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.datepicker__day.is-outside {
+  color: var(--color-text-disabled);
+}
+
+.datepicker__day.is-today:not(.is-selected) {
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.datepicker__day:hover,
+.datepicker__day:focus {
+  background: var(--color-status-running-bg);
+}
+
+.datepicker__nav:focus-visible,
+.datepicker__month:focus-visible,
+.datepicker__year:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Selected day: Flag's filled pair, as for .btn-primary. */
+.datepicker__day.is-selected,
+.datepicker__day.is-selected:hover {
+  background: var(--gradient-action-fill);
+  color: var(--color-on-primary-fill);
+}
+
+:root[data-theme="light"] .datepicker__day.is-selected,
+:root[data-theme="light"] .datepicker__day.is-selected:hover {
+  background: var(--color-primary-fill);
+}
+
+/* Days sit edge to edge, so keyboard focus is Flag's inset day ring, in the
+   colour that holds 3:1 on the day's own fill. Kept after every day-state
+   rule so it wins. */
+.datepicker__day:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-day);
+}
+
+.datepicker__day.is-selected:focus-visible {
+  box-shadow: var(--focus-ring-day-on-fill);
 }
 
 @media (min-width: 1024px) {

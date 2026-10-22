@@ -555,9 +555,15 @@ func TestPagesCarryNonceCSPAndNoInlineHandlers(t *testing.T) {
 	if m == nil {
 		t.Fatalf("csp %q", csp)
 	}
-	for _, want := range []string{"default-src 'self'", "style-src 'self';", "img-src 'self' data: https:", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'self'", "style-src 'self';", "img-src 'self' data: https:", "frame-ancestors 'none'",
+		"object-src 'none'", "frame-src 'none'", "media-src 'none'", "worker-src 'none'", "base-uri 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("csp lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"unsafe-inline", "unsafe-eval", "http:", "*"} {
+		if strings.Contains(csp, bad) {
+			t.Errorf("csp allows %q: %s", bad, csp)
 		}
 	}
 	if strings.Contains(csp, "form-action") {
@@ -655,5 +661,194 @@ func TestSemicolonQueryKeepsTheJobUsable(t *testing.T) {
 	}
 	if page := e.get(loc); strings.Contains(page.body, "This search session expired") {
 		t.Fatal("job lost after redirect")
+	}
+}
+
+// The date fields are Explorer's own (static/js/datepicker.js): every mode
+// renders text inputs holding YYYY-MM-DD, each with its calendar button
+// named for its own field (two "Choose date" buttons side by side were
+// indistinguishable to a screen reader), loads only same-origin scripts, and
+// nothing of flatpickr remains.
+func TestDateFieldsUseTheInHousePicker(t *testing.T) {
+	e := elcanoEnv(t)
+	today := time.Now().UTC().Format(isoDate)
+	field := regexp.MustCompile(`<input type="text" class="custom-datepicker" name="(day|date_from|date_to)" value="([^"]*)" placeholder="YYYY-MM-DD" required />\s*<button type="button" class="date-input-button" data-date-button aria-label="([^"]*)" aria-haspopup="dialog" aria-expanded="false">`)
+	labels := map[string]string{"day": "Choose day", "date_from": "Choose From date", "date_to": "Choose To date"}
+	for mode, names := range map[string][]string{"view": {"day"}, "exact": {"date_from", "date_to"}, "fuzzy": {"date_from", "date_to"}} {
+		body := e.get("/?mode=" + mode).body
+		if strings.Contains(strings.ToLower(body), "flatpickr") {
+			t.Errorf("%s: flatpickr still referenced", mode)
+		}
+		for _, src := range []string{"js/datepicker.js", "js/date-ranges.js", "js/inbox.js"} {
+			if !strings.Contains(body, `<script src="`+assetURL(src)+`"`) {
+				t.Errorf("%s: missing script %s", mode, src)
+			}
+		}
+		inbox := strings.Index(body, assetURL("js/inbox.js"))
+		if inbox < 0 || strings.Index(body, assetURL("js/datepicker.js")) > inbox ||
+			strings.Index(body, assetURL("js/date-ranges.js")) > inbox {
+			t.Errorf("%s: helpers must load before inbox.js", mode)
+		}
+		got := field.FindAllStringSubmatch(body, -1)
+		if len(got) != len(names) {
+			t.Fatalf("%s: %d date fields, want %d:\n%s", mode, len(got), len(names), body)
+		}
+		for i, m := range got {
+			if m[1] != names[i] || m[2] != today {
+				t.Errorf("%s: field %d = %s=%q, want %s=%q", mode, i, m[1], m[2], names[i], today)
+			}
+			if m[3] != labels[m[1]] {
+				t.Errorf("%s: %s button named %q, want %q", mode, m[1], m[3], labels[m[1]])
+			}
+		}
+	}
+
+	// A submitted range comes back as the same ISO values, ordered.
+	body := e.get("/?mode=exact&date_from=2026-03-09&date_to=2026-03-02").body
+	if !strings.Contains(body, `name="date_from" value="2026-03-02"`) || !strings.Contains(body, `name="date_to" value="2026-03-09"`) {
+		t.Errorf("range not echoed as ordered ISO dates")
+	}
+
+	for path, want := range map[string]int{
+		"/static/js/datepicker.js":                   http.StatusOK,
+		"/static/js/date-ranges.js":                  http.StatusOK,
+		"/static/vendor/flatpickr/flatpickr.min.js":  http.StatusNotFound,
+		"/static/vendor/flatpickr/flatpickr.min.css": http.StatusNotFound,
+	} {
+		resp := e.get(path)
+		if resp.StatusCode != want {
+			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
+		if want == http.StatusOK && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") {
+			t.Errorf("GET %s content type %q", path, resp.Header.Get("Content-Type"))
+		}
+	}
+}
+
+// inbox.js copies the first server-rendered range row rather than holding
+// its own markup, so it never hard-codes a static URL (which would miss the
+// version segment) or drifts from the date_input template.
+func TestScriptsHoldNoUnversionedStaticURLs(t *testing.T) {
+	for _, name := range []string{"inbox.js", "datepicker.js", "date-ranges.js", "base.js", "email.js"} {
+		js, err := staticFS.ReadFile("static/js/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(js), "/static/") {
+			t.Errorf("%s hard-codes a /static/ URL", name)
+		}
+	}
+}
+
+// Every static file a page references carries the current version as a path
+// segment, the vendored Flag token sheet, fonts sheet, icon sprite and logos
+// included, so a deploy never mixes cached old Flag files with new product
+// CSS; the fonts fonts.css loads by relative URL inherit the segment. The
+// current version is immutable for a year; anything else revalidates by ETag;
+// misses never get a cache header.
+func TestStaticAssetsAreVersionedAndCached(t *testing.T) {
+	e := elcanoEnv(t)
+	key, at := todayKey("msg1")
+	e.store.put(key, sampleMessage, at)
+	v := assetVersion()
+	if !isVersionSegment("v-" + v) {
+		t.Fatalf("asset version %q", v)
+	}
+	prefix := "/static/v-" + v + "/"
+	ref := regexp.MustCompile(`(?:src|href)="(/static/[^"#]*)`)
+	seen := map[string]bool{}
+	for _, path := range []string{"/?run_search=1&mode=view", "/?mode=exact", "/email?s3_key=" + url.QueryEscape(key), "/email?s3_key=nope"} {
+		for _, m := range ref.FindAllStringSubmatch(e.get(path).body, -1) {
+			if !strings.HasPrefix(m[1], prefix) || strings.Contains(m[1], "?") {
+				t.Errorf("%s: unversioned static URL %s", path, m[1])
+			}
+			seen[strings.TrimPrefix(m[1], prefix)] = true
+		}
+	}
+	for _, want := range []string{
+		"design-system/tokens/design-tokens.css", "design-system/fonts/fonts.css",
+		"design-system/icons/core-icons.svg", "design-system/logos/elcano-mark-primary.svg",
+		"design-system/logos/explorer-favicon.svg", "styles.css", "js/datepicker.js",
+	} {
+		if !seen[want] {
+			t.Errorf("pages never reference %s", want)
+		}
+	}
+
+	// fonts.css names its fonts relatively, so they resolve under the
+	// versioned prefix and every font it names exists there.
+	css, err := staticFS.ReadFile("static/design-system/fonts/fonts.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fonts := regexp.MustCompile(`url\("?\./([^")]+)"?\)`).FindAllStringSubmatch(string(css), -1)
+	if len(fonts) == 0 {
+		t.Fatal("fonts.css names no relative font URLs")
+	}
+	immutable := "public, max-age=31536000, immutable"
+	for _, m := range fonts {
+		resp := e.get(prefix + "design-system/fonts/" + m[1])
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != immutable {
+			t.Errorf("font %s: %d %q", m[1], resp.StatusCode, resp.Header.Get("Cache-Control"))
+		}
+	}
+
+	tokens := "design-system/tokens/design-tokens.css"
+	current := e.get(prefix + tokens)
+	if current.StatusCode != http.StatusOK || current.Header.Get("Cache-Control") != immutable ||
+		!strings.HasPrefix(current.Header.Get("Content-Type"), "text/css") {
+		t.Fatalf("versioned: %d %q %q", current.StatusCode, current.Header.Get("Cache-Control"), current.Header.Get("Content-Type"))
+	}
+	etag := current.Header.Get("ETag")
+	if !regexp.MustCompile(`^"[0-9a-f]{24}"$`).MatchString(etag) {
+		t.Fatalf("etag %q", etag)
+	}
+	stale := "/static/v-0123456789ab/" + tokens
+	if v == "0123456789ab" {
+		stale = "/static/v-ba9876543210/" + tokens
+	}
+	for _, path := range []string{"/static/" + tokens, stale, "/static/" + tokens + "?v=" + v} {
+		resp := e.get(path)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-cache" || resp.Header.Get("ETag") != etag {
+			t.Errorf("%s: %d %q etag %q", path, resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("ETag"))
+		}
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, e.ts.URL+"/static/"+tokens, nil)
+	req.Header.Set("If-None-Match", etag)
+	resp, err := e.browser.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Errorf("revalidation: %d, want 304", resp.StatusCode)
+	}
+	for _, path := range []string{prefix + "nope.css", prefix + "design-system/", prefix + "design-system/fonts", "/static/v-" + v} {
+		miss := e.get(path)
+		if miss.StatusCode != http.StatusNotFound || miss.Header.Get("Cache-Control") != "" {
+			t.Errorf("%s: %d %q", path, miss.StatusCode, miss.Header.Get("Cache-Control"))
+		}
+	}
+}
+
+// axe findings fixed alongside the date picker: one banner landmark (the
+// page <header>), and result rows that are plain buttons in a labelled group
+// (a <button> may not take role="listitem").
+func TestLandmarksAndResultRoles(t *testing.T) {
+	e := elcanoEnv(t)
+	key, at := todayKey("msg1")
+	e.store.put(key, sampleMessage, at)
+	body := e.get("/?run_search=1&mode=view").body
+	if strings.Contains(body, `role="banner"`) || strings.Count(body, "<header") != 1 {
+		t.Error("expected exactly one banner landmark, the page <header>")
+	}
+	if !strings.Contains(body, `id="result-list" role="group" aria-label="Email results"`) {
+		t.Error("result list is not a labelled group")
+	}
+	if strings.Contains(body, `role="listitem"`) || strings.Contains(body, `role="list"`) {
+		t.Error("buttons must not carry list roles")
+	}
+	if !strings.Contains(body, `<button type="button" class="inbox-row" data-open-url="/email?s3_key=`) {
+		t.Error("result row markup changed")
 	}
 }

@@ -23,7 +23,8 @@
   const hasAttachmentsFilter = document.getElementById("filter-has-attachments");
   const mobilePanelQuery = window.matchMedia("(max-width: 1023px)");
   const mobileTimestampQuery = window.matchMedia("(max-width: 767px)");
-  const mobileDatePickerQuery = window.matchMedia("(max-width: 1023px)");
+  const datePicker = window.ExplorerDatePicker;
+  const dateRanges = window.ExplorerDateRanges;
   let activeRow = null;
 
   const setupNumberInputs = () => {
@@ -62,45 +63,10 @@
     });
   };
 
-  const applyDateInputMode = (input) => {
-    const isMobile = mobileDatePickerQuery.matches;
-    input.readOnly = isMobile;
-    input.setAttribute("inputmode", isMobile ? "none" : "text");
-    input.setAttribute("autocomplete", "off");
-    input.setAttribute("autocorrect", "off");
-    input.setAttribute("autocapitalize", "off");
-    input.spellcheck = false;
-  };
-
-  const initDatePickers = (root, forceReset = false) => {
-    if (typeof window.flatpickr !== "function") {
-      return;
+  const initDatePickers = (root) => {
+    if (datePicker) {
+      datePicker.attachAll(root);
     }
-    const isMobile = mobileDatePickerQuery.matches;
-    const scope = root instanceof HTMLElement || root instanceof Document ? root : document;
-    scope.querySelectorAll(".custom-datepicker").forEach((input) => {
-      if (!(input instanceof HTMLInputElement)) {
-        return;
-      }
-      applyDateInputMode(input);
-      if (input._flatpickr) {
-        if (!forceReset) {
-          return;
-        }
-        input._flatpickr.destroy();
-      }
-      window.flatpickr(input, {
-        dateFormat: "Y-m-d",
-        allowInput: !isMobile,
-        disableMobile: true,
-        clickOpens: true,
-        onOpen: [(_selectedDates, _dateStr, instance) => {
-          if (isMobile && instance && instance.input instanceof HTMLElement) {
-            instance.input.blur();
-          }
-        }],
-      });
-    });
   };
 
   const formatReceivedTimestamps = () => {
@@ -468,10 +434,8 @@
     mobileTimestampQuery.addListener(formatReceivedTimestamps);
   }
 
-  if (typeof mobileDatePickerQuery.addEventListener === "function") {
-    mobileDatePickerQuery.addEventListener("change", () => initDatePickers(document, true));
-  } else if (typeof mobileDatePickerQuery.addListener === "function") {
-    mobileDatePickerQuery.addListener(() => initDatePickers(document, true));
+  if (datePicker) {
+    datePicker.watchViewport();
   }
 
   if (hasAttachmentsFilter) {
@@ -509,79 +473,29 @@
   const today = new Date();
   const todayValue = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
 
-  const toDayNumber = (value) => {
-    const parts = value.split("-").map(Number);
-    if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) {
-      return null;
-    }
-    const utcMs = Date.UTC(parts[0], parts[1] - 1, parts[2]);
-    return Math.floor(utcMs / 86400000);
+  const searchBodyChecked = () => {
+    const searchBody = form.querySelector('input[name="search_body"]');
+    return Boolean(searchBody && searchBody.checked);
   };
 
   const summarizeRanges = () => {
-    const ranges = [];
+    const pairs = [];
     rangeList.querySelectorAll("[data-range-row]").forEach((row) => {
       const fromInput = row.querySelector('input[name="date_from"]');
       const toInput = row.querySelector('input[name="date_to"]');
-      if (!fromInput || !toInput || !fromInput.value || !toInput.value) {
-        return;
+      if (fromInput && toInput) {
+        pairs.push([fromInput.value, toInput.value]);
       }
-
-      let start = toDayNumber(fromInput.value);
-      let end = toDayNumber(toInput.value);
-      if (start === null || end === null) {
-        return;
-      }
-      if (end < start) {
-        const swap = start;
-        start = end;
-        end = swap;
-      }
-      ranges.push([start, end]);
     });
-
-    ranges.sort((a, b) => a[0] - b[0]);
-    const merged = [];
-    ranges.forEach((range) => {
-      if (merged.length === 0) {
-        merged.push(range);
-        return;
-      }
-
-      const last = merged[merged.length - 1];
-      if (range[0] <= last[1] + 1) {
-        last[1] = Math.max(last[1], range[1]);
-        return;
-      }
-      merged.push(range);
-    });
-
-    const totalDays = merged.reduce((sum, range) => sum + (range[1] - range[0] + 1), 0);
-    return { totalDays, rangeCount: ranges.length };
+    return dateRanges.summarizeRanges(pairs);
   };
 
-  const getExpensiveThreshold = () => {
-    const mode = modeInput ? modeInput.value : "view";
-    if (mode === "fuzzy") {
-      const searchBody = form.querySelector('input[name="search_body"]');
-      return searchBody && searchBody.checked ? 4 : 7;
-    }
-    if (mode === "exact") {
-      return 14;
-    }
-    return 21;
-  };
+  const currentMode = () => (modeInput ? modeInput.value : "view");
 
-  const getMaxAllowedDays = () => {
-    const mode = modeInput ? modeInput.value : "view";
-    if (mode === "fuzzy") {
-      const searchBody = form.querySelector('input[name="search_body"]');
-      if (searchBody && searchBody.checked) {
-        return Math.min(maxSearchDays, maxBodySearchDays);
-      }
-    }
-    return maxSearchDays;
-  };
+  const getExpensiveThreshold = () => dateRanges.expensiveThreshold(currentMode(), searchBodyChecked());
+
+  const getMaxAllowedDays = () =>
+    dateRanges.maxAllowedDays(currentMode(), searchBodyChecked(), maxSearchDays, maxBodySearchDays);
 
   const updateSearchWarning = () => {
     const summary = summarizeRanges();
@@ -611,27 +525,26 @@
     warning.textContent = "";
   };
 
+  // A new range row is a clean copy of the first server-rendered one, so its
+  // markup (and the versioned icon-sprite URL) always matches the
+  // date_input template. The picker's own state is stripped so attach()
+  // wires the copy afresh.
   const renderRow = (fromValue, toValue) => {
-    const row = document.createElement("div");
-    row.className = "date-range-row";
-    row.setAttribute("data-range-row", "1");
-    row.innerHTML = `
-      <label>
-        From
-        <span class="date-input-wrap">
-          <input type="text" class="custom-datepicker" name="date_from" value="${fromValue}" required />
-          <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
-        </span>
-      </label>
-      <label>
-        To
-        <span class="date-input-wrap">
-          <input type="text" class="custom-datepicker" name="date_to" value="${toValue}" required />
-          <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
-        </span>
-      </label>
-      <button type="button" class="btn btn-ghost date-range-row__remove" data-remove-range>Remove</button>
-    `;
+    const template = rangeList.querySelector("[data-range-row]");
+    if (!template) {
+      return null;
+    }
+    const row = template.cloneNode(true);
+    row.querySelectorAll("input.custom-datepicker").forEach((input) => {
+      input.value = input.name === "date_to" ? toValue : fromValue;
+      input.removeAttribute("data-datepicker");
+      input.removeAttribute("aria-controls");
+      input.setAttribute("aria-expanded", "false");
+    });
+    row.querySelectorAll("[data-date-button]").forEach((button) => {
+      button.removeAttribute("aria-controls");
+      button.setAttribute("aria-expanded", "false");
+    });
     return row;
   };
 
@@ -675,6 +588,9 @@
 
   addButton.addEventListener("click", () => {
     const row = renderRow(todayValue, todayValue);
+    if (!row) {
+      return;
+    }
     rangeList.appendChild(row);
     initDatePickers(row);
     syncRemoveButtons();

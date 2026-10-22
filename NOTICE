@@ -8,15 +8,26 @@ LICENSE file for terms and docs/LICENSING.md for a plain-English summary.
 Third-party components redistributed in this repository
 ================================================================================
 
-flatpickr v4.6.13
-  Files:   internal/web/static/vendor/flatpickr/flatpickr.min.js
-           internal/web/static/vendor/flatpickr/flatpickr.min.css
-  License: MIT
-  Source:  https://github.com/flatpickr/flatpickr
-  Copyright (c) 2017 Gregory Petrosyan
+Flag design system (ElcanoTek/flag)
+  Files:   internal/web/static/design-system/ (tokens, icon sprite, logos,
+           font stylesheet; every file and its sha256 is listed in flag.lock)
+           scripts/flag-sync.sh, scripts/stack-check.sh (Flag's
+           tools/product/ scripts, byte-identical, with their MIT SPDX header)
+  License: MIT. The full license text is at
+           internal/web/static/design-system/FLAG-LICENSE (vendored from
+           Flag with the files) and must accompany them.
+  Copyright (c) 2026 ElcanoTek, Inc.
+  Source:  https://github.com/ElcanoTek/flag
 
-  Vendored rather than loaded from a CDN so the UI works on a host with no
-  outbound internet access, and so no third party sees who is using it.
+  Elcano's shared design system, vendored with scripts/flag-sync.sh so the
+  UI works on a host with no outbound internet access. The MIT licence
+  covers copyright only: the logos are also ElcanoTek trademarks (see "ElcanoTek
+  brand assets" below). The fonts bundled with Flag keep their own
+  licences, listed below.
+
+  Icons: some glyphs in Flag's core-icons.svg are drawn after Lucide
+  (https://lucide.dev), ISC License — the full notice is retained at the top
+  of the vendored sprite (internal/web/static/design-system/icons/core-icons.svg).
 
 python-dotenv 1.2.4 (parser and ${VAR} interpolation; ported to Go)
   Files:   internal/dotenv/parser.go

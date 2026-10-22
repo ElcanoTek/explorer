@@ -9,7 +9,9 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,16 +30,15 @@ import (
 
 // Server holds everything a request needs. Build one with New.
 type Server struct {
-	settings      config.Settings
-	inbox         *archive.Inbox
-	auth          provider
-	sessions      sessionCodec
-	jobs          *jobStore
-	pages         map[string]*template.Template
-	staticVersion string
-	allowedRoots  []string
-	now           func() time.Time
-	handler       http.Handler
+	settings     config.Settings
+	inbox        *archive.Inbox
+	auth         provider
+	sessions     sessionCodec
+	jobs         *jobStore
+	pages        map[string]*template.Template
+	allowedRoots []string
+	now          func() time.Time
+	handler      http.Handler
 }
 
 // Options are the seams tests and the CLI use; zero values mean production.
@@ -74,15 +75,14 @@ func New(ctx context.Context, s config.Settings, opts Options) (*Server, error) 
 		return nil, err
 	}
 	srv := &Server{
-		settings:      s,
-		inbox:         archive.New(store, s),
-		auth:          prov,
-		sessions:      sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
-		jobs:          newJobStore(now),
-		pages:         pages,
-		staticVersion: staticVersion(),
-		allowedRoots:  s.AllowedKeyRoots(),
-		now:           now,
+		settings:     s,
+		inbox:        archive.New(store, s),
+		auth:         prov,
+		sessions:     sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
+		jobs:         newJobStore(now),
+		pages:        pages,
+		allowedRoots: s.AllowedKeyRoots(),
+		now:          now,
 	}
 	srv.handler = srv.routes()
 	return srv, nil
@@ -96,8 +96,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.S
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	static, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(filesOnly{static})))
+	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("GET /auth/login", s.handleLogin)
@@ -109,6 +108,69 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /attachment", s.handleAttachment)
 	mux.HandleFunc("GET /{$}", s.handleInbox)
 	return s.securityHeaders(s.withSession(s.requireAuthentication(mux)))
+}
+
+// staticHandler serves the embedded static tree. Pages reference it through
+// assetURL: /static/v-<content hash of the tree>/<path>. The version is a
+// path segment, not a query, so URLs that a stylesheet resolves relative to
+// itself (the fonts that Flag's fonts.css loads) carry it too. A request
+// under the current version is cached for a year as immutable, because a
+// deploy that changes any static file changes the version. Anything else
+// (an unversioned /static/<path>, or a stale version after a deploy) gets
+// the current file with no-cache, and the per-file ETag makes revalidation
+// a cheap 304. Misses are 404 without any cache header.
+func staticHandler() http.Handler {
+	static, _ := fs.Sub(staticFS, "static")
+	etags := map[string]string{}
+	_ = fs.WalkDir(static, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(static, path)
+		if err == nil {
+			sum := sha256.Sum256(b)
+			etags[path] = `"` + hex.EncodeToString(sum[:12]) + `"`
+		}
+		return nil
+	})
+	files := http.FileServerFS(filesOnly{static})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/static/")
+		current := false
+		if seg, tail, ok := strings.Cut(rest, "/"); ok && isVersionSegment(seg) {
+			current = seg == "v-"+assetVersion()
+			rest = tail
+		}
+		tag, ok := etags[rest]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("ETag", tag)
+		if current {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/" + rest
+		r2.URL.RawPath = ""
+		files.ServeHTTP(w, r2)
+	})
+}
+
+// isVersionSegment reports whether seg looks like an asset version
+// ("v-" and 12 lowercase hex digits), current or not.
+func isVersionSegment(seg string) bool {
+	if len(seg) != 14 || !strings.HasPrefix(seg, "v-") {
+		return false
+	}
+	for _, c := range seg[2:] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // filesOnly serves files and answers 404 for directories, so the static
@@ -201,12 +263,16 @@ func (s *Server) requireAuthentication(next http.Handler) http.Handler {
 // reference remote images, so img-src allows https: and data:. No
 // form-action: Elcano-mode logout is a form POST that redirects to the auth
 // host, and browsers apply form-action to that redirect. frame-ancestors
-// 'none' mirrors X-Frame-Options: DENY.
+// 'none' mirrors X-Frame-Options: DENY. Nothing frames, plays media or
+// starts workers (the sanitizer drops iframe/video/audio, and the date
+// picker is our own plain script), so frame-src, media-src and worker-src
+// are 'none' rather than falling back to 'self'.
 const cspNonPage = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 func cspForPage(nonce string) string {
 	return "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self'; " +
 		"img-src 'self' data: https:; font-src 'self'; connect-src 'self'; " +
+		"media-src 'none'; frame-src 'none'; worker-src 'none'; " +
 		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 }
 

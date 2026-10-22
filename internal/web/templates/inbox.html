@@ -3,19 +3,18 @@
 <form method="post" action="/logout">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Log out" aria-label="Log out" title="Log out">
-    <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#logout"></use></svg>
+    <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#logout"></use></svg>
   </button>
 </form>
-{{- end}}
-{{define "head"}}
-    <link rel="stylesheet" href="/static/vendor/flatpickr/flatpickr.min.css" />
 {{- end}}
 {{define "hidden_fields"}}{{range .}}
         <input type="hidden" name="{{.Key}}" value="{{.Value}}" />{{end}}{{end}}
 {{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.2 8.4 6.6 11.6 12.8 4.8"></path></svg></span>{{end}}
 {{define "date_input"}}<span class="date-input-wrap">
-                <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" required />
-                <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
+                <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
+                <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else if eq .Key "date_to"}}To date{{else}}day{{end}}" aria-haspopup="dialog" aria-expanded="false">
+                  <svg class="date-input-icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#calendar"></use></svg>
+                </button>
               </span>{{end}}
 {{define "content"}}{{with .Page}}
 <section class="card">
@@ -57,10 +56,7 @@
       <fieldset class="date-ranges">
         <legend>Day</legend>
         <label aria-label="Day">
-          <span class="date-input-wrap">
-            <input type="text" class="custom-datepicker" name="day" value="{{.SelectedDay}}" required />
-            <svg class="date-input-icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#calendar"></use></svg>
-          </span>
+          {{template "date_input" (field "day" .SelectedDay)}}
         </label>
       </fieldset>
     </details>
@@ -86,7 +82,7 @@
           {{- end}}
         </div>
         <button type="button" class="btn btn-secondary date-ranges__add" id="add-date-range">
-          <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#plus"></use></svg>
+          <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#plus"></use></svg>
           <span>Add range</span>
         </button>
       </fieldset>
@@ -211,14 +207,14 @@
       {{- if .Rows}}
       <div class="results-toolbar__filters">
         <button type="button" class="btn btn-ghost results-filter-toggle" id="results-filter-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="results-filter-menu">
-          <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#filter"></use></svg>
+          <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#filter"></use></svg>
           <span>Filters</span>
         </button>
         <div class="results-filter-menu" id="results-filter-menu" hidden>
           <input class="ds-checkbox-input" type="checkbox" id="filter-has-attachments" />
           <label class="ds-checkbox results-filter-check" for="filter-has-attachments">
             {{template "check"}}
-            <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+            <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#paperclip"></use></svg>
             <span class="ds-checkbox__label">Has attachments</span>
           </label>
         </div>
@@ -231,13 +227,13 @@
       <span class="inbox-list__header-subject">Subject</span>
       <span class="inbox-list__header-time">Received</span>
     </div>
-    <div class="inbox-list" id="result-list" role="list" aria-label="Email results">
+    <div class="inbox-list" id="result-list" role="group" aria-label="Email results">
       {{- range .Rows}}
-      <button type="button" class="inbox-row" data-open-url="/email?s3_key={{.S3Key}}" role="listitem" aria-label="Open email from {{.From}}">
+      <button type="button" class="inbox-row" data-open-url="/email?s3_key={{.S3Key}}" aria-label="Open email from {{.From}}">
         <span class="inbox-row__sender" title="{{.From}}">{{.SenderLabel}}</span>
         <span class="inbox-row__subject" title="{{.SubjectOrPlaceholder}}">
           {{- if .LikelyAttachment}}
-          <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#paperclip"></use></svg>
+          <svg class="icon-inline inbox-row__clip" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#paperclip"></use></svg>
           {{- end}}
           <span class="inbox-row__subject-text">{{.SubjectOrPlaceholder}}</span>
         </span>
@@ -264,7 +260,7 @@
     {{- end}}
     {{- else}}
     <div class="empty-state">
-      <svg class="empty-state__icon" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#search"></use></svg>
+      <svg class="empty-state__icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#search"></use></svg>
       <h3 class="empty-state__title">No emails matched this search</h3>
       <p class="empty-state__hint">Try broadening your date range, adjusting filters, or switching to Fuzzy Search for more flexible matching.</p>
       <a class="btn btn-secondary" href="/">Reset search</a>
@@ -276,7 +272,7 @@
     <div class="detail-panel__header">
       <p class="detail-panel__title">Email details</p>
       <button type="button" class="icon-action detail-panel__close" id="detail-panel-close" aria-label="Close details">
-        <svg class="icon-inline" aria-hidden="true"><use href="/static/design-system/icons/core-icons.svg#close"></use></svg>
+        <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#close"></use></svg>
       </button>
     </div>
     <div id="detail-panel-body" class="detail-panel__body">
@@ -287,6 +283,7 @@
 {{- end}}
 {{end}}{{end}}
 {{define "scripts"}}
-<script src="/static/vendor/flatpickr/flatpickr.min.js"></script>
-<script src="/static/js/inbox.js?v={{.StaticVersion}}"></script>
+<script src="{{asset "js/datepicker.js"}}"></script>
+<script src="{{asset "js/date-ranges.js"}}"></script>
+<script src="{{asset "js/inbox.js"}}"></script>
 {{- end}}
