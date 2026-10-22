@@ -111,11 +111,14 @@ func (s *Server) routes() http.Handler {
 }
 
 // staticHandler serves the embedded static tree. Pages reference it through
-// assetURL, which appends ?v=<content hash of the tree>: a request carrying
-// the current version is cached for a year as immutable, because a deploy
-// that changes any static file changes the version. Anything else (no or a
-// stale ?v=, or a font that fonts.css loads by relative URL) must revalidate,
-// which the per-file ETag makes a cheap 304.
+// assetURL: /static/v-<content hash of the tree>/<path>. The version is a
+// path segment, not a query, so URLs that a stylesheet resolves relative to
+// itself (the fonts that Flag's fonts.css loads) carry it too. A request
+// under the current version is cached for a year as immutable, because a
+// deploy that changes any static file changes the version. Anything else
+// (an unversioned /static/<path>, or a stale version after a deploy) gets
+// the current file with no-cache, and the per-file ETag makes revalidation
+// a cheap 304. Misses are 404 without any cache header.
 func staticHandler() http.Handler {
 	static, _ := fs.Sub(staticFS, "static")
 	etags := map[string]string{}
@@ -130,18 +133,44 @@ func staticHandler() http.Handler {
 		}
 		return nil
 	})
-	files := http.StripPrefix("/static/", http.FileServerFS(filesOnly{static}))
+	files := http.FileServerFS(filesOnly{static})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tag, ok := etags[strings.TrimPrefix(r.URL.Path, "/static/")]; ok {
-			w.Header().Set("ETag", tag)
-			if r.URL.Query().Get("v") == assetVersion() {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			} else {
-				w.Header().Set("Cache-Control", "no-cache")
-			}
+		rest := strings.TrimPrefix(r.URL.Path, "/static/")
+		current := false
+		if seg, tail, ok := strings.Cut(rest, "/"); ok && isVersionSegment(seg) {
+			current = seg == "v-"+assetVersion()
+			rest = tail
 		}
-		files.ServeHTTP(w, r)
+		tag, ok := etags[rest]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("ETag", tag)
+		if current {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/" + rest
+		r2.URL.RawPath = ""
+		files.ServeHTTP(w, r2)
 	})
+}
+
+// isVersionSegment reports whether seg looks like an asset version
+// ("v-" and 12 lowercase hex digits), current or not.
+func isVersionSegment(seg string) bool {
+	if len(seg) != 14 || !strings.HasPrefix(seg, "v-") {
+		return false
+	}
+	for _, c := range seg[2:] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // filesOnly serves files and answers 404 for directories, so the static

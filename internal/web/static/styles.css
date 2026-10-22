@@ -264,24 +264,29 @@ summary:focus-visible,
   transform: none;
 }
 
+/* Flag's filled-control pair (COMPONENTS.md "Primary"): the label is
+   --color-on-primary-fill on --gradient-action-fill (dark) or a solid
+   --color-primary-fill (light), never on the raw primary (4.46:1). The
+   hover states are set here because .btn:hover would otherwise wash the
+   fill out to the ghost overlay. */
 .btn-primary {
-  background: var(--gradient-action-primary);
-  border-color: var(--color-primary);
-  color: var(--color-text-primary);
+  background: var(--gradient-action-fill);
+  border-color: var(--color-primary-fill);
+  color: var(--color-on-primary-fill);
 }
 
 .btn-primary:hover {
+  background: var(--gradient-action-fill-hover);
   border-color: var(--color-accent);
-  filter: brightness(1.04);
+  color: var(--color-on-primary-fill);
 }
 
-/* Light theme: white on --color-primary is 4.45:1, under WCAG AA's 4.5:1;
-   Flag's --color-accent-strong / --color-on-accent-strong pair is the
-   same hue one step darker (5.9:1). */
 :root[data-theme="light"] .btn-primary {
-  background: var(--color-accent-strong);
-  border-color: var(--color-accent-strong);
-  color: var(--color-on-accent-strong);
+  background: var(--color-primary-fill);
+}
+
+:root[data-theme="light"] .btn-primary:hover {
+  background: var(--color-primary-fill-hover);
 }
 
 .btn-secondary {
@@ -1535,24 +1540,34 @@ input.custom-datepicker[readonly] {
 }
 
 .datepicker__nav:focus-visible,
-.datepicker__day:focus-visible,
 .datepicker__month:focus-visible,
 .datepicker__year:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 
+/* Selected day: Flag's filled pair, as for .btn-primary. */
 .datepicker__day.is-selected,
 .datepicker__day.is-selected:hover {
-  background: var(--gradient-action-primary);
-  color: var(--color-text-primary);
+  background: var(--gradient-action-fill);
+  color: var(--color-on-primary-fill);
 }
 
-/* Same contrast reason as the light .btn-primary. */
 :root[data-theme="light"] .datepicker__day.is-selected,
 :root[data-theme="light"] .datepicker__day.is-selected:hover {
-  background: var(--color-accent-strong);
-  color: var(--color-on-accent-strong);
+  background: var(--color-primary-fill);
+}
+
+/* Days sit edge to edge, so keyboard focus is Flag's inset day ring, in the
+   colour that holds 3:1 on the day's own fill. Kept after every day-state
+   rule so it wins. */
+.datepicker__day:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-day);
+}
+
+.datepicker__day.is-selected:focus-visible {
+  box-shadow: var(--focus-ring-day-on-fill);
 }
 
 @media (min-width: 1024px) {

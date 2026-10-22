@@ -127,13 +127,18 @@ binary from `internal/web` via `go:embed`:
   mirroring its shadcn/ui registry, vendor it with `flag-sync.sh add` and
   drop the matching product rules rather than keeping two copies.
 - Every static URL in a page comes from the `asset` template func
-  (`assetURL` in `render.go`): `/static/<path>?v=<content hash of the whole
-  static tree>`, Flag's files included, so a deploy never mixes a cached old
-  token sheet with new product CSS. Never write a bare `/static/...` URL in a
-  template or script (tests reject it; `inbox.js` clones a rendered row
-  instead). `staticHandler` (`server.go`) makes the current `?v=` immutable
-  for a year and everything else `no-cache` with an ETag; pages are
-  `no-store`.
+  (`assetURL` in `render.go`): `/static/v-<content hash of the whole static
+  tree>/<path>`, Flag's files included, so a deploy never mixes a cached old
+  token sheet with new product CSS. The version is a path segment, so the
+  fonts that Flag's `fonts.css` loads by relative URL are versioned too.
+  Never write a bare `/static/...` URL in a template or script (tests reject
+  it; `inbox.js` clones a rendered row instead). `staticHandler`
+  (`server.go`) serves the current version `public, max-age=31536000,
+  immutable`; an unversioned or stale-version URL gets the current file with
+  `no-cache` and an ETag (304 on revalidation); misses are 404 with no cache
+  header. There are no stable-URL exceptions (no service worker, nothing
+  third parties hard-code). HTML pages are `no-store`; attachments are
+  `private, no-store`.
 
 **Date field.** In-house since flatpickr was removed (2026-10). The text input
 is the source of truth and always submits `YYYY-MM-DD`; the server parses

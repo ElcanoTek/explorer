@@ -49,9 +49,11 @@ var assetVersion = sync.OnceValue(staticVersion)
 // assetURL is the versioned URL of a file under static/. Every page-level
 // reference to a static file goes through it, vendored Flag files included,
 // so a deploy never mixes a cached old token sheet or sprite with new
-// product CSS (the ?v= value changes whenever any static file does).
+// product CSS (the version changes whenever any static file does). The
+// version is a path segment so relative URLs inside a stylesheet (fonts)
+// inherit it; staticHandler serves it.
 func assetURL(path string) string {
-	return "/static/" + strings.TrimPrefix(path, "/") + "?v=" + assetVersion()
+	return "/static/v-" + assetVersion() + "/" + strings.TrimPrefix(path, "/")
 }
 
 func parsePages() (map[string]*template.Template, error) {

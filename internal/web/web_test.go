@@ -676,13 +676,14 @@ func TestDateFieldsUseTheInHousePicker(t *testing.T) {
 		if strings.Contains(strings.ToLower(body), "flatpickr") {
 			t.Errorf("%s: flatpickr still referenced", mode)
 		}
-		for _, src := range []string{"/static/js/datepicker.js?v=", "/static/js/date-ranges.js?v=", "/static/js/inbox.js?v="} {
-			if !strings.Contains(body, `<script src="`+src) {
+		for _, src := range []string{"js/datepicker.js", "js/date-ranges.js", "js/inbox.js"} {
+			if !strings.Contains(body, `<script src="`+assetURL(src)+`"`) {
 				t.Errorf("%s: missing script %s", mode, src)
 			}
 		}
-		if strings.Index(body, "/static/js/datepicker.js") > strings.Index(body, "/static/js/inbox.js") ||
-			strings.Index(body, "/static/js/date-ranges.js") > strings.Index(body, "/static/js/inbox.js") {
+		inbox := strings.Index(body, assetURL("js/inbox.js"))
+		if inbox < 0 || strings.Index(body, assetURL("js/datepicker.js")) > inbox ||
+			strings.Index(body, assetURL("js/date-ranges.js")) > inbox {
 			t.Errorf("%s: helpers must load before inbox.js", mode)
 		}
 		got := field.FindAllStringSubmatch(body, -1)
@@ -720,7 +721,7 @@ func TestDateFieldsUseTheInHousePicker(t *testing.T) {
 
 // inbox.js copies the first server-rendered range row rather than holding
 // its own markup, so it never hard-codes a static URL (which would miss the
-// ?v= version) or drifts from the date_input template.
+// version segment) or drifts from the date_input template.
 func TestScriptsHoldNoUnversionedStaticURLs(t *testing.T) {
 	for _, name := range []string{"inbox.js", "datepicker.js", "date-ranges.js", "base.js", "email.js"} {
 		js, err := staticFS.ReadFile("static/js/" + name)
@@ -733,55 +734,80 @@ func TestScriptsHoldNoUnversionedStaticURLs(t *testing.T) {
 	}
 }
 
-// Every static file a page references carries the current ?v= version, the
-// vendored Flag token sheet, fonts sheet, icon sprite and logos included, so
-// a deploy never mixes cached old Flag files with new product CSS. The
-// versioned URL is immutable for a year; anything else revalidates by ETag.
+// Every static file a page references carries the current version as a path
+// segment, the vendored Flag token sheet, fonts sheet, icon sprite and logos
+// included, so a deploy never mixes cached old Flag files with new product
+// CSS; the fonts fonts.css loads by relative URL inherit the segment. The
+// current version is immutable for a year; anything else revalidates by ETag;
+// misses never get a cache header.
 func TestStaticAssetsAreVersionedAndCached(t *testing.T) {
 	e := elcanoEnv(t)
 	key, at := todayKey("msg1")
 	e.store.put(key, sampleMessage, at)
 	v := assetVersion()
-	if len(v) != 12 {
+	if !isVersionSegment("v-" + v) {
 		t.Fatalf("asset version %q", v)
 	}
-	ref := regexp.MustCompile(`(?:src|href)="(/static/[^"]*)"`)
+	prefix := "/static/v-" + v + "/"
+	ref := regexp.MustCompile(`(?:src|href)="(/static/[^"#]*)`)
 	seen := map[string]bool{}
 	for _, path := range []string{"/?run_search=1&mode=view", "/?mode=exact", "/email?s3_key=" + url.QueryEscape(key), "/email?s3_key=nope"} {
 		for _, m := range ref.FindAllStringSubmatch(e.get(path).body, -1) {
-			u, err := url.Parse(m[1])
-			if err != nil || u.Query().Get("v") != v {
+			if !strings.HasPrefix(m[1], prefix) || strings.Contains(m[1], "?") {
 				t.Errorf("%s: unversioned static URL %s", path, m[1])
 			}
-			seen[u.Path] = true
+			seen[strings.TrimPrefix(m[1], prefix)] = true
 		}
 	}
 	for _, want := range []string{
-		"/static/design-system/tokens/design-tokens.css", "/static/design-system/fonts/fonts.css",
-		"/static/design-system/icons/core-icons.svg", "/static/design-system/logos/elcano-mark-primary.svg",
-		"/static/design-system/logos/explorer-favicon.svg", "/static/styles.css", "/static/js/datepicker.js",
+		"design-system/tokens/design-tokens.css", "design-system/fonts/fonts.css",
+		"design-system/icons/core-icons.svg", "design-system/logos/elcano-mark-primary.svg",
+		"design-system/logos/explorer-favicon.svg", "styles.css", "js/datepicker.js",
 	} {
 		if !seen[want] {
 			t.Errorf("pages never reference %s", want)
 		}
 	}
 
-	tokens := "/static/design-system/tokens/design-tokens.css"
-	current := e.get(tokens + "?v=" + v)
-	if current.StatusCode != http.StatusOK || current.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
-		t.Fatalf("versioned: %d %q", current.StatusCode, current.Header.Get("Cache-Control"))
+	// fonts.css names its fonts relatively, so they resolve under the
+	// versioned prefix and every font it names exists there.
+	css, err := staticFS.ReadFile("static/design-system/fonts/fonts.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fonts := regexp.MustCompile(`url\("?\./([^")]+)"?\)`).FindAllStringSubmatch(string(css), -1)
+	if len(fonts) == 0 {
+		t.Fatal("fonts.css names no relative font URLs")
+	}
+	immutable := "public, max-age=31536000, immutable"
+	for _, m := range fonts {
+		resp := e.get(prefix + "design-system/fonts/" + m[1])
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != immutable {
+			t.Errorf("font %s: %d %q", m[1], resp.StatusCode, resp.Header.Get("Cache-Control"))
+		}
+	}
+
+	tokens := "design-system/tokens/design-tokens.css"
+	current := e.get(prefix + tokens)
+	if current.StatusCode != http.StatusOK || current.Header.Get("Cache-Control") != immutable ||
+		!strings.HasPrefix(current.Header.Get("Content-Type"), "text/css") {
+		t.Fatalf("versioned: %d %q %q", current.StatusCode, current.Header.Get("Cache-Control"), current.Header.Get("Content-Type"))
 	}
 	etag := current.Header.Get("ETag")
 	if !regexp.MustCompile(`^"[0-9a-f]{24}"$`).MatchString(etag) {
 		t.Fatalf("etag %q", etag)
 	}
-	for _, path := range []string{tokens, tokens + "?v=0123456789ab", "/static/design-system/fonts/nebula-sans/NebulaSans-400.woff2"} {
+	stale := "/static/v-0123456789ab/" + tokens
+	if v == "0123456789ab" {
+		stale = "/static/v-ba9876543210/" + tokens
+	}
+	for _, path := range []string{"/static/" + tokens, stale, "/static/" + tokens + "?v=" + v} {
 		resp := e.get(path)
-		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-cache" || resp.Header.Get("ETag") == "" {
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-cache" || resp.Header.Get("ETag") != etag {
 			t.Errorf("%s: %d %q etag %q", path, resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("ETag"))
 		}
 	}
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, e.ts.URL+tokens, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, e.ts.URL+"/static/"+tokens, nil)
 	req.Header.Set("If-None-Match", etag)
 	resp, err := e.browser.Do(req)
 	if err != nil {
@@ -791,8 +817,11 @@ func TestStaticAssetsAreVersionedAndCached(t *testing.T) {
 	if resp.StatusCode != http.StatusNotModified {
 		t.Errorf("revalidation: %d, want 304", resp.StatusCode)
 	}
-	if missing := e.get("/static/nope.css?v=" + v); missing.StatusCode != http.StatusNotFound || missing.Header.Get("Cache-Control") == "public, max-age=31536000, immutable" {
-		t.Errorf("missing file: %d %q", missing.StatusCode, missing.Header.Get("Cache-Control"))
+	for _, path := range []string{prefix + "nope.css", prefix + "design-system/", prefix + "design-system/fonts", "/static/v-" + v} {
+		miss := e.get(path)
+		if miss.StatusCode != http.StatusNotFound || miss.Header.Get("Cache-Control") != "" {
+			t.Errorf("%s: %d %q", path, miss.StatusCode, miss.Header.Get("Cache-Control"))
+		}
 	}
 }
 
