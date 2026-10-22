@@ -91,10 +91,10 @@ Every first-party source file carries:
 files need it too. The Flag files under `internal/web/static/design-system/`
 are vendored byte-for-byte (`flag.lock`; update them with
 `scripts/flag-sync.sh sync`, never by hand) and are left alone. Likewise
-`scripts/flag-sync.sh` and `scripts/stack-check.sh` are vendored verbatim
-from ElcanoTek/flag and keep Flag's `SPDX-License-Identifier: MIT` header
-(Flag is MIT; see `NOTICE`); replace them with a newer copy from Flag rather
-than editing them here. Code ported from another project keeps its upstream
+`scripts/flag-sync.sh` and `scripts/stack-check.sh` are vendored MIT copies
+of Flag's `tools/product/` scripts, kept byte-identical: they keep Flag's
+`SPDX-License-Identifier: MIT` header (Flag is MIT; see `NOTICE`), and you
+replace them with a newer copy from Flag rather than editing them here. Code ported from another project keeps its upstream
 license header and LICENSE file instead (`internal/dotenv`, see `NOTICE`).
 
 ## Branches and pull requests
