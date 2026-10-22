@@ -23,6 +23,10 @@ Flag design system (ElcanoTek/flag)
   brand assets" below). The fonts bundled with Flag keep their own
   licences, listed below.
 
+  Icons: some glyphs in Flag's core-icons.svg are drawn after Lucide
+  (https://lucide.dev), ISC License — the full notice is retained at the top
+  of the vendored sprite (internal/web/static/design-system/icons/core-icons.svg).
+
 python-dotenv 1.2.4 (parser and ${VAR} interpolation; ported to Go)
   Files:   internal/dotenv/parser.go
   License: BSD-3-Clause. The full license text is at

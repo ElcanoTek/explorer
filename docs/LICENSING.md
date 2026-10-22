@@ -164,6 +164,9 @@ licences, listed with their full terms in [NOTICE](../NOTICE):
   (full text in `internal/web/static/design-system/FLAG-LICENSE`), so you
   may reuse those files under MIT terms today. MIT covers the
   copyright only; the logos remain ElcanoTek trademarks (see above).
+  Icons: some glyphs in Flag's core-icons.svg are drawn after Lucide
+  (https://lucide.dev), ISC License — the full notice is retained at the top
+  of the vendored sprite (`internal/web/static/design-system/icons/core-icons.svg`).
 - **The fonts** inside it keep their upstream licences: Nebula Sans under the
   SIL Open Font License 1.1, Hack under MIT plus the Bitstream Vera licence.
 - **The dotenv parser** in `internal/dotenv/` is a port of python-dotenv and
