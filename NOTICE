@@ -11,6 +11,8 @@ Third-party components redistributed in this repository
 Flag design system (ElcanoTek/flag)
   Files:   internal/web/static/design-system/ (tokens, icon sprite, logos,
            font stylesheet; every file and its sha256 is listed in flag.lock)
+           scripts/flag-sync.sh, scripts/stack-check.sh (Flag's product
+           tooling, vendored verbatim with its MIT SPDX header)
   License: MIT. The full license text is at
            internal/web/static/design-system/FLAG-LICENSE (vendored from
            Flag with the files) and must accompany them.

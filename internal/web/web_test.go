@@ -665,12 +665,15 @@ func TestSemicolonQueryKeepsTheJobUsable(t *testing.T) {
 }
 
 // The date fields are Explorer's own (static/js/datepicker.js): every mode
-// renders text inputs holding YYYY-MM-DD, each with its calendar button,
-// loads only same-origin scripts, and nothing of flatpickr remains.
+// renders text inputs holding YYYY-MM-DD, each with its calendar button
+// named for its own field (two "Choose date" buttons side by side were
+// indistinguishable to a screen reader), loads only same-origin scripts, and
+// nothing of flatpickr remains.
 func TestDateFieldsUseTheInHousePicker(t *testing.T) {
 	e := elcanoEnv(t)
 	today := time.Now().UTC().Format(isoDate)
-	field := regexp.MustCompile(`<input type="text" class="custom-datepicker" name="(day|date_from|date_to)" value="([^"]*)" placeholder="YYYY-MM-DD" required />\s*<button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">`)
+	field := regexp.MustCompile(`<input type="text" class="custom-datepicker" name="(day|date_from|date_to)" value="([^"]*)" placeholder="YYYY-MM-DD" required />\s*<button type="button" class="date-input-button" data-date-button aria-label="([^"]*)" aria-haspopup="dialog" aria-expanded="false">`)
+	labels := map[string]string{"day": "Choose day", "date_from": "Choose From date", "date_to": "Choose To date"}
 	for mode, names := range map[string][]string{"view": {"day"}, "exact": {"date_from", "date_to"}, "fuzzy": {"date_from", "date_to"}} {
 		body := e.get("/?mode=" + mode).body
 		if strings.Contains(strings.ToLower(body), "flatpickr") {
@@ -693,6 +696,9 @@ func TestDateFieldsUseTheInHousePicker(t *testing.T) {
 		for i, m := range got {
 			if m[1] != names[i] || m[2] != today {
 				t.Errorf("%s: field %d = %s=%q, want %s=%q", mode, i, m[1], m[2], names[i], today)
+			}
+			if m[3] != labels[m[1]] {
+				t.Errorf("%s: %s button named %q, want %q", mode, m[1], m[3], labels[m[1]])
 			}
 		}
 	}

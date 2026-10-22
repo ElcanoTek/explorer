@@ -12,7 +12,7 @@
 {{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.2 8.4 6.6 11.6 12.8 4.8"></path></svg></span>{{end}}
 {{define "date_input"}}<span class="date-input-wrap">
                 <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
-                <button type="button" class="date-input-button" data-date-button aria-label="Choose date" aria-haspopup="dialog" aria-expanded="false">
+                <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else if eq .Key "date_to"}}To date{{else}}day{{end}}" aria-haspopup="dialog" aria-expanded="false">
                   <svg class="date-input-icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#calendar"></use></svg>
                 </button>
               </span>{{end}}
