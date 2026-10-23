@@ -209,6 +209,64 @@ func TestLifecycleUnhealthyUpdateRollsBack(t *testing.T) {
 	}
 }
 
+// seedForeign adds files Explorer does not own: an env backup another tool
+// left (owned by the service user, like the env file it copied) and an
+// operator's notes.
+func (lc *lifecycle) seedForeign(acct account) {
+	backup := filepath.Join(lc.p.AppDir, ".env.backup.20261020T101010Z.AbC123")
+	writeFile(lc.t, backup, "OLD_SECRET=1\n", 0o600)
+	if err := os.Lchown(backup, acct.uid, acct.gid); err != nil {
+		lc.t.Fatal(err)
+	}
+	writeFile(lc.t, filepath.Join(lc.p.AppDir, "operator-notes.txt"), "keep me\n", 0o644)
+}
+
+func preserved(t *testing.T, p Paths, name string) string {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(p.PreservedDir(), "*", name))
+	if len(m) != 1 {
+		t.Fatalf("%s preserved %d times: %v", name, len(m), m)
+	}
+	return readFile(t, m[0])
+}
+
+func TestLifecycleUpdateKeepsFilesItDoesNotOwn(t *testing.T) {
+	lc := newLifecycle(t)
+	acct, _ := lookupAccount(testServiceUser)
+	lc.seedForeign(acct)
+	if err := lc.apply(); err != nil {
+		t.Fatal(err)
+	}
+	p := lc.p
+	if preserved(t, p, ".env.backup.20261020T101010Z.AbC123") != "OLD_SECRET=1\n" ||
+		preserved(t, p, "operator-notes.txt") != "keep me\n" {
+		t.Fatal("foreign files changed")
+	}
+	if exists(filepath.Join(p.AppDir, "operator-notes.txt")) {
+		t.Fatal("foreign file left in the app directory")
+	}
+	if err := layoutCheck(p); err != nil {
+		t.Fatal(err)
+	}
+	noBackupsLeft(t, lc.base)
+}
+
+func TestLifecycleRolledBackUpdateStillKeepsFilesItDoesNotOwn(t *testing.T) {
+	lc := newLifecycle(t)
+	acct, _ := lookupAccount(testServiceUser)
+	lc.seedForeign(acct)
+	*lc.health = http.StatusInternalServerError
+	if err := lc.apply(); err == nil {
+		t.Fatal("an unhealthy update succeeded")
+	}
+	if preserved(t, lc.p, "operator-notes.txt") != "keep me\n" {
+		t.Fatal("a rollback lost a foreign file")
+	}
+	if readFile(t, filepath.Join(lc.p.AppDir, "app", "old-marker")) != "old-app\n" {
+		t.Fatal("legacy tree not restored")
+	}
+}
+
 func TestLifecycleRefusesUntrustedSource(t *testing.T) {
 	lc := newLifecycle(t)
 	if _, err := exec.LookPath("git"); err != nil {

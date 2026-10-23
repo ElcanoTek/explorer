@@ -341,7 +341,7 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	if err := buildBinary(ctx, u, r, p, p.SrcDir, staged, revision); err != nil {
 		return fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
 	}
-	if err := removeLegacyAppTree(p); err != nil {
+	if err := removeLegacyAppTree(u, p); err != nil {
 		return err
 	}
 	if err := installApp(p, acct, staged, revision); err != nil {
@@ -469,9 +469,13 @@ func offerProvision(ctx context.Context, u *ui, r Runner, p Paths, pr *prompter)
 }
 
 // removeLegacyAppTree clears what the Python era installed into the app
-// directory (source copy, venv, scratch space). Only the dotenv files, the
-// binary and the revision marker belong there now.
-func removeLegacyAppTree(p Paths) error {
+// directory (source copy, venv, scratch space), by name. Anything else that
+// is not the dotenv files, the binary or the revision marker is moved aside
+// into PreservedDir, never deleted.
+func removeLegacyAppTree(u *ui, p Paths) error {
+	if err := preserveAndReport(u, p); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(p.AppDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -479,9 +483,8 @@ func removeLegacyAppTree(p Paths) error {
 	if err != nil {
 		return err
 	}
-	keep := map[string]bool{".env": true, ".env.shared": true, "bin": true, ".explorer-revision": true}
 	for _, e := range entries {
-		if keep[e.Name()] {
+		if !legacyAppEntries[e.Name()] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(p.AppDir, e.Name())); err != nil {

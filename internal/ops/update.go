@@ -352,6 +352,13 @@ func applyUpdate(ctx context.Context, u *ui, r Runner, p Paths, in applyInput) (
 	}
 	timerWasEnabled := r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"is-enabled", "--quiet", "explorer-attachment-cleanup.timer"}, Timeout: 30 * time.Second}).Code == 0 &&
 		exists(p.legacyUnits()[0])
+	// Files Explorer does not own go to PreservedDir first: the swap below
+	// only moves (and on success drops) the installer's own entries and
+	// Python-era leftovers.
+	if err := preserveAndReport(u, p); err != nil {
+		_ = os.RemoveAll(backup)
+		return err
+	}
 
 	u.stepf("3/4  Swapping in + restarting")
 	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"stop", p.Service}, Timeout: 2 * time.Minute})
@@ -443,9 +450,10 @@ func snapshotSystem(p Paths, backup string) ([]systemTarget, error) {
 	return out, nil
 }
 
-// moveAppEntries moves everything in the app directory except the dotenv
-// files into dst (a rename on the same filesystem). started reports whether
-// the move began, i.e. whether a failure needs a rollback.
+// moveAppEntries moves the replaceable entries of the app directory (the
+// installer's own files and Python-era leftovers) into dst, a rename on the
+// same filesystem; the dotenv files and anything else stay. started reports
+// whether the move began, i.e. whether a failure needs a rollback.
 func moveAppEntries(p Paths, dst string) (started bool, err error) {
 	if err := os.Mkdir(dst, 0o700); err != nil {
 		return false, err
@@ -455,7 +463,7 @@ func moveAppEntries(p Paths, dst string) (started bool, err error) {
 		return false, err
 	}
 	for _, e := range entries {
-		if e.Name() == ".env" || e.Name() == ".env.shared" {
+		if !replaceableAppEntry(e.Name()) {
 			continue
 		}
 		if err := os.Rename(filepath.Join(p.AppDir, e.Name()), filepath.Join(dst, e.Name())); err != nil {
@@ -472,7 +480,8 @@ func restoreInstall(ctx context.Context, r Runner, p Paths, appBackup string, ta
 	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"stop", p.Service}, Timeout: 2 * time.Minute})
 	if entries, err := os.ReadDir(p.AppDir); err == nil {
 		for _, e := range entries {
-			if e.Name() == ".env" || e.Name() == ".env.shared" {
+			// Only what this update put there; anything else is left alone.
+			if !replaceableAppEntry(e.Name()) {
 				continue
 			}
 			if err := os.RemoveAll(filepath.Join(p.AppDir, e.Name())); err != nil {
