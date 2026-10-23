@@ -152,6 +152,10 @@ func TestLifecycleUpdateMigratesALegacyInstall(t *testing.T) {
 			t.Errorf("legacy %s survived", gone)
 		}
 	}
+	// Moved aside, not deleted: its names (app, docs, scripts) are generic.
+	if preserved(t, p, filepath.Join("app", "old-marker")) != "old-app\n" || preserved(t, p, filepath.Join(".venv", "bin", "python")) != "old-venv\n" {
+		t.Fatal("the Python-era tree was not preserved")
+	}
 	for _, legacy := range p.legacyUnits() {
 		if exists(legacy) {
 			t.Errorf("%s survived", legacy)
@@ -259,8 +263,10 @@ func TestLifecycleRolledBackUpdateStillKeepsFilesItDoesNotOwn(t *testing.T) {
 	if err := lc.apply(); err == nil {
 		t.Fatal("an unhealthy update succeeded")
 	}
-	if preserved(t, lc.p, "operator-notes.txt") != "keep me\n" {
-		t.Fatal("a rollback lost a foreign file")
+	// A rollback puts back exactly what the update moved aside.
+	if readFile(t, filepath.Join(lc.p.AppDir, "operator-notes.txt")) != "keep me\n" ||
+		readFile(t, filepath.Join(lc.p.AppDir, ".env.backup.20261020T101010Z.AbC123")) != "OLD_SECRET=1\n" {
+		t.Fatal("a rollback did not restore the foreign files")
 	}
 	if readFile(t, filepath.Join(lc.p.AppDir, "app", "old-marker")) != "old-app\n" {
 		t.Fatal("legacy tree not restored")
