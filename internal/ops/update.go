@@ -340,6 +340,12 @@ func applyUpdate(ctx context.Context, u *ui, r Runner, p Paths, in applyInput) (
 	if fi, lerr := os.Lstat(p.AppDir); lerr != nil || !fi.IsDir() || fi.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%s is not a real directory", p.AppDir)
 	}
+	if err := checkAppDirForMoves(p); err != nil {
+		return err
+	}
+	if err := RequireTrustedPath(filepath.Dir(p.AppDir)); err != nil {
+		return err
+	}
 
 	backup, err := newStaging(p, ".explorer-backup.")
 	if err != nil {
@@ -352,21 +358,26 @@ func applyUpdate(ctx context.Context, u *ui, r Runner, p Paths, in applyInput) (
 	}
 	timerWasEnabled := r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"is-enabled", "--quiet", "explorer-attachment-cleanup.timer"}, Timeout: 30 * time.Second}).Code == 0 &&
 		exists(p.legacyUnits()[0])
+	// Everything Explorer does not own goes to PreservedDir first (and comes
+	// back on a rollback): the swap below touches only the binary and the
+	// revision marker, and nothing else in the app directory is deleted.
+	preserved, err := preserveAndReport(u, p)
+	if err != nil {
+		_ = os.RemoveAll(backup)
+		return err
+	}
 
 	u.stepf("3/4  Swapping in + restarting")
 	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"stop", p.Service}, Timeout: 2 * time.Minute})
 	appBackup := filepath.Join(backup, "app")
-	swapped, err := moveAppEntries(p, appBackup)
+	swap, err := moveOwnedFiles(p, appBackup)
 	defer func() {
 		if err == nil {
 			_ = os.RemoveAll(backup)
 			return
 		}
-		if !swapped {
-			return
-		}
 		u.warnf("update failed — restoring the previous install")
-		if rerr := restoreInstall(ctx, r, p, appBackup, targets, timerWasEnabled); rerr != nil {
+		if rerr := restoreInstall(ctx, r, p, appBackup, swap, preserved, targets, timerWasEnabled); rerr != nil {
 			u.warnf("automatic rollback was incomplete (%v); preserved root-only backup: %s", rerr, backup)
 			return
 		}
@@ -443,52 +454,84 @@ func snapshotSystem(p Paths, backup string) ([]systemTarget, error) {
 	return out, nil
 }
 
-// moveAppEntries moves everything in the app directory except the dotenv
-// files into dst (a rename on the same filesystem). started reports whether
-// the move began, i.e. whether a failure needs a rollback.
-func moveAppEntries(p Paths, dst string) (started bool, err error) {
-	if err := os.Mkdir(dst, 0o700); err != nil {
-		return false, err
-	}
-	entries, err := os.ReadDir(p.AppDir)
-	if err != nil {
-		return false, err
-	}
-	for _, e := range entries {
-		if e.Name() == ".env" || e.Name() == ".env.shared" {
-			continue
-		}
-		if err := os.Rename(filepath.Join(p.AppDir, e.Name()), filepath.Join(dst, e.Name())); err != nil {
-			return true, err
-		}
-	}
-	return true, nil
+// ownedSwap records, for a rollback, which of the installer's own files
+// existed before the update and which of them were moved into the backup.
+type ownedSwap struct {
+	binExisted     bool
+	existed, moved map[string]bool
 }
 
-// restoreInstall puts back the previous app tree and privileged files and
-// restarts the old service.
-func restoreInstall(ctx context.Context, r Runner, p Paths, appBackup string, targets []systemTarget, timerWasEnabled bool) error {
+// moveOwnedFiles moves the installer's own files (the binary and the
+// revision marker) into dst, a rename on the same filesystem. Nothing else
+// in the app directory is touched.
+func moveOwnedFiles(p Paths, dst string) (*ownedSwap, error) {
+	s := &ownedSwap{existed: map[string]bool{}, moved: map[string]bool{}}
+	if _, err := os.Lstat(filepath.Join(p.AppDir, appBinDir)); err == nil {
+		s.binExisted = true
+	}
+	for _, rel := range appOwnedFiles {
+		if fi, err := os.Lstat(filepath.Join(p.AppDir, rel)); err == nil && fi.Mode().IsRegular() {
+			s.existed[rel] = true
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dst, appBinDir), 0o700); err != nil {
+		return s, err
+	}
+	for _, rel := range appOwnedFiles {
+		if !s.existed[rel] {
+			continue
+		}
+		if err := os.Rename(filepath.Join(p.AppDir, rel), filepath.Join(dst, rel)); err != nil {
+			return s, err
+		}
+		s.moved[rel] = true
+	}
+	return s, nil
+}
+
+// restoreOwnedFiles undoes moveOwnedFiles: a moved file comes back from the
+// backup, a file this update created goes, and an original that was never
+// moved stays as it is.
+func restoreOwnedFiles(p Paths, appBackup string, s *ownedSwap) []error {
+	if s == nil {
+		return nil
+	}
 	var errs []error
-	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"stop", p.Service}, Timeout: 2 * time.Minute})
-	if entries, err := os.ReadDir(p.AppDir); err == nil {
-		for _, e := range entries {
-			if e.Name() == ".env" || e.Name() == ".env.shared" {
+	for _, rel := range appOwnedFiles {
+		cur := filepath.Join(p.AppDir, rel)
+		switch {
+		case s.moved[rel]:
+			if err := os.Remove(cur); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
 				continue
 			}
-			if err := os.RemoveAll(filepath.Join(p.AppDir, e.Name())); err != nil {
+			if err := os.MkdirAll(filepath.Dir(cur), 0o755); err != nil { //nolint:gosec // G301: the app tree is public and root-owned.
+				errs = append(errs, err)
+				continue
+			}
+			if err := os.Rename(filepath.Join(appBackup, rel), cur); err != nil {
+				errs = append(errs, err)
+			}
+		case !s.existed[rel]:
+			if err := os.Remove(cur); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
 			}
 		}
-	} else {
-		errs = append(errs, err)
 	}
-	if entries, err := os.ReadDir(appBackup); err == nil {
-		for _, e := range entries {
-			if err := os.Rename(filepath.Join(appBackup, e.Name()), filepath.Join(p.AppDir, e.Name())); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	} else {
+	if !s.binExisted {
+		_ = os.Remove(filepath.Join(p.AppDir, appBinDir)) // only when empty
+	}
+	return errs
+}
+
+// restoreInstall puts back the previous app tree (the installer's files and
+// everything this run moved aside) and privileged files, and restarts the
+// old service.
+func restoreInstall(ctx context.Context, r Runner, p Paths, appBackup string, swap *ownedSwap, preserved *preservedSet,
+	targets []systemTarget, timerWasEnabled bool) error {
+	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"stop", p.Service}, Timeout: 2 * time.Minute})
+	errs := restoreOwnedFiles(p, appBackup, swap)
+	if err := preserved.restore(p); err != nil {
 		errs = append(errs, err)
 	}
 	for _, t := range targets {

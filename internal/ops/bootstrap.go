@@ -341,7 +341,15 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	if err := buildBinary(ctx, u, r, p, p.SrcDir, staged, revision); err != nil {
 		return fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
 	}
-	if err := removeLegacyAppTree(p); err != nil {
+	// Before anything in the app directory moves: it must be a real
+	// directory under a trusted parent, on the same filesystem.
+	if err := checkAppDirForMoves(p); err != nil {
+		return err
+	}
+	if err := RequireTrustedPath(filepath.Dir(p.AppDir)); err != nil {
+		return err
+	}
+	if _, err := preserveAndReport(u, p); err != nil {
 		return err
 	}
 	if err := installApp(p, acct, staged, revision); err != nil {
@@ -466,29 +474,6 @@ func offerProvision(ctx context.Context, u *ui, r Runner, p Paths, pr *prompter)
 			u.infof("skipping provision — run 'sudo explorer provision' later if you change your mind")
 		}
 	}
-}
-
-// removeLegacyAppTree clears what the Python era installed into the app
-// directory (source copy, venv, scratch space). Only the dotenv files, the
-// binary and the revision marker belong there now.
-func removeLegacyAppTree(p Paths) error {
-	entries, err := os.ReadDir(p.AppDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	keep := map[string]bool{".env": true, ".env.shared": true, "bin": true, ".explorer-revision": true}
-	for _, e := range entries {
-		if keep[e.Name()] {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(p.AppDir, e.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func printBootstrapSummary(u *ui, a bootstrapAnswers) {

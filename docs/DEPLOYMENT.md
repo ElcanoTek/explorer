@@ -89,7 +89,11 @@ knobs, custom keys and the `explorer provision` block. In order it:
 4. Builds the binary from that checkout (`scripts/bootstrap.sh` does this
    before handing over to `explorer bootstrap`) and installs it as
    `/opt/explorer/bin/explorer`, with the commit it was built from recorded
-   in `/opt/explorer/.explorer-revision`.
+   in `/opt/explorer/.explorer-revision`. Anything else in `/opt/explorer`
+   that is not the env files (a Python-era install's source copy and
+   `.venv`, an env backup, your own files, other files in `bin/`) is moved
+   to `/opt/explorer-preserved/<time>/`, never deleted. Remove that folder
+   yourself once you have looked at it.
 5. Prompts for an authentication mode and its required values, a TLS hostname,
    `EMAIL_S3_BUCKET`, and `AWS_REGION`; generates
    `EXPLORER_SESSION_SECRET`; writes `/opt/explorer/.env` mode `0600`, owned
@@ -558,6 +562,11 @@ sudo explorer rebuild
 ```
 
 `/opt/explorer/.env` is never touched by an update, a rebuild or a rollback.
+Neither is anything else in `/opt/explorer`: an update replaces only the
+binary and the revision marker, and moves any other entry there (Python-era
+leftovers included) to `/opt/explorer-preserved/<time>/` first, so the
+directory passes its root-owned layout check without losing it. A rolled-back
+update moves those entries back.
 Rolling back to a commit from before the Go rewrite works the same way:
 `explorer rebuild` sees a checkout without `go.mod` and hands over to that
 commit's own `scripts/update.sh`.
