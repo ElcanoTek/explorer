@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -588,22 +588,60 @@ func setupCaddy(ctx context.Context, u *ui, r Runner, p Paths, a bootstrapAnswer
 
 // dnsPrecheck warns when the hostname does not point at this box yet.
 // Warning only: an operator can still proceed with `tls internal` on a box
-// without public reachability.
+// without public reachability. It asks public DNS (lookupPublic), not this
+// box's resolver, and checks every A and AAAA answer: one right address
+// must not hide a stale one, and Let's Encrypt prefers IPv6 when there is an
+// AAAA record.
 func dnsPrecheck(ctx context.Context, u *ui, host string) {
-	resolved := ""
-	if ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", host); err == nil && len(ips) > 0 {
-		resolved = ips[len(ips)-1].String()
+	v4, v6, err := lookupPublic(ctx, host)
+	if err != nil {
+		u.warnf("could not check public DNS for %s (%v)", host, err)
+		u.warnf("  LE's HTTP-01 challenge fails unless %s points at this box.", host)
+		return
 	}
-	public := publicIP(ctx)
-	switch {
-	case resolved != "" && public != "" && resolved != public:
-		u.warnf("DNS mismatch: %s → %s, this box → %s", host, resolved, public)
-		u.warnf("  LE will fail the HTTP-01 challenge until the A record is updated.")
-	case resolved == "":
-		u.warnf("%s doesn't resolve yet — challenge will fail until DNS lands.", host)
-	case resolved == public:
-		u.okf("DNS resolves correctly (%s)", resolved)
+	if len(v4) == 0 && len(v6) == 0 {
+		u.warnf("%s doesn't resolve in public DNS yet — challenge will fail until DNS lands.", host)
+		return
 	}
+	box4, box6 := boxPublicAddrs(ctx)
+	ok := true
+	if len(v4) > 0 {
+		switch stray := strayAddrs(v4, box4); {
+		case len(box4) == 0:
+			ok = false
+			u.warnf("could not learn this box's public IPv4; check that %s → %s is this box.", host, addrStrings(v4))
+		case len(stray) > 0:
+			ok = false
+			u.warnf("DNS mismatch: %s → %s, this box → %s", host, addrStrings(v4), addrStrings(box4))
+			u.warnf("  LE will fail the HTTP-01 challenge until the A record is updated.")
+		}
+	}
+	if len(v6) > 0 {
+		switch stray := strayAddrs(v6, box6); {
+		case len(box6) == 0:
+			ok = false
+			u.warnf("%s has AAAA %s but this box has no public IPv6: LE tries IPv6 first, so the challenge can fail.", host, addrStrings(v6))
+		case len(stray) > 0:
+			ok = false
+			u.warnf("DNS mismatch: %s AAAA → %s, this box → %s", host, addrStrings(v6), addrStrings(box6))
+			u.warnf("  LE will fail the HTTP-01 challenge until the AAAA record is updated or removed.")
+		}
+	}
+	if ok {
+		u.okf("DNS resolves correctly (%s)", addrStrings(append(v4, v6...)))
+	}
+}
+
+// boxPublicAddrs is this box's public IPv4 and IPv6, as the internet sees
+// them (either may be empty).
+var boxPublicAddrs = func(ctx context.Context) (v4, v6 []netip.Addr) {
+	if a, err := netip.ParseAddr(publicIP(ctx, "https://api.ipify.org")); err == nil && a.Is4() {
+		v4 = append(v4, a)
+	}
+	if a, err := netip.ParseAddr(publicIP(ctx, "https://api6.ipify.org")); err == nil && a.Is6() {
+		v6 = append(v6, a)
+	}
+	return v4, v6
 }
 
 // waitForTLS waits up to two minutes for the public HTTPS site to answer.
@@ -644,10 +682,10 @@ func hasCaddyEmail(text string) bool {
 	return false
 }
 
-func publicIP(ctx context.Context) string {
+func publicIP(ctx context.Context, url string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}
