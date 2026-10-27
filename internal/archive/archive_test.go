@@ -94,7 +94,7 @@ func (f *fakeStore) Get(ctx context.Context, key string, maxBytes int64) ([]byte
 	}
 	obj, ok := f.objects[key]
 	if !ok {
-		return nil, errors.New("NoSuchKey")
+		return nil, ErrNoSuchKey
 	}
 	if maxBytes <= 0 {
 		f.fullGets++

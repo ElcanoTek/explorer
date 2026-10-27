@@ -19,9 +19,11 @@ import (
 
 //nolint:gosec // G101: help text that mentions tokens, not a credential.
 const tokenUsage = `usage:
-  explorer token create --label NAME [--json]
-                                    mint an email:search token for /mcp and /api/v1
-                                    (shown once; Explorer stores only its hash)
+  explorer token create --label NAME [--scope SCOPE]... [--json]
+                                    mint a token for /mcp and /api/v1 (shown once;
+                                    Explorer stores only its hash). --scope is
+                                    email:search or email:read, repeatable; both
+                                    by default
   explorer token list               show tokens (never their secrets)
   explorer token revoke ID          revoke a token by id
 `
@@ -60,6 +62,7 @@ func runToken(ctx context.Context, argv []string, stdout, stderr io.Writer, stor
 		return 0
 	case "create":
 		label, asJSON, hasLabel := "", false, false
+		var scopes []string
 		for len(rest) > 0 {
 			arg := rest[0]
 			rest = rest[1:]
@@ -73,14 +76,18 @@ func runToken(ctx context.Context, argv []string, stdout, stderr io.Writer, stor
 					return tokenUsageError(stderr, "--json takes no value")
 				}
 				asJSON = true
-			case "--label":
+			case "--label", "--scope":
 				if !hasValue {
 					if len(rest) == 0 {
-						return tokenUsageError(stderr, "--label needs a value")
+						return tokenUsageError(stderr, name+" needs a value")
 					}
 					value, rest = rest[0], rest[1:]
 				}
-				label, hasLabel = value, true
+				if name == "--label" {
+					label, hasLabel = value, true
+				} else {
+					scopes = append(scopes, value)
+				}
 			default:
 				return tokenUsageError(stderr, "unrecognized argument: "+arg)
 			}
@@ -88,7 +95,10 @@ func runToken(ctx context.Context, argv []string, stdout, stderr io.Writer, stor
 		if !hasLabel {
 			return tokenUsageError(stderr, "--label is required")
 		}
-		token, raw, err := store.Create(ctx, label, apitoken.Scopes)
+		if len(scopes) == 0 {
+			scopes = apitoken.Scopes
+		}
+		token, raw, err := store.Create(ctx, label, scopes)
 		if err != nil {
 			return tokenOperational(stderr, err)
 		}

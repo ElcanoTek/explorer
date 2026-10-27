@@ -87,7 +87,7 @@ turns a supported configuration into an insecure one:
 - **With a generated `EXPLORER_SESSION_SECRET`** — the built-in default is a
   placeholder.
 - **API tokens treated as credentials.** An `explorer_…` token can search the
-  whole archive's metadata. Mint one per caller, keep it in that caller's
+  archive and, with `email:read`, read any message and download its files. Mint one per caller, keep it in that caller's
   secret store, and revoke it with `explorer token revoke` when it leaks or
   the caller is retired.
 - **With the attachment-cleanup timer enabled**, so downloaded attachments do

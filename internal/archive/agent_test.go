@@ -278,25 +278,33 @@ func TestADayPartitionIsAuthoritativeForItsDay(t *testing.T) {
 	}
 }
 
-func TestTrustedLegacyImports(t *testing.T) {
+func TestAWindowThatCutsADayShortChecksLastModified(t *testing.T) {
 	store := newFake(map[string][]byte{
-		"emails/legacy/in-window":  buildMail(mailSpec{from: "a@vendor.example"}),
-		"emails/legacy/off-window": buildMail(mailSpec{from: "a@vendor.example", date: "Tue, 05 May 2026 10:00:00 +0000"}),
-		"emails/legacy/no-date":    buildMail(mailSpec{from: "a@vendor.example", date: "garbage"}),
-		agentDay + "mailbux-1":     buildMail(mailSpec{from: "a@vendor.example", date: "garbage"}),
+		agentDay + "morning": buildMail(mailSpec{from: "a@vendor.example", auth: passAuth}),
+		agentDay + "evening": buildMail(mailSpec{from: "a@vendor.example", auth: passAuth}),
 	})
-	for k, o := range store.objects { // imported long after the mail was sent
-		store.objects[k] = fakeObj{data: o.data, modified: day.AddDate(0, 3, 0)}
+	store.objects[agentDay+"morning"] = fakeObj{data: store.objects[agentDay+"morning"].data, modified: day.Add(9 * time.Hour)}
+	store.objects[agentDay+"evening"] = fakeObj{data: store.objects[agentDay+"evening"].data, modified: day.Add(20 * time.Hour)}
+	in := New(store, agentSettings(t, nil))
+	got, _, err := in.AgentSearch(context.Background(), AgentQuery{From: day.Add(8 * time.Hour), To: day.Add(12 * time.Hour), MaxResults: 10})
+	if err != nil || len(got) != 1 || got[0].S3Key != agentDay+"morning" {
+		t.Fatalf("sub-day window: %v %v", keys(got), err)
 	}
-	in := New(store, agentSettings(t, map[string]string{"EMAIL_TRUSTED_LEGACY_PREFIXES": "emails/legacy/, " + agentDay + "mailbux-"}))
+}
+
+func TestWholePrefixModeScansEveryPage(t *testing.T) {
+	store := newFake(map[string][]byte{
+		"emails/a-old": buildMail(mailSpec{from: "a@vendor.example", auth: passAuth}),
+		"emails/b-new": buildMail(mailSpec{from: "a@vendor.example", auth: passAuth}),
+	})
+	store.pageSize = 1
+	store.objects["emails/a-old"] = fakeObj{data: store.objects["emails/a-old"].data, modified: day.Add(time.Hour)}
+	store.objects["emails/b-new"] = fakeObj{data: store.objects["emails/b-new"].data, modified: day.Add(10 * time.Hour)}
+	in := New(store, agentSettings(t, map[string]string{"EMAIL_S3_DATE_PREFIX_FORMAT": ""}))
 	from, to := oneAgentDay()
-	got, stats, err := in.AgentSearch(context.Background(), AgentQuery{SenderContains: "vendor.example", From: from, To: to, MaxResults: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]bool{"emails/legacy/in-window": true, agentDay + "mailbux-1": true}
-	if len(got) != 2 || !want[got[0].S3Key] || !want[got[1].S3Key] || !got[0].TrustedLegacy || stats.UnauthenticatedSkipped != 0 {
-		t.Fatalf("legacy: %v %+v", keys(got), stats)
+	got, _, err := in.AgentSearch(context.Background(), AgentQuery{From: from, To: to, MaxResults: 1})
+	if err != nil || len(got) != 1 || got[0].S3Key != "emails/b-new" {
+		t.Fatalf("newest match on a later page lost: %v %v", keys(got), err)
 	}
 }
 

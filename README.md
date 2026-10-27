@@ -41,10 +41,11 @@ and attachment download over the archive you already own.
   configured prefix; anything else is a 404 regardless of what the URL asks
   for.
 - **An MCP server and REST API for agents.** `POST /mcp` (and `/api/v1/`)
-  serves `search_emails`, `search_emails_fuzzy` and `find_latest_report` to
-  Fleet's agents with scoped bearer tokens (`explorer token create`). They
-  return only mail whose sender the receiver authenticated, can filter on
-  attachments or download links, and fail loudly on S3 errors. See
+  gives Fleet's agents the archive with scoped bearer tokens
+  (`explorer token create`): search (`search_emails`, `search_emails_fuzzy`,
+  `find_latest_report`, authenticated senders only), read (`get_email`) and
+  download (`get_download_link`: attachments, and the link payloads the
+  link archiver caches in S3 before the original links expire). See
   [docs/API.md](docs/API.md).
 - **Deployment-selected authentication.** Keep Elcano's existing
   Ed25519-signed magic-link cookie, or use the new central auth service with a
@@ -147,7 +148,6 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `EMAIL_SEARCH_JOB_MAX_SECONDS` | no | `120` | Server-side cancellation for a runaway search job. |
 | `EMAIL_SENDER_AUTH` | no | `required` | API/MCP searches only: return only mail whose sender the receiver authenticated (`off`: forgeable header match). See [docs/API.md](docs/API.md). |
 | `EMAIL_AUTHSERV_ID` | no | `amazonses.com` | The receiver's authserv-id in `Authentication-Results`. |
-| `EMAIL_TRUSTED_LEGACY_PREFIXES` | no | *(empty)* | Comma-separated prefixes of operator-vouched legacy imports (API/MCP). |
 | `EMAIL_S3_ARCHIVE_PREFIX` | no | `emails/attachments/` | The link-archive lambda's prefix; never returned as mail by the API. |
 | `EXPLORER_API_TOKEN_DB` | no | `/var/lib/explorer/api_tokens.db` | API token database (`explorer token`). |
 | `EXPLORER_API_MAX_SECONDS` | no | `240` | Bound on one API/MCP call. |

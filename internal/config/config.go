@@ -50,11 +50,6 @@ type Settings struct {
 	// EMAIL_AUTHSERV_ID: the receiver's authserv-id in Authentication-Results
 	// (default amazonses.com, lower-cased).
 	AuthservID string
-	// EMAIL_TRUSTED_LEGACY_PREFIXES (comma separated): S3 prefixes of
-	// imported legacy mail the operator vouches for. Their objects count as
-	// authenticated and are windowed by partition day or Date header, since
-	// their LastModified is the import time.
-	TrustedLegacyPrefixes []string
 	// EMAIL_S3_ARCHIVE_PREFIX: where the link-archive lambda writes payloads
 	// and manifests under the email prefix; never returned as mail.
 	ArchivePrefix string
@@ -174,11 +169,6 @@ func FromEnv(env map[string]string) (Settings, error) {
 		SessionAbsoluteSeconds: num("EXPLORER_SESSION_ABSOLUTE_SECONDS", "86400"),
 
 		ListenAddr: get("EXPLORER_LISTEN_ADDR", "127.0.0.1:8080"),
-	}
-	for _, p := range strings.Split(get("EMAIL_TRUSTED_LEGACY_PREFIXES", ""), ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			s.TrustedLegacyPrefixes = append(s.TrustedLegacyPrefixes, p)
-		}
 	}
 	if s.SenderAuth == "" {
 		s.SenderAuth = "required"

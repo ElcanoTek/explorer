@@ -161,15 +161,14 @@ func emailBody(m archive.AgentMatch) Body {
 		attachments = []string{}
 	}
 	b := Body{
-		"s3_key":                 m.S3Key,
-		"subject":                m.Subject,
-		"from":                   m.From,
-		"sender_authenticated":   m.SenderAuthenticated,
-		"trusted_legacy_archive": m.TrustedLegacy,
-		"to":                     m.To,
-		"date":                   m.Date,
-		"received_at":            m.ReceivedAt,
-		"size_bytes":             m.SizeBytes,
+		"s3_key":               m.S3Key,
+		"subject":              m.Subject,
+		"from":                 m.From,
+		"sender_authenticated": m.SenderAuthenticated,
+		"to":                   m.To,
+		"date":                 m.Date,
+		"received_at":          m.ReceivedAt,
+		"size_bytes":           m.SizeBytes,
 		// payload_checked: attachments and download links were read from
 		// the full message (has_payload, a body preview, or a body search);
 		// otherwise only headers were read and the counts are unknown (0).

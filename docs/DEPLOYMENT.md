@@ -347,8 +347,7 @@ them.
 |---|---|---|---|
 | `EMAIL_SENDER_AUTH` | no | `required` | Return only mail whose From domain the receiver authenticated (DMARC, or aligned SPF/DKIM). `off` restores the forgeable header-text sender match; every result then carries a warning. |
 | `EMAIL_AUTHSERV_ID` | no | `amazonses.com` | The receiver's authserv-id; only the topmost `Authentication-Results` carrying it is read. |
-| `EMAIL_TRUSTED_LEGACY_PREFIXES` | no | *(empty)* | Comma-separated S3 prefixes of imported legacy mail you vouch for: treated as authenticated and placed by date partition or Date header. Keep them outside the SES receipt rule's write path. |
-| `EMAIL_S3_ARCHIVE_PREFIX` | no | `emails/attachments/` | The link-archive lambda's payloads and manifests; never returned as mail. |
+| `EMAIL_S3_ARCHIVE_PREFIX` | no | `emails/attachments/` | The link archiver's cached payloads and manifests (production-support `ses-s3`). Never returned as mail; `get_download_link` serves cached copies from it. |
 | `EXPLORER_API_TOKEN_DB` | no | `/var/lib/explorer/api_tokens.db` | Token database (hashes only), private to the service user. Back it up with the access database. |
 | `EXPLORER_API_MAX_SECONDS` | no | `240` | One API/MCP call is stopped after this (below the server's 5-minute write timeout). |
 

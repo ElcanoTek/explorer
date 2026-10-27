@@ -66,8 +66,9 @@ CENTRAL-AUTH ACCESS (EXPLORER_AUTH_MODE=central)
   explorer access backup [PATH]     consistent copy of the access database
 
 API TOKENS (for /mcp and /api/v1: Fleet and scripts)
-  explorer token create --label NAME [--json]
-                                    mint an email:search token (shown once)
+  explorer token create --label NAME [--scope S]... [--json]
+                                    mint a token (shown once); scopes email:search,
+                                    email:read (both by default)
   explorer token list               show tokens (never their secrets)
   explorer token revoke ID          revoke a token by id
 

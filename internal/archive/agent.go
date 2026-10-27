@@ -6,7 +6,6 @@ package archive
 import (
 	"context"
 	"errors"
-	"net/mail"
 	"sort"
 	"strings"
 	"time"
@@ -28,14 +27,16 @@ import (
 //   - Payload detection: has_payload asks for an attachment or a
 //     download-likely body link (links.go), which needs the full message.
 //   - A day partition is authoritative for the day it names: an object
-//     listed under it is not filtered again by LastModified (a copy made
-//     just after midnight still belongs to its partition's day).
-//   - Operator-trusted legacy imports (EMAIL_TRUSTED_LEGACY_PREFIXES) count
-//     as authenticated and are windowed by their partition day or Date
-//     header, because their LastModified is the import time.
+//     listed under a day the window covers in full is not filtered again by
+//     LastModified (a copy made just after midnight still belongs to its
+//     partition's day). A window that cuts a day short is checked against
+//     LastModified on that day.
 //   - Fail loudly: any S3 error fails the whole search. Only a message that
 //     cannot be read as mail (an empty object, an oversize object) is
 //     skipped, and counted in ParseErrors.
+//   - Bounded memory: candidates are read fetchWorkers at a time, a whole
+//     message is reduced to its small result (names, links, a preview) as
+//     soon as it is read, and the kept matches never exceed the limit.
 
 // AgentMatch is one search result.
 type AgentMatch struct {
@@ -45,9 +46,9 @@ type AgentMatch struct {
 	ReceivedAt          string
 	SizeBytes           int64
 	SenderAuthenticated bool
-	TrustedLegacy       bool
-	// Opened reports whether the full message was read (payload filter or
-	// body preview): only then are Attachments and DownloadLinks known.
+	// Opened reports whether the full message was read (payload filter,
+	// body preview or a body search): only then are Attachments and
+	// DownloadLinks known.
 	Opened        bool
 	Attachments   []string
 	DownloadLinks []DownloadLink
@@ -63,8 +64,8 @@ type AgentMatch struct {
 type AgentStats struct {
 	Scanned, HeaderFetches, FullFetches, ParseErrors int
 	// UnauthenticatedSkipped matched every filter but its sender was not
-	// authenticated; UnauthenticatedUnchecked matched the header filters
-	// but was left unopened, so its payload was never checked.
+	// authenticated; UnauthenticatedUnchecked matched what could be checked
+	// without opening it (its payload or body was never read).
 	UnauthenticatedSkipped, UnauthenticatedUnchecked int
 	Prefixes                                         int
 	UsedPartitions                                   bool
@@ -135,41 +136,42 @@ func (in *Inbox) headersOf(h mailmsg.Header) agentHeaders {
 	}
 }
 
-type opened struct {
-	h           agentHeaders
+// digest is what a search keeps of a whole message: never the message.
+type digest struct {
 	attachments []string
 	links       []DownloadLink
-	plain, html string
+	preview     string
+	body        string // lower-cased, only for a body search
 	ok          bool
 }
 
-// openMessage reads and parses a whole message. ok is false for an object
-// that cannot be read as mail; any other error is an S3 failure.
-func (in *Inbox) openMessage(ctx context.Context, key string) (opened, error) {
+// digestMessage reads one whole message and reduces it to a digest. ok is
+// false for an object that cannot be read as mail; any other error is an S3
+// failure.
+func (in *Inbox) digestMessage(ctx context.Context, key string, keepBody bool) (digest, error) {
 	raw, err := in.store.Get(ctx, key, 0)
 	if errors.Is(err, ErrTooLarge) {
-		return opened{}, nil
+		return digest{}, nil
 	}
 	if err != nil {
-		return opened{}, err
+		return digest{}, err
 	}
 	msg := mailmsg.Parse(raw)
-	out := opened{h: in.headersOf(msg.Header), ok: true}
-	for _, part := range msg.Walk() {
-		if part.MainType() == "multipart" {
-			continue
-		}
-		disposition := part.Header.Get("Content-Disposition")
-		name := part.Filename()
-		if strings.Contains(strings.ToLower(disposition), "attachment") || name != "" {
-			if name = cleanReportedFilename(mailmsg.DecodeHeader(name)); name != "" {
-				out.attachments = append(out.attachments, name)
-			}
-		}
+	d := digest{ok: true}
+	for _, a := range attachmentParts(msg) {
+		d.attachments = append(d.attachments, a.Filename)
 	}
-	out.plain, out.html = extractBodies(msg)
-	out.links = downloadLinks(out.plain, out.html)
-	return out, nil
+	plain, html := allBodies(msg)
+	d.links = downloadLinks(plain, html)
+	text := plain
+	if text == "" {
+		text = html
+	}
+	d.preview = truncateRunes(text, bodyPreviewChars)
+	if keepBody {
+		d.body = strings.ToLower(text)
+	}
+	return d, nil
 }
 
 // cleanReportedFilename collapses folded whitespace, so a name copied back
@@ -178,35 +180,45 @@ func cleanReportedFilename(name string) string {
 	return strings.Trim(strings.Join(strings.Fields(name), " "), " .")
 }
 
-// isLegacyKey reports whether key lies under an operator-trusted legacy
-// prefix.
-func (in *Inbox) isLegacyKey(key string) bool {
-	for _, p := range in.s.TrustedLegacyPrefixes {
-		if strings.HasPrefix(key, p) {
-			return true
+// attachmentParts lists a message's attachments the way the UI names them
+// (GetEmail): a part with an attachment disposition, a filename or a
+// Content-ID; its decoded filename, else the Content-ID-derived inline
+// name, else "unknown". Names are deduplicated.
+func attachmentParts(msg *mailmsg.Part) []AttachmentInfo {
+	var out []AttachmentInfo
+	seen := map[string]bool{}
+	for _, part := range msg.Walk() {
+		if part.MainType() == "multipart" {
+			continue
 		}
+		disposition := part.Header.Get("Content-Disposition")
+		contentID := normalizeCID(part.Header.Get("Content-ID"))
+		rawName := part.Filename()
+		if !strings.Contains(strings.ToLower(disposition), "attachment") && rawName == "" && contentID == "" {
+			continue
+		}
+		name := cleanReportedFilename(mailmsg.DecodeHeader(rawName))
+		if name == "" && contentID != "" {
+			name = inlineFilenameForCID(contentID, part.ContentType())
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		payload, _ := part.Payload()
+		out = append(out, AttachmentInfo{Filename: name, ContentType: part.ContentType(), SizeBytes: len(payload)})
 	}
-	return false
+	return out
 }
 
-// inDateTree approximates "prefix starts with a date partition": it extends
-// the date format's literal head with a digit (every shipped format starts
-// its date part with %Y).
-func (in *Inbox) inDateTree(prefix string) bool {
-	root := strings.SplitN(in.s.DatePrefixFormat, "%", 2)[0]
-	if in.s.DatePrefixFormat == "" || !strings.HasPrefix(prefix, root) || len(prefix) <= len(root) {
-		return false
-	}
-	c := prefix[len(root)]
-	return c >= '0' && c <= '9'
-}
-
-// scanPrefix is one prefix to list: a day partition (day set), a trusted
-// legacy prefix outside the date tree, or the root prefix.
+// scanPrefix is one prefix to list: a day partition (day set) or the root
+// prefix.
 type scanPrefix struct {
 	prefix string
 	day    time.Time
-	legacy bool
 }
 
 func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
@@ -215,49 +227,11 @@ func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
 	if len(prefixes) == 1 && prefixes[0] == in.s.Prefix {
 		return []scanPrefix{{prefix: in.s.Prefix}}, false
 	}
-	out := make([]scanPrefix, 0, len(prefixes)+len(in.s.TrustedLegacyPrefixes))
+	out := make([]scanPrefix, len(prefixes))
 	for i, p := range prefixes {
-		out = append(out, scanPrefix{prefix: p, day: end.AddDate(0, 0, -i)})
-	}
-	for _, legacy := range in.s.TrustedLegacyPrefixes {
-		inside := in.inDateTree(legacy)
-		for _, p := range prefixes {
-			if strings.HasPrefix(legacy, p) {
-				inside = true
-			}
-		}
-		if !inside {
-			out = append(out, scanPrefix{prefix: legacy, legacy: true})
-		}
+		out[i] = scanPrefix{prefix: p, day: end.AddDate(0, 0, -i)}
 	}
 	return out, true
-}
-
-func sentAt(date string) (time.Time, bool) {
-	t, err := mail.ParseDate(strings.TrimSpace(date))
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t.UTC(), true
-}
-
-// legacyPlacement windows a trusted legacy object and gives its sort time.
-// Inside a day partition, a Date header on that day gives the sub-day
-// position and anything else falls back to the day; outside the date tree
-// only the Date header can place it, and an unreadable one drops it.
-func legacyPlacement(sp scanPrefix, date string, from, to time.Time) (time.Time, bool) {
-	sent, ok := sentAt(date)
-	if !sp.day.IsZero() {
-		dayEnd := sp.day.Add(24*time.Hour - time.Microsecond)
-		if ok && !sent.Before(sp.day) && !sent.After(dayEnd) {
-			return sent, !sent.Before(from) && !sent.After(to)
-		}
-		return sp.day, !dayEnd.Before(from) && !sp.day.After(to)
-	}
-	if !ok {
-		return time.Time{}, false
-	}
-	return sent, !sent.Before(from) && !sent.After(to)
 }
 
 // candidate is one listed object with where it came from.
@@ -266,23 +240,34 @@ type candidate struct {
 	sp  scanPrefix
 }
 
-// eachPage lists the prefixes and hands each page's in-window objects to fn
-// (deduplicated, link-archive objects dropped). fn returns stop=true once
-// the limit is reached: with day partitions the current partition is still
-// finished by the caller (keys are not in time order) and only later
-// partitions are skipped, except trusted legacy prefixes, which are always
-// scanned; without partitions listing stops at once.
-func (in *Inbox) eachPage(ctx context.Context, from, to time.Time, stats *AgentStats,
-	fn func([]candidate) (stop bool, err error),
+// inWindow places a listed object: LastModified inside the window, or, for
+// a day partition the window covers in full, simply being listed there.
+func inWindow(c candidate, from, to time.Time) bool {
+	lm := c.obj.LastModified.UTC()
+	if !lm.Before(from) && !lm.After(to) {
+		return true
+	}
+	if c.sp.day.IsZero() {
+		return false
+	}
+	dayEnd := c.sp.day.Add(24*time.Hour - time.Microsecond)
+	return !c.sp.day.Before(from) && !dayEnd.After(to)
+}
+
+// eachBatch lists the prefixes and hands in-window objects to fn at most
+// fetchWorkers at a time (deduplicated, link-archive objects dropped). fn
+// returns reached=true once the limit is reached: with day partitions the
+// current partition is still finished (keys are not in time order) and only
+// later, older partitions are skipped; without partitions (whole-prefix
+// mode) every page is scanned, because listing order is not result order.
+func (in *Inbox) eachBatch(ctx context.Context, from, to time.Time, stats *AgentStats,
+	fn func([]candidate) (reached bool, err error),
 ) error {
 	prefixes, partitioned := in.agentPrefixes(from, to)
 	stats.Prefixes, stats.UsedPartitions = len(prefixes), partitioned
 	seen := map[string]bool{}
-	stopped := false
 	for _, sp := range prefixes {
-		if stopped && !sp.legacy {
-			continue
-		}
+		reached := false
 		token := ""
 		for {
 			if err := ctx.Err(); err != nil {
@@ -301,29 +286,24 @@ func (in *Inbox) eachPage(ctx context.Context, from, to time.Time, stats *AgentS
 				if in.s.ArchivePrefix != "" && strings.HasPrefix(obj.Key, in.s.ArchivePrefix) {
 					continue
 				}
-				if !partitioned && !in.isLegacyKey(obj.Key) {
-					if lm := obj.LastModified.UTC(); lm.Before(from) || lm.After(to) {
-						continue
-					}
+				if c := (candidate{obj, sp}); inWindow(c, from, to) {
+					batch = append(batch, c)
 				}
-				batch = append(batch, candidate{obj, sp})
 			}
-			if len(batch) > 0 {
-				stop, err := fn(batch)
+			for start := 0; start < len(batch); start += fetchWorkers {
+				r, err := fn(batch[start:min(start+fetchWorkers, len(batch))])
 				if err != nil {
 					return err
 				}
-				if stop {
-					stopped = true
-					if !partitioned {
-						return nil
-					}
-				}
+				reached = reached || r
 			}
 			if page.NextToken == "" {
 				break
 			}
 			token = page.NextToken
+		}
+		if reached && partitioned {
+			return nil
 		}
 	}
 	return nil
@@ -352,18 +332,19 @@ func (in *Inbox) headerBatch(ctx context.Context, batch []candidate, stats *Agen
 	return hs, oks, nil
 }
 
-// openBatch reads the full messages at idx concurrently.
-func (in *Inbox) openBatch(ctx context.Context, batch []candidate, idx []int, stats *AgentStats) (map[int]opened, error) {
-	out := make([]opened, len(idx))
+// digestBatch reads the whole messages at idx concurrently (at most
+// fetchWorkers, the batch size) and keeps only their digests.
+func (in *Inbox) digestBatch(ctx context.Context, batch []candidate, idx []int, keepBody bool, stats *AgentStats) (map[int]digest, error) {
+	out := make([]digest, len(idx))
 	err := parallel(ctx, len(idx), func(i int) error {
-		o, err := in.openMessage(ctx, batch[idx[i]].obj.Key)
-		out[i] = o
+		d, err := in.digestMessage(ctx, batch[idx[i]].obj.Key, keepBody)
+		out[i] = d
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	m := make(map[int]opened, len(idx))
+	m := make(map[int]digest, len(idx))
 	for i, j := range idx {
 		if out[i].ok {
 			stats.FullFetches++
@@ -375,20 +356,11 @@ func (in *Inbox) openBatch(ctx context.Context, batch []candidate, idx []int, st
 	return m, nil
 }
 
-// placement windows a candidate and gives its sort time; non-legacy
-// objects are already windowed by their listing.
-func (in *Inbox) placement(c candidate, date string, from, to time.Time) (time.Time, bool) {
-	if in.isLegacyKey(c.obj.Key) {
-		return legacyPlacement(c.sp, date, from, to)
-	}
-	return c.obj.LastModified.UTC(), true
-}
-
-func matchFor(c candidate, h agentHeaders, legacy bool, sortAt time.Time) AgentMatch {
+func matchFor(c candidate, h agentHeaders) AgentMatch {
 	return AgentMatch{
 		S3Key: c.obj.Key, Subject: h.subject, From: h.from, To: h.to, Date: h.date,
 		ReceivedAt: isoformat(c.obj.LastModified), SizeBytes: c.obj.Size,
-		SenderAuthenticated: h.authenticated, TrustedLegacy: legacy, sortAt: sortAt,
+		SenderAuthenticated: h.authenticated, sortAt: c.obj.LastModified.UTC(),
 	}
 }
 
@@ -401,6 +373,13 @@ func trimToLimit(matches []AgentMatch, limit int, less func(a, b AgentMatch) boo
 }
 
 func newestFirst(a, b AgentMatch) bool { return a.sortAt.After(b.sortAt) }
+
+func bestFirst(a, b AgentMatch) bool {
+	if a.MatchScore != b.MatchScore {
+		return a.MatchScore > b.MatchScore
+	}
+	return a.sortAt.After(b.sortAt)
+}
 
 // AgentSearch is the targeted search (search_emails).
 func (in *Inbox) AgentSearch(ctx context.Context, q AgentQuery) ([]AgentMatch, AgentStats, error) {
@@ -417,44 +396,28 @@ func (in *Inbox) AgentSearch(ctx context.Context, q AgentQuery) ([]AgentMatch, A
 	authOff := in.SenderAuthOff()
 	needFull := q.HasPayload != nil || q.IncludeBodyPreview
 	var matches []AgentMatch
-	err := in.eachPage(ctx, q.From, q.To, &stats, func(batch []candidate) (bool, error) {
+	err := in.eachBatch(ctx, q.From, q.To, &stats, func(batch []candidate) (bool, error) {
 		hs, oks, err := in.headerBatch(ctx, batch, &stats)
 		if err != nil {
 			return false, err
 		}
-		type pick struct {
-			i      int
-			sortAt time.Time
-			legacy bool
-		}
-		var picks []pick
-		for i, c := range batch {
+		var picks []int
+		for i := range batch {
 			if !oks[i] {
 				continue
 			}
 			h := hs[i]
-			sortAt, inWindow := in.placement(c, h.date, q.From, q.To)
-			if !inWindow {
-				continue
-			}
 			lowerSubject := strings.ToLower(h.subject)
-			if subject != "" && !strings.Contains(lowerSubject, subject) {
+			if subject != "" && !strings.Contains(lowerSubject, subject) ||
+				len(keywords) > 0 && !containsAny(lowerSubject, keywords) ||
+				sender != "" && !senderFilterMatches(sender, h.from, authOff) ||
+				recipient != "" && !strings.Contains(strings.ToLower(h.to), recipient) {
 				continue
 			}
-			if len(keywords) > 0 && !containsAny(lowerSubject, keywords) {
-				continue
-			}
-			if sender != "" && !senderFilterMatches(sender, h.from, authOff) {
-				continue
-			}
-			if recipient != "" && !strings.Contains(strings.ToLower(h.to), recipient) {
-				continue
-			}
-			legacy := in.isLegacyKey(c.obj.Key)
-			if !authOff && !h.authenticated && !legacy {
-				// Never open an untrusted message. It is counted as skipped
-				// only when the header filters alone decide the match; with a
-				// payload filter whether it would match is unknown.
+			if !authOff && !h.authenticated {
+				// Never open an untrusted message. It is "skipped" when the
+				// header filters alone decide the match; with a payload filter
+				// whether it would match is unknown, so it is "unchecked".
 				if q.HasPayload == nil {
 					stats.UnauthenticatedSkipped++
 				} else {
@@ -462,42 +425,33 @@ func (in *Inbox) AgentSearch(ctx context.Context, q AgentQuery) ([]AgentMatch, A
 				}
 				continue
 			}
-			picks = append(picks, pick{i, sortAt, legacy})
+			picks = append(picks, i)
 		}
-		var full map[int]opened
+		var full map[int]digest
 		if needFull && len(picks) > 0 {
-			idx := make([]int, len(picks))
-			for k, p := range picks {
-				idx[k] = p.i
-			}
-			if full, err = in.openBatch(ctx, batch, idx, &stats); err != nil {
+			if full, err = in.digestBatch(ctx, batch, picks, false, &stats); err != nil {
 				return false, err
 			}
 		}
-		for _, p := range picks {
-			m := matchFor(batch[p.i], hs[p.i], p.legacy, p.sortAt)
+		for _, i := range picks {
+			m := matchFor(batch[i], hs[i])
 			if needFull {
-				o := full[p.i]
-				if !o.ok {
+				d := full[i]
+				if !d.ok {
 					continue
 				}
-				m.Opened, m.Attachments, m.DownloadLinks = true, o.attachments, o.links
-				payload := len(o.attachments)+len(o.links) > 0
-				if q.HasPayload != nil && payload != *q.HasPayload {
+				m.Opened, m.Attachments, m.DownloadLinks = true, d.attachments, d.links
+				if q.HasPayload != nil && (len(d.attachments)+len(d.links) > 0) != *q.HasPayload {
 					continue
 				}
 				if q.IncludeBodyPreview {
-					body := o.plain
-					if body == "" {
-						body = o.html
-					}
-					m.BodyPreview = truncateRunes(body, bodyPreviewChars)
+					m.BodyPreview = d.preview
 				}
 			}
 			matches = append(matches, m)
 		}
 		reached := len(matches) >= q.MaxResults
-		matches = trimToLimit(matches, q.MaxResults, newestFirst) // bound memory within a busy partition
+		matches = trimToLimit(matches, q.MaxResults, newestFirst)
 		return reached, nil
 	})
 	if err != nil {
@@ -513,89 +467,6 @@ func containsAny(text string, terms []string) bool {
 		}
 	}
 	return false
-}
-
-// AgentFuzzy is the keyword search (search_emails_fuzzy). Keywords match
-// case-insensitively in the chosen fields. While the sender is searched with
-// authentication on, a domain- or address-shaped keyword is a sender
-// constraint only (matched against the From mailbox), and a plain word never
-// matches a sender. An untrusted message's body is never read.
-func (in *Inbox) AgentFuzzy(ctx context.Context, q AgentFuzzyQuery) ([]AgentMatch, AgentStats, error) {
-	var stats AgentStats
-	var keywords []fuzzyKeyword
-	for _, k := range q.Keywords {
-		if t := strings.TrimSpace(k); t != "" {
-			keywords = append(keywords, fuzzyKeyword{k, strings.ToLower(k)})
-		}
-	}
-	authOff := in.SenderAuthOff()
-	var matches []AgentMatch
-	err := in.eachPage(ctx, q.From, q.To, &stats, func(batch []candidate) (bool, error) {
-		hs, oks, err := in.headerBatch(ctx, batch, &stats)
-		if err != nil {
-			return false, err
-		}
-		// A body search opens trusted messages (and, with auth off, all).
-		var idx []int
-		if q.Body {
-			for i, c := range batch {
-				if oks[i] && (authOff || hs[i].authenticated || in.isLegacyKey(c.obj.Key)) {
-					idx = append(idx, i)
-				}
-			}
-		}
-		full := map[int]opened{}
-		if len(idx) > 0 {
-			if full, err = in.openBatch(ctx, batch, idx, &stats); err != nil {
-				return false, err
-			}
-		}
-		for i, c := range batch {
-			if !oks[i] {
-				continue
-			}
-			h, body, attachments, openedMsg := hs[i], "", []string(nil), false
-			if o, ok := full[i]; ok {
-				if !o.ok {
-					continue
-				}
-				body, attachments, openedMsg = o.plain, o.attachments, true
-			}
-			sortAt, inWindow := in.placement(c, h.date, q.From, q.To)
-			if !inWindow {
-				continue
-			}
-			legacy := in.isLegacyKey(c.obj.Key)
-			trusted := authOff || h.authenticated || legacy
-			var parts []string
-			if q.Subject {
-				parts = append(parts, h.subject)
-			}
-			if q.Body {
-				parts = append(parts, body)
-			}
-			hits := fuzzyHits(keywords, strings.ToLower(strings.Join(parts, " ")), h.from, q.Sender, authOff)
-			if (q.MatchAll && len(hits) != len(keywords)) || len(hits) == 0 {
-				continue
-			}
-			if !trusted {
-				stats.UnauthenticatedSkipped++
-				continue
-			}
-			m := matchFor(c, h, legacy, sortAt)
-			m.Opened, m.Attachments = openedMsg, attachments
-			m.MatchScore = float64(len(hits)) / float64(len(keywords))
-			m.MatchedKeywords = hits
-			matches = append(matches, m)
-		}
-		reached := len(matches) >= q.MaxResults
-		matches = trimToLimit(matches, q.MaxResults, bestFirst)
-		return reached, nil
-	})
-	if err != nil {
-		return nil, stats, err
-	}
-	return trimToLimit(matches, q.MaxResults, bestFirst), stats, nil
 }
 
 type fuzzyKeyword struct{ original, lower string }
@@ -637,9 +508,93 @@ func fuzzyHits(keywords []fuzzyKeyword, searchable, from string, searchSender, a
 	return hits
 }
 
-func bestFirst(a, b AgentMatch) bool {
-	if a.MatchScore != b.MatchScore {
-		return a.MatchScore > b.MatchScore
+func fuzzyMatched(hits []string, total int, matchAll bool) bool {
+	if matchAll {
+		return len(hits) == total
 	}
-	return a.sortAt.After(b.sortAt)
+	return len(hits) > 0
+}
+
+// AgentFuzzy is the keyword search (search_emails_fuzzy). An untrusted
+// message's body is never read: when only its body could still decide the
+// match it is counted as unchecked.
+func (in *Inbox) AgentFuzzy(ctx context.Context, q AgentFuzzyQuery) ([]AgentMatch, AgentStats, error) {
+	var stats AgentStats
+	var keywords []fuzzyKeyword
+	for _, k := range q.Keywords {
+		if t := strings.TrimSpace(k); t != "" {
+			keywords = append(keywords, fuzzyKeyword{k, strings.ToLower(k)})
+		}
+	}
+	authOff := in.SenderAuthOff()
+	headerText := func(h agentHeaders) string {
+		if q.Subject {
+			return strings.ToLower(h.subject)
+		}
+		return ""
+	}
+	var matches []AgentMatch
+	err := in.eachBatch(ctx, q.From, q.To, &stats, func(batch []candidate) (bool, error) {
+		hs, oks, err := in.headerBatch(ctx, batch, &stats)
+		if err != nil {
+			return false, err
+		}
+		var open []int
+		for i := range batch {
+			if !oks[i] {
+				continue
+			}
+			trusted := authOff || hs[i].authenticated
+			headerHits := fuzzyHits(keywords, headerText(hs[i]), hs[i].from, q.Sender, authOff)
+			if !trusted {
+				switch {
+				case fuzzyMatched(headerHits, len(keywords), q.MatchAll):
+					stats.UnauthenticatedSkipped++
+				case q.Body:
+					stats.UnauthenticatedUnchecked++
+				}
+				continue
+			}
+			if q.Body {
+				open = append(open, i)
+			} else if fuzzyMatched(headerHits, len(keywords), q.MatchAll) {
+				m := matchFor(batch[i], hs[i])
+				scoreMatch(&m, headerHits, len(keywords))
+				matches = append(matches, m)
+			}
+		}
+		if len(open) > 0 {
+			full, err := in.digestBatch(ctx, batch, open, true, &stats)
+			if err != nil {
+				return false, err
+			}
+			for _, i := range open {
+				d := full[i]
+				if !d.ok {
+					continue
+				}
+				searchable := strings.TrimSpace(headerText(hs[i]) + " " + d.body)
+				hits := fuzzyHits(keywords, searchable, hs[i].from, q.Sender, authOff)
+				if !fuzzyMatched(hits, len(keywords), q.MatchAll) {
+					continue
+				}
+				m := matchFor(batch[i], hs[i])
+				m.Opened, m.Attachments, m.DownloadLinks = true, d.attachments, d.links
+				scoreMatch(&m, hits, len(keywords))
+				matches = append(matches, m)
+			}
+		}
+		reached := len(matches) >= q.MaxResults
+		matches = trimToLimit(matches, q.MaxResults, bestFirst)
+		return reached, nil
+	})
+	if err != nil {
+		return nil, stats, err
+	}
+	return trimToLimit(matches, q.MaxResults, bestFirst), stats, nil
+}
+
+func scoreMatch(m *AgentMatch, hits []string, total int) {
+	m.MatchScore = float64(len(hits)) / float64(total)
+	m.MatchedKeywords = hits
 }

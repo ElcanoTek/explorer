@@ -4,19 +4,32 @@
 package archive
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	stdhtml "html"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
 
-// Download-link detection (the agent search API's has_payload filter).
+// Download-link detection (the agent API's has_payload filter and the links
+// get_email reports).
 //
 // Vendors split roughly evenly between attaching report files and putting a
 // download link in the body, so "has a payload" means an attachment OR a
 // link the classifier calls download-likely. This is the Go port of the
-// bundles' classify_url; the bundle tools that actually fetch links keep
-// their own copy, so a change here must be made there too.
+// link archiver's classify_url (ElcanoTek/production-support
+// ses-s3/lambdas/ses_email_link_archiver.py).
+//
+// Hash contract: the archiver caches each download-likely link's payload at
+// <EMAIL_S3_ARCHIVE_PREFIX>by-url/<sha256(url)>/<filename>, where url is the
+// string exactly as it extracts it from the body (outer wrapper, after
+// clean_url, &amp; NOT decoded). Extraction here mirrors it (all text/plain
+// parts' URLs, then all text/html parts' anchors) so the url a caller is
+// given hashes to the cached copy.
 
 var downloadExtensions = setOf(
 	".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".txt",
@@ -60,7 +73,8 @@ var junkHostSuffixes = []string{
 var (
 	lineContRE    = regexp.MustCompile(`=[\r\n]+`)
 	textURLRE     = regexp.MustCompile(`https?://[^\s<>"')\]}>]*(?:=[\r\n]+[^\s<>"')\]}>]*)*`)
-	htmlLinkRE    = regexp.MustCompile(`(?i)<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)</a>`)
+	htmlLinkRE    = regexp.MustCompile(`(?is)<a\b[^>]*?\bhref=["']([^"']+)["'][^>]*>(.*?)</a\s*>`)
+	tagRE         = regexp.MustCompile(`<[^>]*>`)
 	unsubscribeRE = regexp.MustCompile(`(?i)unsubscribe|opt[-_]?out|email[-_]?preferences|manage[-_]?preferences`)
 	proofpointV3  = regexp.MustCompile(`/v3/__(.+?)__;`)
 )
@@ -96,11 +110,35 @@ type bodyLink struct{ url, text string }
 func extractHTMLLinks(html string) []bodyLink {
 	var out []bodyLink
 	for _, m := range htmlLinkRE.FindAllStringSubmatch(html, -1) {
-		if strings.HasPrefix(m[1], "http://") || strings.HasPrefix(m[1], "https://") {
-			out = append(out, bodyLink{cleanURL(m[1]), strings.TrimSpace(m[2])})
+		href := strings.TrimSpace(m[1])
+		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+			text := strings.Join(strings.Fields(tagRE.ReplaceAllString(m[2], " ")), " ")
+			out = append(out, bodyLink{cleanURL(href), text})
 		}
 	}
 	return out
+}
+
+// allBodies joins every non-attachment text/plain part and every
+// text/html part, as the archiver does.
+func allBodies(msg *mailmsg.Part) (plain, html string) {
+	var plains, htmls []string
+	for _, part := range msg.Walk() {
+		if part.MainType() == "multipart" || strings.Contains(strings.ToLower(part.Header.Get("Content-Disposition")), "attachment") {
+			continue
+		}
+		payload, ok := part.Payload()
+		if !ok {
+			continue
+		}
+		switch part.ContentType() {
+		case "text/plain":
+			plains = append(plains, mailmsg.DecodeBytes(payload, part.Charset()))
+		case "text/html":
+			htmls = append(htmls, mailmsg.DecodeBytes(payload, part.Charset()))
+		}
+	}
+	return strings.Join(plains, "\n"), strings.Join(htmls, "\n")
 }
 
 func parsedURL(raw string) *url.URL {
@@ -191,12 +229,22 @@ func isJunkHost(host string) bool {
 	return false
 }
 
-// DownloadLink is a body link classified as a likely payload.
+// DownloadLink is a body link classified as a likely payload. URL is the
+// string exactly as extracted (the cache key); FetchURL is the same link
+// with HTML entities (&amp;) decoded, the form a live request needs.
 type DownloadLink struct {
 	URL            string `json:"url"`
+	FetchURL       string `json:"-"`
 	Filename       string `json:"filename,omitempty"`
 	LinkText       string `json:"link_text,omitempty"`
 	IsClickTracker bool   `json:"is_click_tracker"`
+}
+
+// URLHash is the archiver's cache key for url: hex SHA-256 of the exact
+// string.
+func URLHash(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
 }
 
 // classifyURL reports whether raw is a likely download link and its
@@ -238,34 +286,38 @@ func classifyURL(raw string) (cleaned, filename string, downloadLikely, clickTra
 	return cleaned, filename, downloadLikely, clickTracker
 }
 
-// downloadLinks lists the distinct likely-payload links of a body: HTML
-// anchors, then plain-text URLs, then URLs in the HTML outside anchors.
-func downloadLinks(plain, html string) []DownloadLink {
-	seen := map[string]bool{}
-	var out []DownloadLink
-	record := func(raw, text string) {
-		cleaned, filename, likely, tracker := classifyURL(raw)
-		if seen[cleaned] {
+// bodyURLs lists a body's distinct links in the archiver's order:
+// plain-text URLs, then HTML anchors (whose text wins).
+func bodyURLs(plain, html string) []bodyLink {
+	var out []bodyLink
+	index := map[string]int{}
+	add := func(l bodyLink) {
+		if i, ok := index[l.url]; ok {
+			if l.text != "" {
+				out[i].text = l.text
+			}
 			return
 		}
-		seen[cleaned] = true
+		index[l.url] = len(out)
+		out = append(out, l)
+	}
+	for _, u := range extractTextURLs(plain) {
+		add(bodyLink{url: u})
+	}
+	for _, l := range extractHTMLLinks(html) {
+		add(l)
+	}
+	return out
+}
+
+// downloadLinks lists the distinct likely-payload links of a body.
+func downloadLinks(plain, html string) []DownloadLink {
+	var out []DownloadLink
+	for _, l := range bodyURLs(plain, html) {
+		cleaned, filename, likely, tracker := classifyURL(l.url)
 		if likely {
-			out = append(out, DownloadLink{URL: cleaned, Filename: filename, LinkText: text, IsClickTracker: tracker})
-		}
-	}
-	if html != "" {
-		for _, l := range extractHTMLLinks(html) {
-			record(l.url, l.text)
-		}
-	}
-	if plain != "" {
-		for _, u := range extractTextURLs(plain) {
-			record(u, "")
-		}
-	}
-	if html != "" {
-		for _, u := range extractTextURLs(html) {
-			record(u, "")
+			out = append(out, DownloadLink{URL: cleaned, FetchURL: stdhtml.UnescapeString(cleaned),
+				Filename: filename, LinkText: truncateRunes(l.text, 200), IsClickTracker: tracker})
 		}
 	}
 	return out

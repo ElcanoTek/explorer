@@ -1,5 +1,5 @@
 {
-  "instructions": "Elcano Explorer searches this deployment's email archive (the raw SES mail in S3) for report emails. Workflow: find_latest_report for \"the most recent report from vendor X\", search_emails for a specific day or window, search_emails_fuzzy when you only have keywords. Every result carries s3_key; read and download with the email server's tools (get_email, download_attachment, extract_download_links, download_link_attachment). Identify vendors by sender DOMAIN (\"vendor.example\") or full address, never a display name. Results include only mail whose sender the receiving server authenticated; read search_warnings before concluding a report is missing. A status: error result means the search did not complete; it is not an empty inbox.",
+  "instructions": "Elcano Explorer is this deployment's email archive (the raw SES mail in S3): it finds report emails, reads them and hands out their files. Workflow: find_latest_report for \"the most recent report from vendor X\", search_emails for a specific day or window, search_emails_fuzzy when you only have keywords; then get_email with the s3_key, and get_download_link for an attachment or a body link, whose download_url you fetch with the download_url tool. Report links expire about 48 hours after delivery, but the archive caches them on arrival, so get_download_link serves the cached copy whenever one exists. Identify vendors by sender DOMAIN (\"vendor.example\") or full address, never a display name. Searches return only mail whose sender the receiving server authenticated; read search_warnings before concluding a report is missing. A status: error result means the call did not complete; it is not an empty inbox.",
   "serverInfo": {
     "name": "explorer",
     "title": "Elcano Explorer",
@@ -15,7 +15,7 @@
       "name": "search_emails",
       "scope": "email:search",
       "title": "Search the email archive",
-      "description": "START HERE to find emails: search by subject, sender, recipient, date window and payload presence. Returns matching emails newest first, each with s3_key (pass it to the email server's get_email, download_attachment, extract_download_links and download_link_attachment tools), sender_authenticated, attachment_names and, when the message was opened, download_links.\n\nBoth date_from and date_to are required. Prefer 1-day windows stepped back one day at a time (or find_latest_report, which does that for you); wide windows are allowed (scanned one day partition at a time, with a date_window_auto_chunked warning) up to the deployment's day limit. Prefer sender_contains with a small max_results for source-specific queries. has_payload and include_body_preview read whole messages and are slower.\n\nOnly mail whose sender the receiving server authenticated (DMARC, or aligned SPF/DKIM) is returned; skipped mail is reported in search_warnings (unauthenticated_sender_skipped / unauthenticated_sender_unchecked). Treat such a warning as 'the vendor's report may have been left out', not as 'no report'. A failed search returns an error (status: error, often retryable), never an empty success.",
+      "description": "START HERE to find emails: search by subject, sender, recipient, date window and payload presence. Returns matching emails newest first, each with s3_key (pass it to get_email and get_download_link), sender_authenticated, attachment_names and, when the message was opened, download_links.\n\nBoth date_from and date_to are required. Prefer 1-day windows stepped back one day at a time (or find_latest_report, which does that for you); wide windows are allowed (scanned one day partition at a time, with a date_window_auto_chunked warning) up to the deployment's day limit. Prefer sender_contains with a small max_results for source-specific queries. has_payload and include_body_preview read whole messages and are slower.\n\nOnly mail whose sender the receiving server authenticated (DMARC, or aligned SPF/DKIM) is returned; skipped mail is reported in search_warnings (unauthenticated_sender_skipped / unauthenticated_sender_unchecked). Treat such a warning as 'the vendor's report may have been left out', not as 'no report'. A failed search returns an error (status: error, often retryable), never an empty success.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -195,6 +195,118 @@
       },
       "annotations": {
         "title": "Find the latest report email",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_email",
+      "scope": "email:read",
+      "title": "Read an email",
+      "description": "Read one email by s3_key: subject, from, to, cc, date, sender_authenticated, its attachments (filename, content_type, size_bytes), the body text (first 6,000 characters) and its download-likely body links. Each link carries its link-cache state: report links are presigned or one-shot and expire about 48 hours after delivery, so the archive caches every download-likely link minutes after the email arrives; cache.cached=true means a copy is kept for good. To fetch an attachment or a link, call get_download_link.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Read an email",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "extract_download_links",
+      "scope": "email:read",
+      "title": "List an email's download links",
+      "description": "The download-likely links in one email's body (report files, exports, presigned URLs, click-trackers that lead to them), each with its link-cache state. Same links as get_email's download_links, without the rest of the message.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "List an email's download links",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_archived_attachments",
+      "scope": "email:read",
+      "title": "Show an email's link-cache record",
+      "description": "The link archiver's manifest for one email: every body link it found and its outcome (archived, already_archived, skipped_not_download_likely, failed_http_404, ...). status not_found means the email predates the archiver or has not been processed yet.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Show an email's link-cache record",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_download_link",
+      "scope": "email:read",
+      "title": "Get a download link",
+      "description": "Get a URL for one attachment (filename, from get_email's attachments) or one body link (url, from get_email's download_links), then fetch it into the workspace with the download_url tool. A cached link or an attachment comes back as a signed Explorer URL valid for 15 minutes (source cached / attachment); prefer it: the original report link has usually expired. A link the cache does not hold comes back as the live URL from the email (source live), which may no longer work. Pass exactly one of filename or url.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          },
+          "filename": {
+            "type": "string",
+            "description": "An attachment filename exactly as get_email lists it."
+          },
+          "url": {
+            "type": "string",
+            "description": "A download link exactly as get_email or extract_download_links lists it."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Get a download link",
         "readOnlyHint": true,
         "destructiveHint": false,
         "idempotentHint": true,

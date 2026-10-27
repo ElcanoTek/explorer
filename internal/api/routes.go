@@ -24,7 +24,13 @@ type Operation struct {
 	Scope string
 	// Args are the accepted argument names, sorted.
 	Args []string
-	Run  func(a *API, r *http.Request, args map[string]any) (Body, error)
+	Run  func(a *API, r *http.Request, t *apitoken.Token, args map[string]any) (Body, error)
+}
+
+func searchOp(f func(a *API, r *http.Request, args map[string]any) (Body, error)) func(*API, *http.Request, *apitoken.Token, map[string]any) (Body, error) {
+	return func(a *API, r *http.Request, _ *apitoken.Token, args map[string]any) (Body, error) {
+		return f(a, r, args)
+	}
 }
 
 // Operations lists every operation, in catalog order.
@@ -33,18 +39,26 @@ var Operations = []Operation{
 		Name: "search_emails", Scope: apitoken.ScopeSearch,
 		Args: []string{"date_from", "date_to", "has_payload", "include_body_preview", "max_results",
 			"recipient_contains", "sender_contains", "subject_contains", "subject_keywords"},
-		Run: (*API).SearchEmails,
+		Run: searchOp((*API).SearchEmails),
 	},
 	{
 		Name: "search_emails_fuzzy", Scope: apitoken.ScopeSearch,
 		Args: []string{"date_from", "date_to", "keywords", "match_all", "max_results", "search_fields"},
-		Run:  (*API).SearchEmailsFuzzy,
+		Run:  searchOp((*API).SearchEmailsFuzzy),
 	},
 	{
 		Name: "find_latest_report", Scope: apitoken.ScopeSearch,
 		Args: []string{"lookback_days", "max_candidates", "on_or_before", "recipient_contains",
 			"require_payload", "sender_contains", "subject_contains", "subject_keywords"},
-		Run: (*API).FindLatestReport,
+		Run: searchOp((*API).FindLatestReport),
+	},
+	{Name: "get_email", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).GetEmail},
+	{Name: "extract_download_links", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ExtractDownloadLinks},
+	{Name: "list_archived_attachments", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ListArchivedAttachments},
+	{
+		Name: "get_download_link", Scope: apitoken.ScopeRead,
+		Args: []string{"filename", "s3_key", "url"},
+		Run:  (*API).GetDownloadLink,
 	},
 }
 
@@ -87,7 +101,7 @@ func (a *API) Call(r *http.Request, token *apitoken.Token, op *Operation, args m
 	if err := op.CheckArgNames(args); err != nil {
 		return nil, err
 	}
-	return op.Run(a, r, args)
+	return op.Run(a, r, token, args)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -120,9 +134,14 @@ func (a *API) WriteError(w http.ResponseWriter, err error) {
 }
 
 // Routes serves POST /api/v1/<operation> with a JSON object of arguments,
-// and GET /api/v1/ listing the operations the token may call.
+// GET /api/v1/ listing the operations the token may call, and the
+// bearer-free GET /api/v1/download?ticket=… that signed links point at.
 func (a *API) Routes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/download" {
+			a.ServeDownload(w, r)
+			return
+		}
 		token, err := a.Authenticate(r)
 		if err != nil {
 			a.WriteError(w, err)

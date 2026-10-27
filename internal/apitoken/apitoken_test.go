@@ -109,3 +109,55 @@ func TestLastUsedIsWrittenAtMostOncePerResolution(t *testing.T) {
 		t.Fatal("not refreshed after the resolution")
 	}
 }
+
+func TestDownloadTickets(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+	token, _, err := s.Create(ctx, "fleet", Scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Download{Kind: "cached", Key: "emails/attachments/by-url/abc/r.csv", Name: "r.csv"}
+	ticket, expires, err := s.SignDownload(ctx, token, d)
+	if err != nil || expires != now.Unix()+DownloadLinkSeconds {
+		t.Fatalf("sign: %v %d", err, expires)
+	}
+	got, gotD, err := s.VerifyDownload(ctx, ticket)
+	if err != nil || got.ID != token.ID || gotD != d {
+		t.Fatalf("verify: %+v %+v %v", got, gotD, err)
+	}
+	var te *TokenError
+	now = now.Add(DownloadLinkSeconds*time.Second + time.Second)
+	if _, _, err := s.VerifyDownload(ctx, ticket); !errors.As(err, &te) || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired ticket: %v", err)
+	}
+	searchOnly, _, _ := s.Create(ctx, "search", []string{ScopeSearch})
+	ticket, _, _ = s.SignDownload(ctx, searchOnly, d)
+	if _, _, err := s.VerifyDownload(ctx, ticket); !errors.As(err, &te) {
+		t.Fatalf("search-only ticket: %v", err)
+	}
+}
+
+func TestAnUnreadableDatabaseIsAStorageErrorNotAnInvalidToken(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(filepath.Join(dir, "api_tokens.db"))
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	var te *TokenError
+	if _, err := s.Verify(context.Background(), TokenPrefix+"abc"); err == nil || errors.As(err, &te) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := s.List(context.Background()); err == nil {
+		t.Fatal("List must surface the stat error")
+	}
+}

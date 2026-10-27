@@ -32,7 +32,11 @@ func (m memStore) List(_ context.Context, prefix, _ string, _ int32) (archive.Li
 }
 
 func (m memStore) Get(_ context.Context, key string, _ int64) ([]byte, error) {
-	return m.objects[key], nil
+	data, ok := m.objects[key]
+	if !ok {
+		return nil, archive.ErrNoSuchKey
+	}
+	return data, nil
 }
 
 func newServer(t *testing.T) (*Server, string) {
@@ -71,7 +75,7 @@ func rpc(t *testing.T, srv *Server, token, body string, headers map[string]strin
 }
 
 func TestToolsMatchTheirOperations(t *testing.T) {
-	if got := strings.Join(ToolNames(), ","); got != "search_emails,search_emails_fuzzy,find_latest_report" {
+	if got := strings.Join(ToolNames(), ","); got != "search_emails,search_emails_fuzzy,find_latest_report,get_email,extract_download_links,list_archived_attachments,get_download_link" {
 		t.Fatalf("tools %s", got)
 	}
 	for _, tool := range defs.Tools {
@@ -90,7 +94,7 @@ func TestInitializeListAndCall(t *testing.T) {
 		t.Fatalf("initialize %v", out)
 	}
 	_, out = rpc(t, srv, raw, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, nil)
-	if tools := out["result"].(map[string]any)["tools"].([]any); len(tools) != 3 {
+	if tools := out["result"].(map[string]any)["tools"].([]any); len(tools) != 7 {
 		t.Fatalf("tools/list %v", out)
 	}
 	_, out = rpc(t, srv, raw, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_emails",`+

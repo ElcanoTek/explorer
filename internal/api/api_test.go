@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -62,7 +61,7 @@ func (f *fakeStore) Get(_ context.Context, key string, maxBytes int64) ([]byte, 
 	defer f.mu.Unlock()
 	data, ok := f.objects[key]
 	if !ok {
-		return nil, errors.New("NoSuchKey")
+		return nil, archive.ErrNoSuchKey
 	}
 	if maxBytes > 0 && int64(len(data)) > maxBytes {
 		return data[:maxBytes], nil
@@ -80,10 +79,11 @@ func mailFrom(from, auth, subject, body string) []byte {
 }
 
 type harness struct {
-	t     *testing.T
-	store *fakeStore
-	api   *API
-	raw   string
+	t      *testing.T
+	store  *fakeStore
+	api    *API
+	tokens *apitoken.Store
+	raw    string
 }
 
 func newHarness(t *testing.T, env map[string]string) *harness {
@@ -104,7 +104,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	a := New(Deps{Inbox: archive.New(store, s), Settings: s, Tokens: tokens, Now: func() time.Time { return now }})
-	return &harness{t: t, store: store, api: a, raw: raw}
+	return &harness{t: t, store: store, api: a, tokens: tokens, raw: raw}
 }
 
 func (h *harness) put(key string, data []byte) {
