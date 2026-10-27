@@ -3,7 +3,8 @@
 # .github/workflows/*. Modelled on fleet's file.
 #
 # Proposing is not merging. A human merges a bump only when it earns it: a
-# security fix whose code path Explorer uses, or a specific commit we need
+# security fix whose code path Explorer uses, a security scanner update (such
+# as CodeQL), or a specific commit we need
 # (AGENTS.md › Dependencies). In-housed code (internal/dotenv,
 # internal/htmlsafe) is ours and is not tracked here.
 #
