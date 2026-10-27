@@ -65,6 +65,12 @@ CENTRAL-AUTH ACCESS (EXPLORER_AUTH_MODE=central)
   explorer access revoke EMAIL      deny access and revoke Explorer sessions
   explorer access backup [PATH]     consistent copy of the access database
 
+API TOKENS (for /mcp and /api/v1: Fleet and scripts)
+  explorer token create --label NAME [--json]
+                                    mint an email:search token (shown once)
+  explorer token list               show tokens (never their secrets)
+  explorer token revoke ID          revoke a token by id
+
 Exit codes: 0 ok · 1 failure (doctor: a check failed) · 2 usage error.
 `
 

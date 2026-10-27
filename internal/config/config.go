@@ -40,6 +40,30 @@ type Settings struct {
 	// S3-compatible stores (MinIO, LocalStack) behind AWS_ENDPOINT_URL_S3.
 	S3ForcePathStyle bool
 
+	// Agent search API (/mcp, /api/v1). The web UI is unaffected by these.
+	//
+	// EMAIL_SENDER_AUTH: "required" (default) returns only mail whose From
+	// domain the receiver authenticated, and matches sender filters against
+	// the parsed From mailbox; "off" is the forgeable header-text match, for
+	// an inbox whose receiver adds no Authentication-Results.
+	SenderAuth string
+	// EMAIL_AUTHSERV_ID: the receiver's authserv-id in Authentication-Results
+	// (default amazonses.com, lower-cased).
+	AuthservID string
+	// EMAIL_TRUSTED_LEGACY_PREFIXES (comma separated): S3 prefixes of
+	// imported legacy mail the operator vouches for. Their objects count as
+	// authenticated and are windowed by partition day or Date header, since
+	// their LastModified is the import time.
+	TrustedLegacyPrefixes []string
+	// EMAIL_S3_ARCHIVE_PREFIX: where the link-archive lambda writes payloads
+	// and manifests under the email prefix; never returned as mail.
+	ArchivePrefix string
+	// EXPLORER_API_MAX_SECONDS bounds one API or MCP call (a
+	// find_latest_report walks several days within it).
+	APIMaxSeconds int
+	// EXPLORER_API_TOKEN_DB: the API token database (`explorer token`).
+	APITokenDB string
+
 	// EXPLORER_SESSION_SECRET signs the UI cookie (search ownership and the
 	// central-login transaction).
 	SessionSecret  string
@@ -122,6 +146,12 @@ func FromEnv(env map[string]string) (Settings, error) {
 		SearchJobMaxSeconds: num("EMAIL_SEARCH_JOB_MAX_SECONDS", "120"),
 		S3ForcePathStyle:    Truthy(get("EMAIL_S3_FORCE_PATH_STYLE", "0")),
 
+		SenderAuth:    strings.ToLower(strings.TrimSpace(get("EMAIL_SENDER_AUTH", "required"))),
+		AuthservID:    strings.ToLower(strings.TrimSpace(get("EMAIL_AUTHSERV_ID", "amazonses.com"))),
+		ArchivePrefix: get("EMAIL_S3_ARCHIVE_PREFIX", "emails/attachments/"),
+		APIMaxSeconds: num("EXPLORER_API_MAX_SECONDS", "240"),
+		APITokenDB:    get("EXPLORER_API_TOKEN_DB", "/var/lib/explorer/api_tokens.db"),
+
 		SessionSecret:  get("EXPLORER_SESSION_SECRET", DevSessionSecret),
 		UICookieSecure: Truthy(get("EXPLORER_UI_COOKIE_SECURE", "1")),
 
@@ -144,6 +174,23 @@ func FromEnv(env map[string]string) (Settings, error) {
 		SessionAbsoluteSeconds: num("EXPLORER_SESSION_ABSOLUTE_SECONDS", "86400"),
 
 		ListenAddr: get("EXPLORER_LISTEN_ADDR", "127.0.0.1:8080"),
+	}
+	for _, p := range strings.Split(get("EMAIL_TRUSTED_LEGACY_PREFIXES", ""), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			s.TrustedLegacyPrefixes = append(s.TrustedLegacyPrefixes, p)
+		}
+	}
+	if s.SenderAuth == "" {
+		s.SenderAuth = "required"
+	}
+	if s.SenderAuth != "required" && s.SenderAuth != "off" {
+		errs = append(errs, fmt.Sprintf("EMAIL_SENDER_AUTH must be required or off (got %q)", s.SenderAuth))
+	}
+	if s.AuthservID == "" {
+		s.AuthservID = "amazonses.com"
+	}
+	if s.APIMaxSeconds <= 0 {
+		errs = append(errs, "EXPLORER_API_MAX_SECONDS must be positive")
 	}
 	if s.HeaderFetchBytes <= 0 {
 		errs = append(errs, "EMAIL_HEADER_FETCH_BYTES must be positive")

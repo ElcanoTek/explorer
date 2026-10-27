@@ -23,9 +23,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ElcanoTek/explorer/internal/api"
+	"github.com/ElcanoTek/explorer/internal/apitoken"
 	"github.com/ElcanoTek/explorer/internal/archive"
 	"github.com/ElcanoTek/explorer/internal/auth"
 	"github.com/ElcanoTek/explorer/internal/config"
+	"github.com/ElcanoTek/explorer/internal/mcp"
 )
 
 // Server holds everything a request needs. Build one with New.
@@ -37,6 +40,8 @@ type Server struct {
 	jobs         *jobStore
 	pages        map[string]*template.Template
 	allowedRoots []string
+	tokens       *apitoken.Store
+	api          *api.API
 	now          func() time.Time
 	handler      http.Handler
 }
@@ -49,6 +54,8 @@ type Options struct {
 	HTTPClient *http.Client
 	// Now replaces the clock.
 	Now func() time.Time
+	// Tokens replaces the API token store (default: EXPLORER_API_TOKEN_DB).
+	Tokens *apitoken.Store
 }
 
 // New validates settings and builds the service. Like the Python app's
@@ -74,9 +81,16 @@ func New(ctx context.Context, s config.Settings, opts Options) (*Server, error) 
 	if err != nil {
 		return nil, err
 	}
+	tokens := opts.Tokens
+	if tokens == nil {
+		tokens = apitoken.NewStore(s.APITokenDB)
+	}
+	inbox := archive.New(store, s)
 	srv := &Server{
 		settings:     s,
-		inbox:        archive.New(store, s),
+		inbox:        inbox,
+		tokens:       tokens,
+		api:          api.New(api.Deps{Inbox: inbox, Settings: s, Tokens: tokens, Now: now}),
 		auth:         prov,
 		sessions:     sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
 		jobs:         newJobStore(now),
@@ -88,8 +102,9 @@ func New(ctx context.Context, s config.Settings, opts Options) (*Server, error) 
 	return srv, nil
 }
 
-// Close releases the access database in central mode.
-func (s *Server) Close() error { return s.auth.close() }
+// Close releases the access database in central mode and the API token
+// database.
+func (s *Server) Close() error { return errors.Join(s.auth.close(), s.tokens.Close()) }
 
 // ServeHTTP makes Server an http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
@@ -107,7 +122,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /email", s.handleEmail)
 	mux.HandleFunc("GET /attachment", s.handleAttachment)
 	mux.HandleFunc("GET /{$}", s.handleInbox)
+	// Programmatic surfaces (Fleet's agents): scoped bearer tokens, never the
+	// browser session, so the sign-in and session middleware skip them (see
+	// isAPIPath) and they authenticate every request themselves.
+	mux.Handle("/api/v1/", s.api.Routes())
+	mux.Handle("/mcp", mcp.New(s.api))
 	return s.securityHeaders(s.withSession(s.requireAuthentication(mux)))
+}
+
+// isAPIPath reports whether path is a token-authenticated programmatic
+// route (/mcp, /api/v1/...), which neither reads nor sets the UI cookie.
+func isAPIPath(path string) bool {
+	return path == "/mcp" || path == "/api/v1" || strings.HasPrefix(path, "/api/v1/")
 }
 
 // staticHandler serves the embedded static tree. Pages reference it through
@@ -237,7 +263,7 @@ func (s *Server) requireAuthentication(next http.Handler) http.Handler {
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxBackchannelBody)
 		}
-		if path == "/health" || strings.HasPrefix(path, "/static/") {
+		if path == "/health" || strings.HasPrefix(path, "/static/") || isAPIPath(path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -367,7 +393,7 @@ func (s *statusRecorder) status() int {
 // response headers go out, when a handler changed it.
 func (s *Server) withSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/health" {
+		if strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/health" || isAPIPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

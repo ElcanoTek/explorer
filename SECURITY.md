@@ -47,7 +47,9 @@ than a code report.
   cookie verification, the S3 key confinement in `isAllowedS3Key`, HTML
   sanitizing of message
   bodies, the attachment endpoint and path handling, search-job and cursor
-  ownership.
+  ownership, the API token store and the `/mcp` and `/api/v1` surfaces
+  (token checks, the sender-authentication rules that decide what an agent
+  is shown).
 - The deployment surface in `deploy/`, `scripts/`, `internal/ops` and
   `provision/` — the root-run installer and updater, file permissions, the
   systemd hardening, secret handling.
@@ -84,6 +86,10 @@ turns a supported configuration into an insecure one:
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - **With a generated `EXPLORER_SESSION_SECRET`** — the built-in default is a
   placeholder.
+- **API tokens treated as credentials.** An `explorer_…` token can search the
+  whole archive's metadata. Mint one per caller, keep it in that caller's
+  secret store, and revoke it with `explorer token revoke` when it leaks or
+  the caller is retired.
 - **With the attachment-cleanup timer enabled**, so downloaded attachments do
   not accumulate on disk.
 
