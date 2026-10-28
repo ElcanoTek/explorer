@@ -258,6 +258,13 @@ func TestSearchEmailsFuzzy(t *testing.T) {
 	if status != http.StatusOK || body["matches_found"].(float64) != 1 {
 		t.Fatalf("%d %v", status, body)
 	}
+	// Models sometimes pass a single string instead of a 1-element list.
+	status, body = h.post("search_emails_fuzzy", map[string]any{
+		"keywords": "pacing", "search_fields": "subject", "date_from": "2026-06-01", "date_to": "2026-06-01",
+	}, h.raw)
+	if status != http.StatusOK || body["matches_found"].(float64) != 1 {
+		t.Fatalf("scalar string keywords/search_fields: %d %v", status, body)
+	}
 	for _, tc := range []map[string]any{
 		{"keywords": []string{" "}, "date_from": "2026-06-01"},
 		{"keywords": []string{"x"}},

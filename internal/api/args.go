@@ -29,6 +29,9 @@ func optStrings(args map[string]any, name string) ([]string, error) {
 	if !ok || v == nil {
 		return nil, nil
 	}
+	if s, isString := v.(string); isString {
+		return []string{s}, nil
+	}
 	list, isList := v.([]any)
 	if !isList {
 		return nil, invalidArg("%s must be a list of strings", name)
