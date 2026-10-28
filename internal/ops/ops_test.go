@@ -675,3 +675,12 @@ func TestCertInfoShowsAnUnverifiableCertificateWithoutSkippingVerification(t *te
 		t.Fatalf("leaf=%v verr=%v err=%v", leaf, verr, err)
 	}
 }
+
+func TestGitDisablesHooksAndAutoMaintenance(t *testing.T) {
+	f := newFake("git")
+	git(context.Background(), f, "/opt/explorer-src", "fetch", "--quiet", "origin")
+	want := "git -c safe.directory=/opt/explorer-src -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -C /opt/explorer-src fetch --quiet origin"
+	if !f.called(want) {
+		t.Fatalf("git flags missing: %v", f.calls)
+	}
+}

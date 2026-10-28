@@ -74,10 +74,16 @@ func RequireTrusted(dir string) error {
 	}
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path != dir && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		info, err := d.Info()
 		if err != nil {
+			if path != dir && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		switch {
