@@ -17,11 +17,13 @@ import (
 const versionPkg = "github.com/ElcanoTek/explorer/internal/version"
 
 // git runs git against the trusted checkout with every repository-controlled
-// hook disabled: no hooks, no fsmonitor, and an explicit safe.directory.
+// hook and background maintenance disabled: no hooks, no fsmonitor, no auto
+// gc/maintenance, and an explicit safe.directory.
 func git(ctx context.Context, r Runner, src string, args ...string) Result {
 	full := append([]string{
 		"-c", "safe.directory=" + src, "-c", "core.hooksPath=/dev/null",
-		"-c", "core.fsmonitor=false", "-C", src,
+		"-c", "core.fsmonitor=false", "-c", "gc.auto=0",
+		"-c", "maintenance.auto=false", "-C", src,
 	}, args...)
 	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	return r.Run(ctx, Cmd{Name: "git", Args: full, Env: env, Timeout: 5 * time.Minute})
