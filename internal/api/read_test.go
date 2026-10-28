@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ElcanoTek/explorer/internal/apitoken"
 	"github.com/ElcanoTek/explorer/internal/archive"
@@ -208,5 +209,21 @@ func fmtAll(v any) []string {
 func TestUnicodeFiltersAreMeaningful(t *testing.T) {
 	if !hasAlnum("例子.公司") || hasAlnum("@.-") {
 		t.Fatal("hasAlnum must accept Unicode letters only")
+	}
+}
+
+func TestReversedDateBoundsKeepWholeDays(t *testing.T) {
+	from, to, err := orderedBounds("2026-06-04", "2026-06-01")
+	if err != nil || !from.Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) ||
+		!to.Equal(time.Date(2026, 6, 4, 23, 59, 59, 999999000, time.UTC)) {
+		t.Fatalf("%v %v %v", from, to, err)
+	}
+}
+
+func TestWideFuzzySearchesWarn(t *testing.T) {
+	h := newHarness(t, nil)
+	status, body := h.post("search_emails_fuzzy", map[string]any{"keywords": []string{"pacing"}, "date_from": "2026-05-25", "date_to": "2026-06-01"}, h.raw)
+	if status != http.StatusOK || !strings.Contains(strings.Join(codes(body), ","), "date_window_auto_chunked") {
+		t.Fatalf("%d %v", status, body)
 	}
 }

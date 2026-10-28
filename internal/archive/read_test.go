@@ -176,3 +176,41 @@ func TestOnlyListedPrefixesAreCounted(t *testing.T) {
 		t.Fatalf("prefixes %d %v", stats.Prefixes, err)
 	}
 }
+
+func TestASharedPrefixIsPlacedByLastModified(t *testing.T) {
+	store := newFake(map[string][]byte{"emails/2026/old": reportMail("<p>x</p>"), "emails/2026/new": reportMail("<p>x</p>")})
+	o := store.objects["emails/2026/old"]
+	o.modified = day.AddDate(0, 0, -40)
+	store.objects["emails/2026/old"] = o
+	in := New(store, agentSettings(t, map[string]string{"EMAIL_S3_DATE_PREFIX_FORMAT": "emails/%Y/"}))
+	from, to := oneAgentDay()
+	got, stats, err := in.AgentSearch(context.Background(), AgentQuery{From: from.AddDate(0, 0, -2), To: to, MaxResults: 10})
+	if err != nil || len(got) != 1 || got[0].S3Key != "emails/2026/new" || stats.Prefixes != 1 {
+		t.Fatalf("%v %d %v", keys(got), stats.Prefixes, err)
+	}
+}
+
+func TestFuzzyRanksAcrossOlderPartitions(t *testing.T) {
+	older := "emails/2026/05/31/"
+	store := newFake(map[string][]byte{
+		agentDay + "one": []byte(strings.Replace(string(reportMail("<p>x</p>")), "Subject: Daily report", "Subject: pacing", 1)),
+		older + "both":   []byte(strings.Replace(string(reportMail("<p>x</p>")), "Subject: Daily report", "Subject: pacing delivery", 1)),
+	})
+	o := store.objects[older+"both"]
+	o.modified = day.AddDate(0, 0, -1)
+	store.objects[older+"both"] = o
+	in := New(store, agentSettings(t, nil))
+	from, to := oneAgentDay()
+	got, _, err := in.AgentFuzzy(context.Background(), AgentFuzzyQuery{Keywords: []string{"pacing", "delivery"}, Subject: true,
+		From: from.AddDate(0, 0, -1), To: to, MaxResults: 1})
+	if err != nil || len(got) != 1 || got[0].S3Key != older+"both" {
+		t.Fatalf("%v %v", keys(got), err)
+	}
+}
+
+func TestUppercaseSchemesAreLinks(t *testing.T) {
+	links := downloadLinks("see HTTPS://reports.vendor.example/a.csv", `<a href="Https://reports.vendor.example/b.csv">b</a>`)
+	if len(links) != 2 {
+		t.Fatalf("%+v", links)
+	}
+}

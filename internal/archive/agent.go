@@ -253,9 +253,25 @@ func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
 	if len(prefixes) == 1 && prefixes[0] == in.s.Prefix {
 		return []scanPrefix{{prefix: in.s.Prefix}}, false
 	}
-	out := make([]scanPrefix, len(prefixes))
+	// A prefix speaks for its day only when no other day shares it (a
+	// coarser format such as %Y/ does not): a shared prefix is listed once
+	// and its objects are placed by LastModified.
+	days := map[string]int{}
+	for _, p := range prefixes {
+		days[p]++
+	}
+	out := make([]scanPrefix, 0, len(prefixes))
+	listed := map[string]bool{}
 	for i, p := range prefixes {
-		out[i] = scanPrefix{prefix: p, day: end.AddDate(0, 0, -i)}
+		if listed[p] {
+			continue
+		}
+		listed[p] = true
+		sp := scanPrefix{prefix: p}
+		if days[p] == 1 {
+			sp.day = end.AddDate(0, 0, -i)
+		}
+		out = append(out, sp)
 	}
 	return out, true
 }
@@ -611,9 +627,10 @@ func (in *Inbox) AgentFuzzy(ctx context.Context, q AgentFuzzyQuery) ([]AgentMatc
 				matches = append(matches, m)
 			}
 		}
-		reached := len(matches) >= q.MaxResults
+		// Ranking is by match_score first, so an older partition can still
+		// hold a better match: never stop early, only keep the best bounded set.
 		matches = trimToLimit(matches, q.MaxResults, bestFirst)
-		return reached, nil
+		return false, nil
 	})
 	if err != nil {
 		return nil, stats, err

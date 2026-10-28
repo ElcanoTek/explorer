@@ -72,7 +72,7 @@ var junkHostSuffixes = []string{
 
 var (
 	lineContRE    = regexp.MustCompile(`=[\r\n]+`)
-	textURLRE     = regexp.MustCompile(`https?://[^\s<>"')\]}>]*(?:=[\r\n]+[^\s<>"')\]}>]*)*`)
+	textURLRE     = regexp.MustCompile(`(?i)https?://[^\s<>"')\]}>]*(?:=[\r\n]+[^\s<>"')\]}>]*)*`)
 	htmlLinkRE    = regexp.MustCompile(`(?is)<a\b[^>]*?\bhref=["']([^"']+)["'][^>]*>(.*?)</a\s*>`)
 	tagRE         = regexp.MustCompile(`<[^>]*>`)
 	unsubscribeRE = regexp.MustCompile(`(?i)unsubscribe|opt[-_]?out|email[-_]?preferences|manage[-_]?preferences`)
@@ -111,7 +111,7 @@ func extractHTMLLinks(html string) []bodyLink {
 	var out []bodyLink
 	for _, m := range htmlLinkRE.FindAllStringSubmatch(html, -1) {
 		href := strings.TrimSpace(m[1])
-		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		if lower := strings.ToLower(href); strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			text := strings.Join(strings.Fields(tagRE.ReplaceAllString(m[2], " ")), " ")
 			out = append(out, bodyLink{cleanURL(href), text})
 		}

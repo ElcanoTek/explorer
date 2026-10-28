@@ -287,6 +287,10 @@ func safeName(name string) string {
 	return name
 }
 
+// DownloadMaxDuration bounds one cached-payload transfer: 450 MB at about
+// 1 Mbit/s.
+const DownloadMaxDuration = time.Hour
+
 // ServeDownload is GET /api/v1/download?ticket=…: bearer-free (the ticket
 // is the credential), always served as an opaque, sandboxed download.
 func (a *API) ServeDownload(w http.ResponseWriter, r *http.Request) {
@@ -335,7 +339,10 @@ func (a *API) ServeDownload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(att.Data)
 	case "cached":
-		st, err := a.inbox.OpenCached(ctx, d.Key)
+		// A cached payload can be hundreds of MB: the transfer runs on the
+		// request's own context, not the API operation deadline, and gets a
+		// download-sized write deadline instead of the server-wide one.
+		st, err := a.inbox.OpenCached(r.Context(), d.Key)
 		if err != nil {
 			if errors.Is(err, archive.ErrNotFound) || errors.Is(err, archive.ErrNoSuchKey) {
 				a.WriteError(w, apiErr(http.StatusNotFound, "not_found", "That cached file no longer exists."))
@@ -345,6 +352,7 @@ func (a *API) ServeDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer st.Body.Close()
+		_ = http.NewResponseController(w).SetWriteDeadline(a.now().Add(DownloadMaxDuration))
 		header(d.Name, st.Size)
 		w.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(w, st.Body); err != nil {

@@ -301,14 +301,8 @@ func (a *API) parseExact(args map[string]any) (*exactArgs, error) {
 	if x.dateFrom == "" || x.dateTo == "" {
 		return nil, boundedDateError("search_emails")
 	}
-	if x.fromBound, err = parseBound("date_from", x.dateFrom, false); err != nil {
+	if x.fromBound, x.toBound, err = orderedBounds(x.dateFrom, x.dateTo); err != nil {
 		return nil, err
-	}
-	if x.toBound, err = parseBound("date_to", x.dateTo, true); err != nil {
-		return nil, err
-	}
-	if x.toBound.Before(x.fromBound) {
-		x.fromBound, x.toBound = x.toBound, x.fromBound
 	}
 	days := windowDays(x.fromBound, x.toBound)
 	if days > a.settings.MaxDatePrefixDays {
@@ -316,9 +310,7 @@ func (a *API) parseExact(args map[string]any) (*exactArgs, error) {
 			days, a.settings.MaxDatePrefixDays)
 	}
 	if days > autoChunkDays {
-		x.warnings = append(x.warnings, warn("date_window_auto_chunked", "medium",
-			fmt.Sprintf("Window spans %d days; scanning one S3 prefix per day.", days),
-			"Prefer targeted 1-day searches for recurring report selection; wide windows cost more scan budget."))
+		x.warnings = append(x.warnings, chunkWarning(days))
 	}
 	return &x, nil
 }
@@ -328,6 +320,31 @@ func ptrOrNil(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+func chunkWarning(days int) Warning {
+	return warn("date_window_auto_chunked", "medium",
+		fmt.Sprintf("Window spans %d days; scanning one S3 prefix per day.", days),
+		"Prefer targeted 1-day searches for recurring report selection; wide windows cost more scan budget.")
+}
+
+// orderedBounds parses a date window, swapping reversed bounds before the
+// start-of-day / end-of-day expansion so both end days stay whole.
+func orderedBounds(fromRaw, toRaw string) (from, to time.Time, err error) {
+	if from, err = parseBound("date_from", fromRaw, false); err != nil {
+		return from, to, err
+	}
+	if to, err = parseBound("date_to", toRaw, true); err != nil {
+		return from, to, err
+	}
+	if !to.Before(from) {
+		return from, to, nil
+	}
+	if from, err = parseBound("date_to", toRaw, false); err != nil {
+		return from, to, err
+	}
+	to, err = parseBound("date_from", fromRaw, true)
+	return from, to, err
 }
 
 // SearchEmails is search_emails.
@@ -456,16 +473,16 @@ func (a *API) SearchEmailsFuzzy(r *http.Request, args map[string]any) (Body, err
 	if dateFrom == "" {
 		return nil, boundedDateError("search_emails_fuzzy")
 	}
-	if q.From, err = parseBound("date_from", dateFrom, false); err != nil {
-		return nil, err
-	}
 	if dateTo == "" {
+		if q.From, err = parseBound("date_from", dateFrom, false); err != nil {
+			return nil, err
+		}
 		q.To = a.now().UTC() // the Python resolve_search_bounds: an open end is "now"
-	} else if q.To, err = parseBound("date_to", dateTo, true); err != nil {
+		if q.To.Before(q.From) {
+			q.From, q.To = q.To, q.From
+		}
+	} else if q.From, q.To, err = orderedBounds(dateFrom, dateTo); err != nil {
 		return nil, err
-	}
-	if q.To.Before(q.From) {
-		q.From, q.To = q.To, q.From
 	}
 	days := windowDays(q.From, q.To)
 	maxDays := a.settings.MaxDatePrefixDays
@@ -481,6 +498,9 @@ func (a *API) SearchEmailsFuzzy(r *http.Request, args map[string]any) (Body, err
 	}
 	warnings := a.queryWarnings(queryWarningInput{subjectKeywords: keywords, dateFrom: dateFrom, dateTo: dateTo,
 		maxResults: q.MaxResults})
+	if days > autoChunkDays {
+		warnings = append(warnings, chunkWarning(days))
+	}
 	// Fuzzy always has keywords, so the low-selectivity warning never applies.
 	ctx, cancel := a.withDeadline(r)
 	defer cancel()
