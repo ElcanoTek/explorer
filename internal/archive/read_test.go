@@ -214,3 +214,16 @@ func TestUppercaseSchemesAreLinks(t *testing.T) {
 		t.Fatalf("%+v", links)
 	}
 }
+
+func TestAOneDaySearchOfACoarsePrefixChecksLastModified(t *testing.T) {
+	store := newFake(map[string][]byte{"emails/2026/old": reportMail("<p>x</p>"), "emails/2026/new": reportMail("<p>x</p>")})
+	o := store.objects["emails/2026/old"]
+	o.modified = day.AddDate(0, 0, -40)
+	store.objects["emails/2026/old"] = o
+	in := New(store, agentSettings(t, map[string]string{"EMAIL_S3_DATE_PREFIX_FORMAT": "emails/%Y/"}))
+	from, to := oneAgentDay()
+	got, _, err := in.AgentSearch(context.Background(), AgentQuery{From: from, To: to, MaxResults: 10})
+	if err != nil || len(got) != 1 || got[0].S3Key != "emails/2026/new" {
+		t.Fatalf("%v %v", keys(got), err)
+	}
+}

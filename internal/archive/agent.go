@@ -247,15 +247,22 @@ type scanPrefix struct {
 	day    time.Time
 }
 
+// dayUnique reports whether prefix p, formatted for day d, differs from the
+// prefixes of the days on either side, i.e. the format is at least daily.
+func (in *Inbox) dayUnique(p string, d time.Time) bool {
+	f := in.s.DatePrefixFormat
+	return Strftime(f, d.AddDate(0, 0, -1)) != p && Strftime(f, d.AddDate(0, 0, 1)) != p
+}
+
 func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
 	start, end := Day(from), Day(to)
 	prefixes := BuildSearchPrefixes(in.s.Prefix, in.s.DatePrefixFormat, in.s.MaxDatePrefixDays, start, end)
 	if len(prefixes) == 1 && prefixes[0] == in.s.Prefix {
 		return []scanPrefix{{prefix: in.s.Prefix}}, false
 	}
-	// A prefix speaks for its day only when no other day shares it (a
-	// coarser format such as %Y/ does not): a shared prefix is listed once
-	// and its objects are placed by LastModified.
+	// A prefix speaks for its day only when no other day shares it, inside
+	// the window or next to it (a coarser format such as %Y/ never does): a
+	// shared prefix is listed once and its objects are placed by LastModified.
 	days := map[string]int{}
 	for _, p := range prefixes {
 		days[p]++
@@ -268,8 +275,8 @@ func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
 		}
 		listed[p] = true
 		sp := scanPrefix{prefix: p}
-		if days[p] == 1 {
-			sp.day = end.AddDate(0, 0, -i)
+		if d := end.AddDate(0, 0, -i); days[p] == 1 && in.dayUnique(p, d) {
+			sp.day = d
 		}
 		out = append(out, sp)
 	}
