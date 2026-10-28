@@ -481,15 +481,16 @@ explorer tls reload     # graceful reload, validates before applying
 explorer tls restart
 ```
 
-### Your own proxy or Kubernetes Ingress
+### Your own proxy
 
-Caddy is the default on single-box installs (`explorer bootstrap`), but you can
-answer "no" to the Caddy prompt and run your own reverse proxy or Kubernetes
-Ingress in front of `127.0.0.1:8080`. Requirements: terminate TLS, use the
-hostname in `EXPLORER_PUBLIC_URL` (and, in Elcano mode, one under the auth
-cookie's domain), and forward `Host` and `X-Forwarded-Proto` from a loopback
-peer (or sidecar proxy). Attachments can be large; raise your proxy's read
-timeout and max body size if you see truncated downloads.
+Caddy is the default on single-box installs (`explorer bootstrap`), or you can
+answer "no" to the Caddy prompt and point your own reverse proxy (or a
+same-pod sidecar proxy in Kubernetes) at `127.0.0.1:8080`. Requirements:
+terminate TLS, use the hostname in `EXPLORER_PUBLIC_URL` (and, in Elcano mode,
+one under the auth cookie's domain), and forward `Host` and
+`X-Forwarded-Proto` from a loopback peer (Explorer believes `X-Forwarded-Proto`
+only from loopback). Attachments can be large; raise your proxy's read timeout
+and max body size if you see truncated downloads.
 
 ## Managing the service
 
