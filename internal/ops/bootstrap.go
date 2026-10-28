@@ -512,6 +512,9 @@ func printBootstrapSummary(u *ui, a bootstrapAnswers) {
 // setupCaddy installs and verifies the Caddy site for the public hostname.
 func setupCaddy(ctx context.Context, u *ui, r Runner, p Paths, a bootstrapAnswers) error {
 	host := a.hostname
+	if _, hasNginx := r.LookPath("nginx"); hasNginx && r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "nginx.service"}, Timeout: 30 * time.Second}).Code == 0 {
+		return errors.New("nginx.service is active on this host — stop and disable nginx (and certbot-renew.timer) before setting up Caddy")
+	}
 	dnsPrecheck(ctx, u, host)
 
 	if res := r.Run(ctx, Cmd{Name: "dnf", Args: []string{"install", "-y", "caddy"}, Timeout: 30 * time.Minute}); res.Code != 0 {

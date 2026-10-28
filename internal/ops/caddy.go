@@ -281,7 +281,7 @@ func proxiesTo(v any, upstream string) bool {
 // would place it, and returns its path and hostname ("" when none).
 func caddySiteHost(caddyfile string) (string, string) {
 	plan, err := planCaddySite(caddyfile)
-	if err != nil || !caddyIsOurs(plan.target) {
+	if err != nil || plan.addImport || !caddyIsOurs(plan.target) {
 		return "", ""
 	}
 	raw, err := os.ReadFile(plan.target)

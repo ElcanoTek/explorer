@@ -440,6 +440,9 @@ func (d *doctor) checkCaddy(ctx context.Context) {
 	if snippet == "" {
 		return
 	}
+	if d.has("nginx") && d.run(ctx, Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "nginx.service"}}).Code == 0 {
+		d.add("legacy-nginx", false, "", "nginx.service is active alongside Explorer's Caddy site — stop and disable nginx.service (and certbot-renew.timer) so Caddy owns ports 80/443", true)
+	}
 	if !d.has("caddy") {
 		// A configured site with no binary is an outage in waiting.
 		d.add("caddy", false, "", "Explorer Caddy site block is installed at "+snippet+" but the caddy binary is missing — dnf install caddy, then rerun bootstrap", false)
