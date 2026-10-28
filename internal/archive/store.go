@@ -33,7 +33,22 @@ var (
 	ErrBucketUnset = errors.New("EMAIL_S3_BUCKET is not set — configure it with: explorer env edit && explorer restart")
 	// ErrTooLarge is returned for an object over MaxObjectBytes.
 	ErrTooLarge = errors.New("message is larger than Explorer will download")
+	// ErrNoSuchKey is S3's NoSuchKey: the object does not exist.
+	ErrNoSuchKey = errors.New("no such key")
 )
+
+// ObjectStream is an open S3 object body.
+type ObjectStream struct {
+	Body        io.ReadCloser
+	Size        int64
+	ContentType string
+}
+
+// Streamer is implemented by stores that can stream an object without
+// buffering it (the cached link payloads run to hundreds of megabytes).
+type Streamer interface {
+	Open(ctx context.Context, key string) (*ObjectStream, error)
+}
 
 // Object is one listed archive object.
 type Object struct {
@@ -138,11 +153,7 @@ func (st *s3Store) Get(ctx context.Context, key string, maxBytes int64) ([]byte,
 	}
 	out, err := st.client.GetObject(ctx, in)
 	if err != nil {
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidRange" {
-			return nil, ErrInvalidRange
-		}
-		return nil, err
+		return nil, mapGetError(err)
 	}
 	defer out.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
@@ -156,4 +167,26 @@ func (st *s3Store) Get(ctx context.Context, key string, maxBytes int64) ([]byte,
 		return nil, ErrTooLarge
 	}
 	return data, nil
+}
+
+func mapGetError(err error) error {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "InvalidRange":
+			return ErrInvalidRange
+		case "NoSuchKey":
+			return ErrNoSuchKey
+		}
+	}
+	return err
+}
+
+// Open streams a whole object.
+func (st *s3Store) Open(ctx context.Context, key string) (*ObjectStream, error) {
+	out, err := st.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(st.bucket), Key: aws.String(key)})
+	if err != nil {
+		return nil, mapGetError(err)
+	}
+	return &ObjectStream{Body: out.Body, Size: aws.ToInt64(out.ContentLength), ContentType: aws.ToString(out.ContentType)}, nil
 }

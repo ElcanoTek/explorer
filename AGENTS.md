@@ -77,7 +77,8 @@ Licensed BSL 1.1; every first-party source file carries the SPDX header
 |---|---|
 | `cmd/explorer` | entry point: `serve`, `version`, `access`; hands the rest to `internal/ops` |
 | `internal/web` | HTTP service, middleware, templates and static assets (embedded); `jstest/` holds the Node unit tests for the plain-JS modules |
-| `internal/archive` | S3 listing, ranged header reads, search, message and attachment extraction |
+| `internal/archive` | S3 listing, ranged header reads, search, message and attachment extraction; the agent searches (`agent.go`) with sender authentication (`senderauth.go`) and download-link detection (`links.go`) |
+| `internal/api`, `internal/mcp`, `internal/apitoken` | `/api/v1` REST and `POST /mcp` for Fleet's agents (docs/API.md); scoped bearer tokens (`explorer token`) |
 | `internal/mailmsg` | lenient MIME parsing (the role Python's `email` package played) |
 | `internal/htmlsafe` | the HTML sanitizer and linkifier — the XSS boundary |
 | `internal/auth`, `internal/centralauth` | Elcano cookie verifier; central SSO client, token checks, SQLite access/session store |

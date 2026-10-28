@@ -40,6 +40,13 @@ and attachment download over the archive you already own.
 - **Prefix confinement.** Every S3 key Explorer touches must sit under the
   configured prefix; anything else is a 404 regardless of what the URL asks
   for.
+- **An MCP server and REST API for agents.** `POST /mcp` (and `/api/v1/`)
+  gives Fleet's agents the archive with scoped bearer tokens
+  (`explorer token create`): search (`search_emails`, `search_emails_fuzzy`,
+  `find_latest_report`, authenticated senders only), read (`get_email`) and
+  download (`get_download_link`: attachments, and the link payloads the
+  link archiver caches in S3 before the original links expire). See
+  [docs/API.md](docs/API.md).
 - **Deployment-selected authentication.** Keep Elcano's existing
   Ed25519-signed magic-link cookie, or use the new central auth service with a
   per-Explorer email access list and app-scoped revocable sessions.
@@ -139,6 +146,11 @@ Neither dotenv file is committed. `.env.example` is the annotated template:
 | `EMAIL_HEADER_FETCH_BYTES` | no | `65536` | Bytes fetched per object by the ranged header `GET`. |
 | `EMAIL_S3_FORCE_PATH_STYLE` | no | `0` | Path-style bucket addressing, for S3-compatible stores (MinIO, LocalStack) reached through `AWS_ENDPOINT_URL_S3`. |
 | `EMAIL_SEARCH_JOB_MAX_SECONDS` | no | `120` | Server-side cancellation for a runaway search job. |
+| `EMAIL_SENDER_AUTH` | no | `required` | API/MCP searches only: return only mail whose sender the receiver authenticated (`off`: forgeable header match). See [docs/API.md](docs/API.md). |
+| `EMAIL_AUTHSERV_ID` | no | `amazonses.com` | The receiver's authserv-id in `Authentication-Results`. |
+| `EMAIL_S3_ARCHIVE_PREFIX` | no | `emails/attachments/` | The link-archive lambda's prefix; never returned as mail by the API. |
+| `EXPLORER_API_TOKEN_DB` | no | `/var/lib/explorer/api_tokens.db` | API token database (`explorer token`). |
+| `EXPLORER_API_MAX_SECONDS` | no | `240` | Bound on one API/MCP call. |
 | `AWS_REGION` | no | `us-east-2` | Region of the archive bucket. |
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only key. Leave blank to use the ambient AWS credential chain (instance role, `~/.aws`, `AWS_PROFILE`). |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
@@ -304,7 +316,9 @@ explorer update    # git pull + build + swap + restart (staged, health-checked, 
   sensitive as the mailbox itself.
 - **Deny-by-default route gate.** Only health/static content and the central
   login/callback/signed-out routes are public. Every data route passes through
-  the global authentication middleware.
+  the global authentication middleware, except `/mcp` and `/api/v1/`, which
+  accept only scoped bearer tokens (never the browser cookie) and check one
+  on every request.
 - **Least-privilege AWS credentials.** Use the read-only policy above, on one
   prefix. An instance role beats a long-lived key.
 - **Prefix confinement.** `isAllowedS3Key` (`internal/web`) rejects keys

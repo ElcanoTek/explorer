@@ -62,7 +62,7 @@ func runAccess(argv []string, stdout, stderr io.Writer) int {
 	}
 	argv = pinRelativePaths(argv, args, db)
 	appDir := accessAppDir()
-	if code, handed := handOffToServiceUser(appDir, argv); handed {
+	if code, handed := handOffToServiceUser(appDir, "access", argv); handed {
 		return code
 	}
 	settings, _, err := config.Load(appDir)
@@ -199,10 +199,10 @@ func execAccess(store *centralauth.Store, command string, rest []string, all boo
 	return 0
 }
 
-// handOffToServiceUser re-runs the command as the explorer service account
-// on an installed box: the database directory is private to it, and files
-// SQLite creates (the WAL) must stay owned by it.
-func handOffToServiceUser(appDir string, argv []string) (int, bool) {
+// handOffToServiceUser re-runs `explorer VERB argv...` as the explorer
+// service account on an installed box: the database directory is private to
+// it, and files SQLite creates (the WAL) must stay owned by it.
+func handOffToServiceUser(appDir, verb string, argv []string) (int, bool) {
 	if os.Getenv("EXPLORER_ACCESS_NO_HANDOFF") == "1" {
 		return 0, false
 	}
@@ -219,7 +219,7 @@ func handOffToServiceUser(appDir string, argv []string) (int, bool) {
 	}
 	args := make([]string, 0, 8+len(argv))
 	args = append(args, "-u", "explorer", "--", "env", "EXPLORER_APP_DIR="+appDir,
-		"EXPLORER_ACCESS_NO_HANDOFF=1", bin, "access")
+		"EXPLORER_ACCESS_NO_HANDOFF=1", bin, verb)
 	args = append(args, argv...)
 	cmd := exec.CommandContext(context.Background(), "sudo", args...) //nolint:gosec // G204: fixed sudo invocation of the root-owned installed binary.
 	cmd.Dir = "/"

@@ -333,6 +333,24 @@ has been verified and your retention policy allows its secure disposal.
 | `AWS_ACCESS_KEY_ID` | no | *(empty)* | Read-only access key. Leave **both** key variables blank to use the ambient chain (instance role, `~/.aws/credentials`, `AWS_PROFILE`) — preferred on EC2. |
 | `AWS_SECRET_ACCESS_KEY` | no | *(empty)* | Secret for the above. |
 
+### Agent API and MCP (`/mcp`, `/api/v1/`)
+
+Fleet's agents search the archive through `POST /mcp` with a bearer token from
+`sudo explorer token create --label fleet-<deployment>` (shown once; set
+`EXPLORER_MCP_URL=https://<host>/mcp` and `EXPLORER_API_TOKEN` in Fleet's
+`.env`). Caddy needs no change: these are ordinary routes on the same origin.
+The contract, the tools and their failure behaviour are in
+[API.md](API.md). These settings apply to the API only; the web UI ignores
+them.
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `EMAIL_SENDER_AUTH` | no | `required` | Return only mail whose From domain the receiver authenticated (DMARC, or aligned SPF/DKIM). `off` restores the forgeable header-text sender match; every result then carries a warning. |
+| `EMAIL_AUTHSERV_ID` | no | `amazonses.com` | The receiver's authserv-id; only the topmost `Authentication-Results` carrying it is read. |
+| `EMAIL_S3_ARCHIVE_PREFIX` | no | `emails/attachments/` | The link archiver's cached payloads and manifests (production-support `ses-s3`). Never returned as mail; `get_download_link` serves cached copies from it. |
+| `EXPLORER_API_TOKEN_DB` | no | `/var/lib/explorer/api_tokens.db` | Token database (hashes only), private to the service user. Back it up with the access database. |
+| `EXPLORER_API_MAX_SECONDS` | no | `240` | One API/MCP call is stopped after this (below the server's 5-minute write timeout). |
+
 ### Session and CSRF cookie
 
 | Variable | Required | Default | Purpose |

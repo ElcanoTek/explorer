@@ -48,6 +48,8 @@ func run(argv []string) int {
 		return 0
 	case "access":
 		return accessCommand(argv[1:])
+	case "token":
+		return tokenCommand(argv[1:])
 	default:
 		return ops.Run(argv)
 	}

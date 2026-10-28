@@ -643,7 +643,7 @@ func TestParseUpdateArgs(t *testing.T) {
 }
 
 func TestUsageNamesEveryVerb(t *testing.T) {
-	for _, verb := range []string{"serve", "start | stop | restart | status", "logs", "update", "rebuild", "doctor", "provision", "tls status", "env edit", "access grant", "version", "bootstrap"} {
+	for _, verb := range []string{"serve", "start | stop | restart | status", "logs", "update", "rebuild", "doctor", "provision", "tls status", "env edit", "access grant", "token create", "version", "bootstrap"} {
 		if !strings.Contains(Usage, "explorer "+verb) {
 			t.Errorf("Usage lacks %q", verb)
 		}

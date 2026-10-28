@@ -78,7 +78,7 @@ func (f *fakeStore) Get(_ context.Context, key string, maxBytes int64) ([]byte, 
 	f.gets++
 	o, ok := f.objects[key]
 	if !ok {
-		return nil, fmt.Errorf("NoSuchKey: %s", key)
+		return nil, fmt.Errorf("%w: %s", archive.ErrNoSuchKey, key)
 	}
 	if maxBytes > 0 && int64(len(o.body)) > maxBytes {
 		return o.body[:maxBytes], nil

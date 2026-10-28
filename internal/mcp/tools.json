@@ -1,0 +1,317 @@
+{
+  "instructions": "Elcano Explorer is this deployment's email archive (the raw SES mail in S3): it finds report emails, reads them and hands out their files. Workflow: find_latest_report for \"the most recent report from vendor X\", search_emails for a specific day or window, search_emails_fuzzy when you only have keywords; then get_email with the s3_key, and get_download_link for an attachment or a body link, whose download_url you fetch with the download_url tool. Report links expire about 48 hours after delivery, but the archive caches them on arrival, so get_download_link serves the cached copy whenever one exists. Identify vendors by sender DOMAIN (\"vendor.example\") or full address, never a display name. Searches return only mail whose sender the receiving server authenticated; read search_warnings before concluding a report is missing. A status: error result means the call did not complete; it is not an empty inbox.",
+  "serverInfo": {
+    "name": "explorer",
+    "title": "Elcano Explorer",
+    "version": "1.0.0"
+  },
+  "protocolVersions": [
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26"
+  ],
+  "tools": [
+    {
+      "name": "search_emails",
+      "scope": "email:search",
+      "title": "Search the email archive",
+      "description": "START HERE to find emails: search by subject, sender, recipient, date window and payload presence. Returns matching emails newest first, each with s3_key (pass it to get_email and get_download_link), sender_authenticated, attachment_names and, when the message was opened, download_links.\n\nBoth date_from and date_to are required. Prefer 1-day windows stepped back one day at a time (or find_latest_report, which does that for you); wide windows are allowed (scanned one day partition at a time, with a date_window_auto_chunked warning) up to the deployment's day limit. Prefer sender_contains with a small max_results for source-specific queries. has_payload and include_body_preview read whole messages and are slower.\n\nOnly mail whose sender the receiving server authenticated (DMARC, or aligned SPF/DKIM) is returned; skipped mail is reported in search_warnings (unauthenticated_sender_skipped / unauthenticated_sender_unchecked). Treat such a warning as 'the vendor's report may have been left out', not as 'no report'. A failed search returns an error (status: error, often retryable), never an empty success.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date_from",
+          "date_to"
+        ],
+        "properties": {
+          "subject_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of the subject."
+          },
+          "subject_keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Case-insensitive keywords; the subject must contain at least one."
+          },
+          "sender_contains": {
+            "type": "string",
+            "description": "The sender's DOMAIN (\"ssp.example\", also matching its subdomains) or full mailbox (\"reports@ssp.example\"); several as a comma-separated list (\"exchange.example,mail.exchange.example\"). Matched against the authenticated From mailbox, never the display name; a bare name like \"exchange\" matches nothing."
+          },
+          "recipient_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of the To header."
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Only emails received on or after this date: ISO date (\"2026-01-20\") or datetime (UTC when no offset)."
+          },
+          "date_to": {
+            "type": "string",
+            "description": "Only emails received on or before this date (inclusive): ISO date (\"2026-01-20\") or datetime."
+          },
+          "has_payload": {
+            "type": "boolean",
+            "description": "true: require an attachment or an in-body download link; false: require neither; omit: do not filter. Vendors split between attaching reports and linking them, and this covers both."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 25,
+            "description": "Maximum results (default 25)."
+          },
+          "include_body_preview": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include the first 500 characters of the body (slower)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Search the email archive",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "search_emails_fuzzy",
+      "scope": "email:search",
+      "title": "Keyword search of the email archive",
+      "description": "Keyword search when you don't know the exact subject; use search_emails when you do. Matches keywords case-insensitively across the chosen fields and ranks by the share of keywords matched (match_score), then newest first. While \"sender\" is searched, a domain- or address-shaped keyword (\"ssp.example\", \"reports@ssp.example\") matches the authenticated From mailbox only, never subject or body text, and a plain word (\"Example SSP\") never matches a sender: search it in the subject. \"body\" reads whole messages (slower; the deployment caps body searches to fewer days). Only authenticated senders are returned (see search_emails). date_from is required; date_to defaults to now.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "keywords",
+          "date_from"
+        ],
+        "properties": {
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Keywords to find (1-3 concrete ones work best)."
+          },
+          "search_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "subject",
+                "sender",
+                "body"
+              ]
+            },
+            "description": "Fields to search (default [\"subject\", \"sender\"])."
+          },
+          "match_all": {
+            "type": "boolean",
+            "default": false,
+            "description": "true: every keyword must match (AND); false: any (OR)."
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Only emails received on or after this date: ISO date (\"2026-01-20\") or datetime (UTC when no offset)."
+          },
+          "date_to": {
+            "type": "string",
+            "description": "Only emails received on or before this date (inclusive): ISO date (\"2026-01-20\") or datetime. Defaults to now."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 50,
+            "description": "Maximum results (default 50)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Keyword search of the email archive",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "find_latest_report",
+      "scope": "email:search",
+      "title": "Find the latest report email",
+      "description": "Walk back day by day from on_or_before until a qualifying email is found: use this instead of looping search_emails yourself when you need \"the most recent report from vendor X on or before date Y\". Stops after max_candidates matches or lookback_days days, whichever comes first. Each day is one search_emails with the same filters (require_payload maps to has_payload=true), and the days' search_warnings are merged per code with the days they came from. If any day's search fails the whole call fails (status: error, with failed_day): an older report is never returned as the latest when a newer day could not be searched.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sender_contains": {
+            "type": "string",
+            "description": "The sender's DOMAIN (\"ssp.example\", also matching its subdomains) or full mailbox (\"reports@ssp.example\"); several as a comma-separated list (\"exchange.example,mail.exchange.example\"). Matched against the authenticated From mailbox, never the display name; a bare name like \"exchange\" matches nothing."
+          },
+          "subject_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of the subject."
+          },
+          "subject_keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Case-insensitive keywords; the subject must contain at least one."
+          },
+          "recipient_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of the To header."
+          },
+          "on_or_before": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD) to start walking back from. Defaults to today (UTC)."
+          },
+          "lookback_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 14,
+            "description": "Days to walk back (default 14, max 60)."
+          },
+          "require_payload": {
+            "type": "boolean",
+            "default": true,
+            "description": "Require an attachment or download link (default true)."
+          },
+          "max_candidates": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 25,
+            "default": 1,
+            "description": "Stop after this many matches (default 1)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Find the latest report email",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_email",
+      "scope": "email:read",
+      "title": "Read an email",
+      "description": "Read one email by s3_key: subject, from, to, cc, date, sender_authenticated, its attachments (filename, content_type, size_bytes), the body text (first 6,000 characters) and its download-likely body links. Each link carries its link-cache state: report links are presigned or one-shot and expire about 48 hours after delivery, so the archive caches every download-likely link minutes after the email arrives; cache.cached=true means a copy is kept for good. To fetch an attachment or a link, call get_download_link.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Read an email",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "extract_download_links",
+      "scope": "email:read",
+      "title": "List an email's download links",
+      "description": "The download-likely links in one email's body (report files, exports, presigned URLs, click-trackers that lead to them), each with its link-cache state. Same links as get_email's download_links, without the rest of the message.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "List an email's download links",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_archived_attachments",
+      "scope": "email:read",
+      "title": "Show an email's link-cache record",
+      "description": "The link archiver's manifest for one email: every body link it found and its outcome (archived, already_archived, skipped_not_download_likely, failed_http_404, ...). status not_found means the email predates the archiver or has not been processed yet.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Show an email's link-cache record",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_download_link",
+      "scope": "email:read",
+      "title": "Get a download link",
+      "description": "Get a URL for one attachment (filename, from get_email's attachments) or one body link (url, from get_email's download_links), then fetch it into the workspace with the download_url tool. A cached link or an attachment comes back as a signed Explorer URL valid for 15 minutes (source cached / attachment); prefer it: the original report link has usually expired. A link the cache does not hold comes back as the live URL from the email (source live), which may no longer work. Pass exactly one of filename or url.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "s3_key"
+        ],
+        "properties": {
+          "s3_key": {
+            "type": "string",
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+          },
+          "filename": {
+            "type": "string",
+            "description": "An attachment filename exactly as get_email lists it."
+          },
+          "url": {
+            "type": "string",
+            "description": "A download link exactly as get_email or extract_download_links lists it."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Get a download link",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}
