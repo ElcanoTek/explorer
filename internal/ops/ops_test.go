@@ -4,6 +4,7 @@
 package ops
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/aes"
@@ -682,5 +683,44 @@ func TestGitDisablesHooksAndAutoMaintenance(t *testing.T) {
 	want := "git -c safe.directory=/opt/explorer-src -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=false -C /opt/explorer-src fetch --quiet origin"
 	if !f.called(want) {
 		t.Fatalf("git flags missing: %v", f.calls)
+	}
+}
+
+func TestBootstrapAWSKeyPromptExplainsAndRefusesTemporaryKeys(t *testing.T) {
+	env := map[string]string{
+		"EXPLORER_AUTH_MODE": "central", "AUTH_SIGNING_PUBKEY": "env-key",
+		"AUTH_ISSUER_URL": "https://auth.example.com", "EXPLORER_PUBLIC_URL": "https://explorer.example.com",
+		"AUTH_CLIENT_ID": "explorer", "EXPLORER_BOOTSTRAP_HOSTNAME": "explorer.example.com",
+		"EXPLORER_BOOTSTRAP_SETUP_CADDY": "Y", "EXPLORER_BOOTSTRAP_USE_LETSENCRYPT": "Y", "AWS_REGION": "us-east-2",
+		"EXPLORER_BOOTSTRAP_LE_EMAIL": "ops@example.com",
+	}
+	getenv := func(k string) string { return env[k] }
+	current := func() map[string]string {
+		return map[string]string{"AUTH_CLIENT_SECRET": strings.Repeat("s", 40), "EXPLORER_SESSION_SECRET": "kept",
+			"EMAIL_S3_BUCKET": "acme-victoria-email"}
+	}
+	answer := func(input string) (bootstrapAnswers, string, error) {
+		u, buf := testUI()
+		pr := &prompter{u: u, in: bufio.NewReader(strings.NewReader(input)), fd: -1}
+		a, err := collectAnswers(pr, current(), getenv)
+		return a, buf.String(), err
+	}
+	// The prompt says what to do, and refuses CloudShell's temporary keys.
+	_, out, err := answer("ASIATEMPORARYKEY0001\n")
+	if err == nil || !strings.Contains(err.Error(), "temporary key") {
+		t.Fatalf("temporary key accepted: %v\n%s", err, out)
+	}
+	for _, want := range []string{"leave blank", "provision_tenant_email.sh", "Never paste temporary credentials"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, out)
+		}
+	}
+	// Blank keeps the keys out; a long-lived key is taken with its secret.
+	if a, _, err := answer("\n"); err != nil || a.values["AWS_ACCESS_KEY_ID"] != "" {
+		t.Fatalf("blank: %v %+v", err, a.values)
+	}
+	if a, _, err := answer("AKIALONGLIVED0000001\nsecret\n"); err != nil || a.values["AWS_ACCESS_KEY_ID"] != "AKIALONGLIVED0000001" ||
+		a.values["AWS_SECRET_ACCESS_KEY"] != "secret" {
+		t.Fatalf("long-lived: %v %+v", err, a.values)
 	}
 }

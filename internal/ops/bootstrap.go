@@ -178,9 +178,19 @@ func collectAnswers(pr *prompter, current map[string]string, environ func(string
 	// asked for only interactively, hidden, and only when not already set;
 	// never written blank, so an existing commented-out line stays as is.
 	if !pr.nonInteractive && cur("AWS_ACCESS_KEY_ID") == "" {
-		id, err := pr.secret("", "AWS_ACCESS_KEY_ID", "AWS access key ID for the archive (blank to use the instance role / set later)", false)
+		// Explorer needs a long-lived key (or an instance role). Temporary
+		// credentials (ASIA..., e.g. what AWS CloudShell's
+		// `aws configure export-credentials` prints) expire within hours and
+		// need a session token, which this prompt does not collect, so they are refused.
+		fmt.Fprintln(pr.u.errw, "AWS keys for the archive: leave blank to use an instance role, or add a long-lived key later with 'explorer env edit'.")
+		fmt.Fprintln(pr.u.errw, "Elcano client deploys: leave blank; production-support's provision_tenant_email.sh installs Explorer's own read-only key.")
+		fmt.Fprintln(pr.u.errw, "Never paste temporary credentials (keys starting ASIA, such as AWS CloudShell's export-credentials): they expire.")
+		id, err := pr.secret("", "AWS_ACCESS_KEY_ID", "AWS access key ID for the archive (blank to skip)", false)
 		if err != nil {
 			return a, err
+		}
+		if strings.HasPrefix(id, "ASIA") {
+			return a, errors.New("AWS_ACCESS_KEY_ID is a temporary key (ASIA...): it expires and this prompt takes no session token; use a long-lived key or an instance role (rerun and leave it blank)")
 		}
 		if id != "" {
 			secret, err := pr.secret(cur("AWS_SECRET_ACCESS_KEY"), "AWS_SECRET_ACCESS_KEY", "AWS secret access key (input hidden)", true)
