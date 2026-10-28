@@ -21,6 +21,8 @@ type AttachmentInfo struct {
 	Filename    string
 	ContentType string
 	SizeBytes   int
+	// inline: a Content-ID body resource, never a payload (agent search).
+	inline bool
 }
 
 // Email is one rendered message.

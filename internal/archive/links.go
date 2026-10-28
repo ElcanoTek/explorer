@@ -123,8 +123,8 @@ func extractHTMLLinks(html string) []bodyLink {
 // text/html part, as the archiver does.
 func allBodies(msg *mailmsg.Part) (plain, html string) {
 	var plains, htmls []string
-	for _, part := range msg.Walk() {
-		if part.MainType() == "multipart" || strings.Contains(strings.ToLower(part.Header.Get("Content-Disposition")), "attachment") {
+	for _, part := range bodyParts(msg) {
+		if part.MainType() == "multipart" {
 			continue
 		}
 		payload, ok := part.Payload()
@@ -139,6 +139,19 @@ func allBodies(msg *mailmsg.Part) (plain, html string) {
 		}
 	}
 	return strings.Join(plains, "\n"), strings.Join(htmls, "\n")
+}
+
+// bodyParts walks the message's own parts: it never descends into an
+// attachment or an attached message, whose text is not this email's body.
+func bodyParts(p *mailmsg.Part) []*mailmsg.Part {
+	out := []*mailmsg.Part{p}
+	for _, c := range p.Children {
+		if strings.Contains(strings.ToLower(c.Header.Get("Content-Disposition")), "attachment") || c.ContentType() == "message/rfc822" {
+			continue
+		}
+		out = append(out, bodyParts(c)...)
+	}
+	return out
 }
 
 func parsedURL(raw string) *url.URL {

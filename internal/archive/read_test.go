@@ -227,3 +227,39 @@ func TestAOneDaySearchOfACoarsePrefixChecksLastModified(t *testing.T) {
 		t.Fatalf("%v %v", keys(got), err)
 	}
 }
+
+func TestInlineImagesAndAttachedMessagesAreNotPayloadOrBody(t *testing.T) {
+	mail := "Authentication-Results: " + passAuth + "\r\nFrom: <a@vendor.example>\r\nSubject: R\r\nDate: " + agentDate +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=XX\r\n\r\n" +
+		"--XX\r\nContent-Type: multipart/related; boundary=YY\r\n\r\n--YY\r\nContent-Type: text/html\r\n\r\n<p>hello</p>\r\n" +
+		"--YY\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Disposition: inline; filename=\"logo.png\"\r\n\r\npng\r\n--YY--\r\n" +
+		"--XX\r\nContent-Type: message/rfc822\r\n\r\nSubject: inner\r\nContent-Type: text/plain\r\n\r\nsecretword\r\n--XX--\r\n"
+	in := New(newFake(map[string][]byte{agentDay + "m": []byte(mail)}), agentSettings(t, nil))
+	from, to := oneAgentDay()
+	yes := true
+	got, _, err := in.AgentSearch(context.Background(), AgentQuery{From: from, To: to, MaxResults: 10, HasPayload: &yes})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("inline logo counted as payload: %v %v", keys(got), err)
+	}
+	got, _, err = in.AgentFuzzy(context.Background(), AgentFuzzyQuery{Keywords: []string{"secretword"}, Body: true, From: from, To: to, MaxResults: 10})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("attached message searched as body: %v %v", keys(got), err)
+	}
+	e, err := in.ReadAgentEmail(context.Background(), agentDay+"m")
+	if err != nil || len(e.Attachments) == 0 {
+		t.Fatalf("get_email still lists the inline resource: %+v %v", e, err)
+	}
+}
+
+func TestARepeatingDailyFormatChecksLastModified(t *testing.T) {
+	store := newFake(map[string][]byte{"emails/01/old": reportMail("<p>x</p>"), "emails/01/new": reportMail("<p>x</p>")})
+	o := store.objects["emails/01/old"]
+	o.modified = day.AddDate(0, -1, 0)
+	store.objects["emails/01/old"] = o
+	in := New(store, agentSettings(t, map[string]string{"EMAIL_S3_DATE_PREFIX_FORMAT": "emails/%d/"}))
+	from, to := oneAgentDay()
+	got, _, err := in.AgentSearch(context.Background(), AgentQuery{From: from, To: to, MaxResults: 10})
+	if err != nil || len(got) != 1 || got[0].S3Key != "emails/01/new" {
+		t.Fatalf("%v %v", keys(got), err)
+	}
+}

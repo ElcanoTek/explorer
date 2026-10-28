@@ -159,7 +159,9 @@ func (in *Inbox) digestMessage(ctx context.Context, key string, keepBody bool) (
 	msg := mailmsg.Parse(raw)
 	d := digest{ok: true}
 	for _, a := range attachmentParts(msg) {
-		d.attachments = append(d.attachments, a.Filename)
+		if !a.inline {
+			d.attachments = append(d.attachments, a.Filename)
+		}
 	}
 	plain, html := allBodies(msg)
 	d.links = downloadLinks(plain, html)
@@ -199,6 +201,14 @@ func reportedAttachment(msg *mailmsg.Part, name string) (*mailmsg.Part, bool) {
 	return nil, false
 }
 
+// isInlineResource reports a body resource (a logo or tracking image
+// referenced by Content-ID) rather than a delivered file: get_email lists
+// it, but it never makes an email a payload match.
+func isInlineResource(part *mailmsg.Part) bool {
+	disposition := strings.ToLower(part.Header.Get("Content-Disposition"))
+	return !strings.Contains(disposition, "attachment") && part.Header.Get("Content-ID") != ""
+}
+
 // reportedName is the name attachmentParts gives part, and whether part is
 // an attachment at all.
 func reportedName(part *mailmsg.Part) (string, bool) {
@@ -235,7 +245,8 @@ func attachmentParts(msg *mailmsg.Part) []AttachmentInfo {
 		}
 		seen[name] = true
 		payload, _ := part.Payload()
-		out = append(out, AttachmentInfo{Filename: name, ContentType: part.ContentType(), SizeBytes: len(payload)})
+		out = append(out, AttachmentInfo{Filename: name, ContentType: part.ContentType(), SizeBytes: len(payload),
+			inline: isInlineResource(part)})
 	}
 	return out
 }
@@ -248,10 +259,17 @@ type scanPrefix struct {
 }
 
 // dayUnique reports whether prefix p, formatted for day d, differs from the
-// prefixes of the days on either side, i.e. the format is at least daily.
+// prefixes of the neighbouring days and of the same day a week, a month and
+// a year earlier: a daily format that does not repeat (%A/, %d/ or %m/%d/
+// do) is the only one whose prefix places its objects.
 func (in *Inbox) dayUnique(p string, d time.Time) bool {
 	f := in.s.DatePrefixFormat
-	return Strftime(f, d.AddDate(0, 0, -1)) != p && Strftime(f, d.AddDate(0, 0, 1)) != p
+	for _, other := range []time.Time{d.AddDate(0, 0, -1), d.AddDate(0, 0, 1), d.AddDate(0, 0, -7), d.AddDate(0, -1, 0), d.AddDate(-1, 0, 0)} {
+		if Strftime(f, other) == p {
+			return false
+		}
+	}
+	return true
 }
 
 func (in *Inbox) agentPrefixes(from, to time.Time) ([]scanPrefix, bool) {
@@ -314,6 +332,9 @@ func (in *Inbox) eachBatch(ctx context.Context, from, to time.Time, stats *Agent
 ) error {
 	prefixes, partitioned := in.agentPrefixes(from, to)
 	stats.UsedPartitions = partitioned
+	// One prefix is listed once and S3 never repeats a key across its pages:
+	// only several prefixes need a key set.
+	dedupe := len(prefixes) > 1
 	seen := map[string]bool{}
 	for _, sp := range prefixes {
 		stats.Prefixes++
@@ -329,10 +350,12 @@ func (in *Inbox) eachBatch(ctx context.Context, from, to time.Time, stats *Agent
 			}
 			var batch []candidate
 			for _, obj := range page.Objects {
-				if obj.Key == sp.prefix || seen[obj.Key] {
+				if obj.Key == sp.prefix || (dedupe && seen[obj.Key]) {
 					continue
 				}
-				seen[obj.Key] = true
+				if dedupe {
+					seen[obj.Key] = true
+				}
 				if in.s.ArchivePrefix != "" && strings.HasPrefix(obj.Key, in.s.ArchivePrefix) {
 					continue
 				}
@@ -352,7 +375,7 @@ func (in *Inbox) eachBatch(ctx context.Context, from, to time.Time, stats *Agent
 			}
 			token = page.NextToken
 		}
-		if reached && partitioned {
+		if reached && partitioned && !sp.day.IsZero() {
 			return nil
 		}
 	}
