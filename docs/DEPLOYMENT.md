@@ -481,26 +481,11 @@ explorer tls reload     # graceful reload, validates before applying
 explorer tls restart
 ```
 
-### Your own proxy
-
-Answer "no" to the Caddy prompt and point nginx, HAProxy, an ALB or anything
-else at `127.0.0.1:8080`. Requirements: terminate TLS, use the hostname in
-`EXPLORER_PUBLIC_URL` (and, in Elcano mode, one under the auth cookie's
-domain), and forward `X-Forwarded-Proto` from the same box (Explorer believes
-it only from a loopback peer). nginx equivalent:
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-Attachments can be large; raise `proxy_read_timeout` and
-`client_max_body_size` if you see truncated downloads.
+Caddy is the standard reverse proxy across every Explorer host (`nginx` and
+`certbot` are not used). Answering "no" to the Caddy prompt leaves Explorer
+bound to `http://127.0.0.1:8080` for local development only; re-run
+`sudo explorer bootstrap` with a public hostname to install and configure
+Caddy.
 
 ## Managing the service
 
