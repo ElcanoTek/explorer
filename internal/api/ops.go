@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/ElcanoTek/explorer/internal/apitoken"
 	"github.com/ElcanoTek/explorer/internal/archive"
 )
 
@@ -42,7 +44,7 @@ func warn(code, severity, message, suggestion string) Warning {
 
 func hasAlnum(s string) bool {
 	for _, c := range s {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+		if unicode.IsLetter(c) || unicode.IsDigit(c) {
 			return true
 		}
 	}
@@ -180,11 +182,14 @@ func emailBody(m archive.AgentMatch) Body {
 	return b
 }
 
-func exactEmailBody(m archive.AgentMatch, preview bool) Body {
+// exactEmailBody reports one match. The links themselves (often bearer-style
+// presigned URLs) are message content: only a token that may read mail gets
+// them; a search-only token sees that they exist.
+func exactEmailBody(m archive.AgentMatch, preview, canRead bool) Body {
 	b := emailBody(m)
 	b["has_download_links"] = len(m.DownloadLinks) > 0
 	b["download_link_count"] = len(m.DownloadLinks)
-	if len(m.DownloadLinks) > 0 {
+	if len(m.DownloadLinks) > 0 && canRead {
 		b["download_links"] = m.DownloadLinks
 	}
 	if preview {
@@ -222,6 +227,8 @@ type exactArgs struct {
 	hasPayload         *bool
 	maxResults         int
 	includeBodyPreview bool
+	// canRead: the token holds email:read, so message content may be returned.
+	canRead            bool
 	fromBound, toBound time.Time
 	criteria           Body
 	warnings           []Warning
@@ -324,14 +331,27 @@ func ptrOrNil(s *string) any {
 }
 
 // SearchEmails is search_emails.
-func (a *API) SearchEmails(r *http.Request, args map[string]any) (Body, error) {
+func (a *API) SearchEmails(r *http.Request, t *apitoken.Token, args map[string]any) (Body, error) {
 	x, err := a.parseExact(args)
 	if err != nil {
+		return nil, err
+	}
+	if err := contentScope(t, x); err != nil {
 		return nil, err
 	}
 	ctx, cancel := a.withDeadline(r)
 	defer cancel()
 	return a.runExact(ctx, x)
+}
+
+// contentScope records whether t may see message content, and refuses a body
+// preview to a token that may not: the preview is the message text.
+func contentScope(t *apitoken.Token, x *exactArgs) error {
+	x.canRead = t.Allows(apitoken.ScopeRead)
+	if x.includeBodyPreview && !x.canRead {
+		return RequireScope(t, apitoken.ScopeRead)
+	}
+	return nil
 }
 
 func (a *API) runExact(ctx context.Context, x *exactArgs) (Body, error) {
@@ -353,7 +373,7 @@ func (a *API) runExact(ctx context.Context, x *exactArgs) (Body, error) {
 	}
 	emails := make([]Body, len(matches))
 	for i, m := range matches {
-		emails[i] = exactEmailBody(m, x.includeBodyPreview)
+		emails[i] = exactEmailBody(m, x.includeBodyPreview, x.canRead)
 	}
 	criteria := Body{}
 	for k, v := range x.criteria {
@@ -531,7 +551,7 @@ func mergeWarning(warnings []Warning, w Warning, day string) []Warning {
 // on_or_before until max_candidates matches are found or lookback_days are
 // searched. A day whose search fails fails the whole call: an older match
 // must never pass for the latest one.
-func (a *API) FindLatestReport(r *http.Request, args map[string]any) (Body, error) {
+func (a *API) FindLatestReport(r *http.Request, t *apitoken.Token, args map[string]any) (Body, error) {
 	onOrBefore, err := optString(args, "on_or_before")
 	if err != nil {
 		return nil, err
@@ -581,6 +601,7 @@ func (a *API) FindLatestReport(r *http.Request, args map[string]any) (Body, erro
 		if err != nil {
 			return nil, err
 		}
+		x.canRead = t.Allows(apitoken.ScopeRead)
 		body, err := a.runExact(ctx, x)
 		if err != nil {
 			var e *Error

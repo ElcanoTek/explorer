@@ -30,7 +30,7 @@ explorer token revoke ID
 Tokens start with `explorer_` and carry one or both scopes (both by default;
 `--scope` narrows it):
 
-- `email:search` — the three searches and the metadata they return.
+- `email:search` — the three searches and the metadata they return. Message content stays behind `email:read`: a search-only token gets link counts but not the links, and `include_body_preview` needs `email:read`.
 - `email:read` — read one message by `s3_key` and mint short-lived download
   links for its attachments and cached link payloads.
 

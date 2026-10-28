@@ -169,7 +169,8 @@ func (in *Inbox) digestMessage(ctx context.Context, key string, keepBody bool) (
 	}
 	d.preview = truncateRunes(text, bodyPreviewChars)
 	if keepBody {
-		d.body = strings.ToLower(text)
+		// Both alternatives: a keyword may be only in the HTML part.
+		d.body = strings.ToLower(plain + "\n" + html)
 	}
 	return d, nil
 }
@@ -180,6 +181,46 @@ func cleanReportedFilename(name string) string {
 	return strings.Trim(strings.Join(strings.Fields(name), " "), " .")
 }
 
+// reportedAttachment finds the part attachmentParts reported as name, so
+// every name search and get_email hand out (collapsed whitespace,
+// "unknown") resolves for get_download_link.
+func reportedAttachment(msg *mailmsg.Part, name string) (*mailmsg.Part, bool) {
+	seen := map[string]bool{}
+	for _, part := range msg.Walk() {
+		n, ok := reportedName(part)
+		if !ok || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if n == name {
+			return part, true
+		}
+	}
+	return nil, false
+}
+
+// reportedName is the name attachmentParts gives part, and whether part is
+// an attachment at all.
+func reportedName(part *mailmsg.Part) (string, bool) {
+	if part.MainType() == "multipart" {
+		return "", false
+	}
+	disposition := part.Header.Get("Content-Disposition")
+	contentID := normalizeCID(part.Header.Get("Content-ID"))
+	rawName := part.Filename()
+	if !strings.Contains(strings.ToLower(disposition), "attachment") && rawName == "" && contentID == "" {
+		return "", false
+	}
+	name := cleanReportedFilename(mailmsg.DecodeHeader(rawName))
+	if name == "" && contentID != "" {
+		name = inlineFilenameForCID(contentID, part.ContentType())
+	}
+	if name == "" {
+		name = "unknown"
+	}
+	return name, true
+}
+
 // attachmentParts lists a message's attachments the way the UI names them
 // (GetEmail): a part with an attachment disposition, a filename or a
 // Content-ID; its decoded filename, else the Content-ID-derived inline
@@ -188,23 +229,8 @@ func attachmentParts(msg *mailmsg.Part) []AttachmentInfo {
 	var out []AttachmentInfo
 	seen := map[string]bool{}
 	for _, part := range msg.Walk() {
-		if part.MainType() == "multipart" {
-			continue
-		}
-		disposition := part.Header.Get("Content-Disposition")
-		contentID := normalizeCID(part.Header.Get("Content-ID"))
-		rawName := part.Filename()
-		if !strings.Contains(strings.ToLower(disposition), "attachment") && rawName == "" && contentID == "" {
-			continue
-		}
-		name := cleanReportedFilename(mailmsg.DecodeHeader(rawName))
-		if name == "" && contentID != "" {
-			name = inlineFilenameForCID(contentID, part.ContentType())
-		}
-		if name == "" {
-			name = "unknown"
-		}
-		if seen[name] {
+		name, ok := reportedName(part)
+		if !ok || seen[name] {
 			continue
 		}
 		seen[name] = true
@@ -264,9 +290,10 @@ func (in *Inbox) eachBatch(ctx context.Context, from, to time.Time, stats *Agent
 	fn func([]candidate) (reached bool, err error),
 ) error {
 	prefixes, partitioned := in.agentPrefixes(from, to)
-	stats.Prefixes, stats.UsedPartitions = len(prefixes), partitioned
+	stats.UsedPartitions = partitioned
 	seen := map[string]bool{}
 	for _, sp := range prefixes {
+		stats.Prefixes++
 		reached := false
 		token := ""
 		for {

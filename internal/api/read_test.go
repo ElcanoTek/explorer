@@ -154,3 +154,59 @@ func TestTicketsAreBoundToTheirTokenAndScope(t *testing.T) {
 		t.Fatalf("search-only search: %d", status)
 	}
 }
+
+func TestASearchOnlyTokenNeverSeesMessageContent(t *testing.T) {
+	h := newHarness(t, nil)
+	h.withReport()
+	_, searchOnly, err := h.tokens.Create(context.Background(), "search", []string{apitoken.ScopeSearch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"date_from": "2026-06-01", "date_to": "2026-06-01", "has_payload": true}
+	status, body := h.post("search_emails", args, searchOnly)
+	emails, _ := body["emails"].([]any)
+	if status != http.StatusOK || len(emails) != 1 {
+		t.Fatalf("%d %v", status, body)
+	}
+	if e := emails[0].(map[string]any); e["download_links"] != nil || e["has_download_links"] != true {
+		t.Fatalf("search-only result carries links: %v", e)
+	}
+	_, body = h.post("search_emails", args, h.raw)
+	if body["emails"].([]any)[0].(map[string]any)["download_links"] == nil {
+		t.Fatal("a read token must see the links")
+	}
+	args["include_body_preview"] = true
+	if status, _ := h.post("search_emails", args, searchOnly); status != http.StatusForbidden {
+		t.Fatalf("body preview without email:read: %d", status)
+	}
+	status, body = h.post("find_latest_report", map[string]any{"on_or_before": "2026-06-01", "sender_contains": "vendor.example"}, searchOnly)
+	if status != http.StatusOK || strings.Contains(strings.Join(fmtAll(body), " "), "sig=abc") {
+		t.Fatalf("find_latest_report leaked a link: %d %v", status, body)
+	}
+}
+
+func fmtAll(v any) []string {
+	switch x := v.(type) {
+	case map[string]any:
+		var out []string
+		for _, e := range x {
+			out = append(out, fmtAll(e)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, e := range x {
+			out = append(out, fmtAll(e)...)
+		}
+		return out
+	case string:
+		return []string{x}
+	}
+	return nil
+}
+
+func TestUnicodeFiltersAreMeaningful(t *testing.T) {
+	if !hasAlnum("例子.公司") || hasAlnum("@.-") {
+		t.Fatal("hasAlnum must accept Unicode letters only")
+	}
+}

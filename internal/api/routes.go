@@ -39,7 +39,7 @@ var Operations = []Operation{
 		Name: "search_emails", Scope: apitoken.ScopeSearch,
 		Args: []string{"date_from", "date_to", "has_payload", "include_body_preview", "max_results",
 			"recipient_contains", "sender_contains", "subject_contains", "subject_keywords"},
-		Run: searchOp((*API).SearchEmails),
+		Run: (*API).SearchEmails,
 	},
 	{
 		Name: "search_emails_fuzzy", Scope: apitoken.ScopeSearch,
@@ -50,7 +50,7 @@ var Operations = []Operation{
 		Name: "find_latest_report", Scope: apitoken.ScopeSearch,
 		Args: []string{"lookback_days", "max_candidates", "on_or_before", "recipient_contains",
 			"require_payload", "sender_contains", "subject_contains", "subject_keywords"},
-		Run: searchOp((*API).FindLatestReport),
+		Run: (*API).FindLatestReport,
 	},
 	{Name: "get_email", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).GetEmail},
 	{Name: "extract_download_links", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ExtractDownloadLinks},

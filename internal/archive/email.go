@@ -381,5 +381,15 @@ func (in *Inbox) Attachment(ctx context.Context, key, filename string) (*Attachm
 		}
 		return &Attachment{Name: name, ContentType: part.ContentType(), Data: payload}, nil
 	}
+	// The agent API's names (search results, get_email) are attachmentParts'.
+	if part, ok := reportedAttachment(msg, strings.TrimSpace(filename)); ok {
+		if payload, ok := part.Payload(); ok {
+			name := pathName(filename)
+			if name == "" || name == ".." {
+				name = "attachment"
+			}
+			return &Attachment{Name: name, ContentType: part.ContentType(), Data: payload}, nil
+		}
+	}
 	return nil, ErrNotFound
 }

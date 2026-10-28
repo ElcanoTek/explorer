@@ -141,3 +141,38 @@ func TestAnUnnamedAttachmentIsAPayload(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+func TestFuzzyBodySearchReadsTheHTMLAlternativeToo(t *testing.T) {
+	mail := "Authentication-Results: " + passAuth + "\r\nFrom: <a@vendor.example>\r\nSubject: R\r\nDate: " + agentDate +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=XX\r\n\r\n--XX\r\nContent-Type: text/plain\r\n\r\nsee html\r\n" +
+		"--XX\r\nContent-Type: text/html\r\n\r\n<p>pacing</p>\r\n--XX--\r\n"
+	in := New(newFake(map[string][]byte{agentDay + "m": []byte(mail)}), agentSettings(t, nil))
+	from, to := oneAgentDay()
+	got, _, err := in.AgentFuzzy(context.Background(), AgentFuzzyQuery{Keywords: []string{"pacing"}, Body: true, From: from, To: to, MaxResults: 10})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%v %v", keys(got), err)
+	}
+}
+
+func TestReportedAttachmentNamesResolve(t *testing.T) {
+	mail := "From: <a@vendor.example>\r\nSubject: R\r\nDate: " + agentDate +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=XX\r\n\r\n--XX\r\nContent-Type: text/plain\r\n\r\nhi\r\n" +
+		"--XX\r\nContent-Type: text/csv\r\nContent-Disposition: attachment\r\n\r\na,b\r\n" +
+		"--XX\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=\"weekly   report.csv\"\r\n\r\nc,d\r\n--XX--\r\n"
+	in := New(newFake(map[string][]byte{agentDay + "u": []byte(mail)}), agentSettings(t, nil))
+	for name, want := range map[string]string{"unknown": "a,b", "weekly report.csv": "c,d"} {
+		att, err := in.Attachment(context.Background(), agentDay+"u", name)
+		if err != nil || strings.TrimSpace(string(att.Data)) != want {
+			t.Fatalf("%s: %v %v", name, att, err)
+		}
+	}
+}
+
+func TestOnlyListedPrefixesAreCounted(t *testing.T) {
+	in := New(newFake(map[string][]byte{agentDay + "m": reportMail("<p>x</p>")}), agentSettings(t, nil))
+	from, to := oneAgentDay()
+	_, stats, err := in.AgentSearch(context.Background(), AgentQuery{From: from.AddDate(0, 0, -9), To: to, MaxResults: 1})
+	if err != nil || stats.Prefixes != 1 {
+		t.Fatalf("prefixes %d %v", stats.Prefixes, err)
+	}
+}
