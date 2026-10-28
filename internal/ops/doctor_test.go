@@ -342,6 +342,18 @@ func TestDoctorCaddyBinaryMissingFails(t *testing.T) {
 	if c := fx.run(t)["tls-cert"]; c.Status != "warn" || !strings.Contains(c.Detail, "within 30 days") {
 		t.Fatalf("%+v", c)
 	}
+
+	// Legacy nginx or missing Caddy site block when caddy is installed warns.
+	fx2 := newDoctorFixture(t, healthyDotenv())
+	fx2.f.tools["nginx"] = true
+	fx2.f.tools["caddy"] = true
+	checks2 := fx2.run(t)
+	if c := checks2["legacy-nginx"]; c.Status != "warn" || !strings.Contains(c.Detail, "nginx.service is active") {
+		t.Fatalf("legacy-nginx: %+v", c)
+	}
+	if c := checks2["caddy"]; c.Status != "warn" || !strings.Contains(c.Detail, "no marker-owned Explorer Caddy site block") {
+		t.Fatalf("missing caddy site: %+v", c)
+	}
 }
 
 func TestDoctorInstalledFilesAndCLI(t *testing.T) {

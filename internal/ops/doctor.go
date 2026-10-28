@@ -436,8 +436,14 @@ func (d *doctor) checkService(ctx context.Context) {
 }
 
 func (d *doctor) checkCaddy(ctx context.Context) {
+	if d.has("nginx") && d.run(ctx, Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "nginx.service"}}).Code == 0 {
+		d.add("legacy-nginx", false, "", "nginx.service is active — Explorer standardizes on Caddy; rerun explorer bootstrap with a hostname and remove nginx/certbot", true)
+	}
 	snippet, host := caddySiteHost(d.p.Caddyfile)
 	if snippet == "" {
+		if d.has("caddy") {
+			d.add("caddy", false, "", "no marker-owned Explorer Caddy site block found under "+d.p.Caddyfile+" — rerun explorer bootstrap with a hostname", true)
+		}
 		return
 	}
 	if !d.has("caddy") {

@@ -571,6 +571,10 @@ func setupCaddy(ctx context.Context, u *ui, r Runner, p Paths, a bootstrapAnswer
 		r.Run(ctx, Cmd{Name: "firewall-cmd", Args: []string{"--reload"}, Timeout: time.Minute})
 		u.okf("firewalld: http + https opened")
 	}
+	if _, hasNginx := r.LookPath("nginx"); hasNginx && r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "nginx.service"}, Timeout: 30 * time.Second}).Code == 0 {
+		r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"disable", "--now", "nginx.service", "certbot-renew.timer"}, Timeout: time.Minute})
+		u.infof("disabled legacy nginx.service / certbot-renew.timer before starting Caddy")
+	}
 	r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"enable", "caddy"}, Timeout: time.Minute})
 	if r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "caddy"}, Timeout: 30 * time.Second}).Code == 0 {
 		if r.Run(ctx, Cmd{Name: "systemctl", Args: []string{"reload", "caddy"}, Timeout: 2 * time.Minute}).Code != 0 {
