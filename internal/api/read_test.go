@@ -194,7 +194,7 @@ func fmtAll(v any) []string {
 		}
 		return out
 	case []any:
-		var out []string
+		out := make([]string, 0, len(x))
 		for _, e := range x {
 			out = append(out, fmtAll(e)...)
 		}
