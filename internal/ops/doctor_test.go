@@ -343,16 +343,16 @@ func TestDoctorCaddyBinaryMissingFails(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 
-	// Legacy nginx or missing Caddy site block when caddy is installed warns.
-	fx2 := newDoctorFixture(t, healthyDotenv())
-	fx2.f.tools["nginx"] = true
-	fx2.f.tools["caddy"] = true
-	checks2 := fx2.run(t)
-	if c := checks2["legacy-nginx"]; c.Status != "warn" || !strings.Contains(c.Detail, "nginx.service is active") {
+	// Active nginx alongside an Explorer Caddy site block warns; without an
+	// Explorer Caddy site block (operator's own proxy / Ingress), checkCaddy stays silent.
+	fx.f.tools["nginx"] = true
+	if c := fx.run(t)["legacy-nginx"]; c.Status != "warn" || !strings.Contains(c.Detail, "nginx.service is active") {
 		t.Fatalf("legacy-nginx: %+v", c)
 	}
-	if c := checks2["caddy"]; c.Status != "warn" || !strings.Contains(c.Detail, "no marker-owned Explorer Caddy site block") {
-		t.Fatalf("missing caddy site: %+v", c)
+	fx2 := newDoctorFixture(t, healthyDotenv())
+	fx2.f.tools["nginx"] = true
+	if _, ok := fx2.run(t)["legacy-nginx"]; ok {
+		t.Fatalf("expected no legacy-nginx warning when no Explorer Caddy site block is installed")
 	}
 }
 

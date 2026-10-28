@@ -407,7 +407,7 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 			return err
 		}
 	} else {
-		u.infof("skipping Caddy — reach explorer on loopback at http://127.0.0.1:8080 (re-run bootstrap with a hostname to set up Caddy)")
+		u.infof("skipping Caddy — reach explorer at http://127.0.0.1:8080 (or via your own proxy)")
 	}
 
 	if err := layoutCheck(p); err != nil {
@@ -486,7 +486,7 @@ func printBootstrapSummary(u *ui, a bootstrapAnswers) {
 	if a.setupCaddy {
 		u.sayf("  URL         %s", u.bold("https://"+a.hostname))
 	} else {
-		u.sayf("  URL         %s  (loopback only — re-run bootstrap with a hostname for Caddy TLS)", u.bold("http://127.0.0.1:8080"))
+		u.sayf("  URL         %s  (front with your reverse proxy for HTTPS)", u.bold("http://127.0.0.1:8080"))
 	}
 	u.sayf("  Logs        %s", u.dim("explorer logs"))
 	u.sayf("  CLI         %s", u.dim("explorer start|stop|restart|status|update|doctor|env|tls|access"))
