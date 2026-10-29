@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -210,6 +211,20 @@ func windowDays(from, to time.Time) int {
 	return int(archive.Day(to).Sub(archive.Day(from)).Hours()/24) + 1
 }
 
+// fittingWindow names both bounds of a window of maxDays ending at the later
+// bound, so a refused search is corrected in one step whichever way round the
+// caller wrote its dates: ` (date_from 2026-08-31 with date_to 2026-10-31 fits;
+// search earlier dates in a second call)`.
+func fittingWindow(to time.Time, maxDays int) string {
+	if maxDays < 1 {
+		return ""
+	}
+	end := archive.Day(to)
+	from := end.AddDate(0, 0, -(maxDays - 1))
+	return fmt.Sprintf(" (date_from %s with date_to %s fits; search earlier dates in a second call)",
+		from.Format("2006-01-02"), end.Format("2006-01-02"))
+}
+
 func boundedDateError(tool string) *Error {
 	e := invalidArg("%s requires both date_from and date_to.", tool)
 	e.Code = "bounded_date_window_required"
@@ -306,8 +321,8 @@ func (a *API) parseExact(args map[string]any) (*exactArgs, error) {
 	}
 	days := windowDays(x.fromBound, x.toBound)
 	if days > a.settings.MaxDatePrefixDays {
-		return nil, invalidArg("The date window covers %d days; keep a search at or under %d days.",
-			days, a.settings.MaxDatePrefixDays)
+		return nil, invalidArg("The date window covers %d days; keep a search at or under %d days%s.",
+			days, a.settings.MaxDatePrefixDays, fittingWindow(x.toBound, a.settings.MaxDatePrefixDays))
 	}
 	if days > autoChunkDays {
 		x.warnings = append(x.warnings, chunkWarning(days))
@@ -427,7 +442,19 @@ func (a *API) SearchEmailsFuzzy(r *http.Request, args map[string]any) (Body, err
 	}
 	keywords = nonEmpty(keywords)
 	if len(keywords) == 0 {
-		e := invalidArg("keywords must contain at least one non-empty value")
+		// Agents also write a free-text query: its words are the keywords.
+		query, err := optString(args, "query")
+		if err != nil {
+			return nil, err
+		}
+		keywords = strings.FieldsFunc(query, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	}
+	if args["max_results"] == nil && args["limit"] != nil { // a null max_results is absent, as everywhere here
+		args = maps.Clone(args)
+		args["max_results"] = args["limit"] // limit is another word for max_results
+	}
+	if len(keywords) == 0 {
+		e := invalidArg("keywords (or query) must contain at least one non-empty value")
 		e.Details = map[string]any{"search_warnings": []Warning{warn("empty_keywords", "high",
 			"Fuzzy search invoked without usable keywords.",
 			"Provide 1-3 concrete keywords or use exact search_emails with sender/subject filters.")}}
@@ -494,7 +521,8 @@ func (a *API) SearchEmailsFuzzy(r *http.Request, args map[string]any) (Body, err
 		if q.Body {
 			kind = "body search"
 		}
-		return nil, invalidArg("The date window covers %d days; keep a %s at or under %d days.", days, kind, maxDays)
+		return nil, invalidArg("The date window covers %d days; keep a %s at or under %d days%s.",
+			days, kind, maxDays, fittingWindow(q.To, maxDays))
 	}
 	warnings := a.queryWarnings(queryWarningInput{subjectKeywords: keywords, dateFrom: dateFrom, dateTo: dateTo,
 		maxResults: q.MaxResults})

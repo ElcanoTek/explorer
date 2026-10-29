@@ -86,7 +86,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "keywords",
           "date_from"
         ],
         "properties": {
@@ -96,7 +95,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Keywords to find (1-3 concrete ones work best)."
+            "description": "Keywords to find (1-3 concrete ones work best). Give keywords or query."
           },
           "search_fields": {
             "type": "array",
@@ -129,6 +128,15 @@
             "maximum": 500,
             "default": 50,
             "description": "Maximum results (default 50)."
+          },
+          "query": {
+            "type": "string",
+            "description": "Free text instead of keywords: its words (split on spaces and commas) become the keywords. Give keywords or query."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Another name for max_results."
           }
         }
       },
@@ -302,6 +310,10 @@
           "url": {
             "type": "string",
             "description": "A download link exactly as get_email or extract_download_links lists it."
+          },
+          "output_dir": {
+            "type": "string",
+            "description": "Ignored: the link is returned, nothing is saved here. Pass the download_url tool's own output directory to that tool."
           }
         }
       },
