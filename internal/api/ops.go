@@ -447,7 +447,7 @@ func (a *API) SearchEmailsFuzzy(r *http.Request, args map[string]any) (Body, err
 		}
 		keywords = strings.FieldsFunc(query, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 	}
-	if _, set := args["max_results"]; !set && args["limit"] != nil {
+	if args["max_results"] == nil && args["limit"] != nil { // a null max_results is absent, as everywhere here
 		args = maps.Clone(args)
 		args["max_results"] = args["limit"] // limit is another word for max_results
 	}

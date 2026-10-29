@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 ElcanoTek, Inc.
+
 package api
 
 import (
@@ -32,6 +35,13 @@ func TestFuzzyLimitIsMaxResults(t *testing.T) {
 	}, h.raw)
 	if status != http.StatusOK || len(body["emails"].([]any)) != 1 {
 		t.Fatalf("%d %v", status, body)
+	}
+	// A client that sends unset fields as null: max_results null is absent, so limit still applies.
+	status, body = h.post("search_emails_fuzzy", map[string]any{
+		"keywords": []string{"pacing"}, "max_results": nil, "limit": 1, "date_from": "2026-06-01", "date_to": "2026-06-01",
+	}, h.raw)
+	if status != http.StatusOK || len(body["emails"].([]any)) != 1 {
+		t.Fatalf("null max_results: %d %v", status, body)
 	}
 }
 
