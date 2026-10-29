@@ -53,21 +53,28 @@ func TestFuzzyWithNeitherKeywordsNorQueryIsRefused(t *testing.T) {
 	}
 }
 
-func TestATooWideWindowNamesTheDateFromThatFits(t *testing.T) {
+func TestATooWideWindowNamesTheWindowThatFits(t *testing.T) {
 	h := newHarness(t, nil)
-	status, body := h.post("search_emails_fuzzy", map[string]any{
-		"keywords": []string{"pacing"}, "date_from": "2026-01-01", "date_to": "2026-06-01",
-	}, h.raw)
-	msg, _ := body["error"].(string)
-	if status != http.StatusBadRequest || !strings.Contains(msg, "date_from ") || !strings.Contains(msg, "fits with this date_to") {
-		t.Fatalf("%d %v", status, body)
-	}
-	maxDays := h.api.settings.MaxDatePrefixDays
-	status, body = h.post("search_emails_fuzzy", map[string]any{
-		"keywords": []string{"pacing"}, "date_from": strings.Fields(strings.SplitN(msg, "(date_from ", 2)[1])[0], "date_to": "2026-06-01",
-	}, h.raw)
-	if status != http.StatusOK {
-		t.Fatalf("the suggested %d-day window was refused: %d %v", maxDays, status, body)
+	// Either way round: Explorer orders the bounds, so the suggestion names both.
+	for _, bounds := range [][2]string{{"2026-01-01", "2026-06-01"}, {"2026-06-01", "2026-01-01"}} {
+		status, body := h.post("search_emails_fuzzy", map[string]any{
+			"keywords": []string{"pacing"}, "date_from": bounds[0], "date_to": bounds[1],
+		}, h.raw)
+		msg, _ := body["error"].(string)
+		if status != http.StatusBadRequest || !strings.Contains(msg, "(date_from ") || !strings.Contains(msg, " fits;") {
+			t.Fatalf("%v: %d %v", bounds, status, body)
+		}
+		words := strings.Fields(strings.SplitN(msg, "(date_from ", 2)[1])
+		from, to := words[0], words[3] // "<from> with date_to <to> fits;"
+		if to != "2026-06-01" {
+			t.Fatalf("%v: suggested date_to %s", bounds, to)
+		}
+		status, body = h.post("search_emails_fuzzy", map[string]any{
+			"keywords": []string{"pacing"}, "date_from": from, "date_to": to,
+		}, h.raw)
+		if status != http.StatusOK {
+			t.Fatalf("%v: the suggested window %s..%s was refused: %d %v", bounds, from, to, status, body)
+		}
 	}
 }
 

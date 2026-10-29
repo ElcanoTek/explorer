@@ -211,16 +211,18 @@ func windowDays(from, to time.Time) int {
 	return int(archive.Day(to).Sub(archive.Day(from)).Hours()/24) + 1
 }
 
-// fittingWindow names the date_from that fits maxDays ending at to, so a refused
-// search is corrected in one step: ` (date_from 2026-08-31 fits with this date_to;
+// fittingWindow names both bounds of a window of maxDays ending at the later
+// bound, so a refused search is corrected in one step whichever way round the
+// caller wrote its dates: ` (date_from 2026-08-31 with date_to 2026-10-31 fits;
 // search earlier dates in a second call)`.
 func fittingWindow(to time.Time, maxDays int) string {
 	if maxDays < 1 {
 		return ""
 	}
-	from := archive.Day(to).AddDate(0, 0, -(maxDays - 1))
-	return fmt.Sprintf(" (date_from %s fits with this date_to; search earlier dates in a second call)",
-		from.Format("2006-01-02"))
+	end := archive.Day(to)
+	from := end.AddDate(0, 0, -(maxDays - 1))
+	return fmt.Sprintf(" (date_from %s with date_to %s fits; search earlier dates in a second call)",
+		from.Format("2006-01-02"), end.Format("2006-01-02"))
 }
 
 func boundedDateError(tool string) *Error {
