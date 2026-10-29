@@ -43,7 +43,7 @@ var Operations = []Operation{
 	},
 	{
 		Name: "search_emails_fuzzy", Scope: apitoken.ScopeSearch,
-		Args: []string{"date_from", "date_to", "keywords", "match_all", "max_results", "search_fields"},
+		Args: []string{"date_from", "date_to", "keywords", "limit", "match_all", "max_results", "query", "search_fields"},
 		Run:  searchOp((*API).SearchEmailsFuzzy),
 	},
 	{
@@ -57,7 +57,7 @@ var Operations = []Operation{
 	{Name: "list_archived_attachments", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ListArchivedAttachments},
 	{
 		Name: "get_download_link", Scope: apitoken.ScopeRead,
-		Args: []string{"filename", "s3_key", "url"},
+		Args: []string{"filename", "output_dir", "s3_key", "url"},
 		Run:  (*API).GetDownloadLink,
 	},
 }

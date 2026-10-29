@@ -65,12 +65,12 @@ Tools (all `readOnlyHint: true`; names, schemas and descriptions are in
 | Tool | Scope | Required | What it does |
 |---|---|---|---|
 | `search_emails` | search | `date_from`, `date_to` | Targeted search: `subject_contains`, `subject_keywords` (any), `sender_contains`, `recipient_contains`, `has_payload`, `max_results` (default 25, max 500), `include_body_preview`. Newest first. |
-| `search_emails_fuzzy` | search | `keywords`, `date_from` | Keyword search over `search_fields` (`subject`, `sender`, `body`; default subject and sender), `match_all`, `max_results` (default 50). Ranked by `match_score`, then newest. `date_to` defaults to now. |
+| `search_emails_fuzzy` | search | `keywords` or `query`, `date_from` | Keyword search over `search_fields` (`subject`, `sender`, `body`; default subject and sender), `match_all`, `max_results` (default 50; `limit` is accepted as another name). `query` is free text whose words (split on spaces and commas) become the keywords. Ranked by `match_score`, then newest. `date_to` defaults to now. A window over the limit is refused with the `date_from` that fits. |
 | `find_latest_report` | search | — | Walks back day by day from `on_or_before` (default today, UTC) for `lookback_days` (default 14, max 60) until `max_candidates` (default 1, max 25) matches. `require_payload` defaults to true. |
 | `get_email` | read | `s3_key` | Headers, `sender_authenticated`, attachments (`filename`, `content_type`, `size_bytes`), `body_text` (first 6,000 characters), `download_links` with each link's `cache` state, and `link_cache` (the email's manifest summary). |
 | `extract_download_links` | read | `s3_key` | Just the `download_links` and `link_cache`. |
 | `list_archived_attachments` | read | `s3_key` | The link archiver's manifest for the email, as written (`status: not_found` when there is none). |
-| `get_download_link` | read | `s3_key` + `filename` or `url` | A URL to fetch with Fleet's `download_url`: a signed Explorer link for an attachment or a cached link payload, else the live link (see below). |
+| `get_download_link` | read | `s3_key` + `filename` or `url` | A URL to fetch with Fleet's `download_url`: a signed Explorer link for an attachment or a cached link payload, else the live link (see below). `output_dir` is accepted and ignored (it belongs to the download_url tool). |
 
 A tool result's text is the whole JSON body. Success bodies carry
 `"ok": true, "status": "success"`; failures are `isError: true` results with
