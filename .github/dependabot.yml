@@ -2,9 +2,10 @@
 # module graph (go.mod / go.sum) and the GitHub Actions pinned by SHA in
 # .github/workflows/*. Modelled on fleet's file.
 #
-# Proposing is not merging. A human merges a bump only when it earns it: a
-# security fix whose code path Explorer uses, a security scanner update (such
-# as CodeQL), or a specific commit we need
+# Proposing is not auto-merging: a human merges routine grouped refreshes once
+# CI is green so drift stays small, and merges out-of-cycle manual bumps only
+# when they earn it — a security fix whose code path Explorer uses, a security
+# scanner update (such as CodeQL), or a specific commit we need
 # (AGENTS.md › Dependencies). In-housed code (internal/dotenv,
 # internal/htmlsafe) is ours and is not tracked here.
 #
