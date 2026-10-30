@@ -212,8 +212,10 @@ module only when it clearly earns its keep. Direct dependencies today:
 stays CGO-free), `golang.org/x/net/html` (sanitizer parsing) and
 `golang.org/x/text` (charsets, Unicode normalization). Dependabot proposes
 updates (daily, cooldown of 7 days (3 for patch releases), grouped;
-`.github/dependabot.yml`); a human merges them only when the bump earns it —
-a security fix whose code path we use, a security scanner update (such as CodeQL), or a specific commit we need. On a
+`.github/dependabot.yml`); a human merges those routine refreshes once CI is
+green so drift stays small. Out-of-cycle manual bumps are merged only when the
+bump earns it — a security fix whose code path we use, a security scanner
+update (such as CodeQL), or a specific commit we need. On a
 CVE, check reachability first (govulncheck does this in CI).
 
 | In-housed | Where | Upstream · version · license |
