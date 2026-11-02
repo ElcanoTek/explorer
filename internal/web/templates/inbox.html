@@ -2,7 +2,7 @@
 {{define "topbar_actions"}}
 <form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
-  <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Log out" aria-label="Log out" title="Log out">
+  <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Sign out" aria-label="Sign out" title="Sign out">
     <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#logout"></use></svg>
   </button>
 </form>

@@ -456,7 +456,7 @@ func TestCentralLogoutRequiresCSRFThenSignsOutEverywhere(t *testing.T) {
 	}
 }
 
-// Log out asks first. With script, base.js turns the header form's submit
+// Sign out asks first. With script, base.js turns the header form's submit
 // into opening a centred confirmation dialog whose own form signs out (same
 // endpoint and CSRF token) and whose Cancel closes it without a request.
 // Without script the header form still posts /logout directly.
@@ -471,7 +471,7 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	if header == nil {
 		t.Fatal("the header log-out form does not name its confirmation dialog")
 	}
-	if !strings.Contains(header[1], csrf) || !strings.Contains(header[1], `type="submit" data-tooltip="Log out"`) {
+	if !strings.Contains(header[1], csrf) || !strings.Contains(header[1], `type="submit" data-tooltip="Sign out"`) {
 		t.Fatalf("without script the header button no longer posts /logout with the CSRF token:\n%s", header[1])
 	}
 
