@@ -118,8 +118,9 @@ binary from `internal/web` via `go:embed`:
   bootstrap in `base.html`.
 - `static/styles.css` — product CSS; it reads Flag tokens and never hard-codes
   colours. `static/js/*.js` — small plain scripts, no build step, no npm:
-  `base.js` (theme, loading bar), `inbox.js` (search form, results, detail
-  panel), `email.js`, and two modules with Node unit tests:
+  `base.js` (theme, loading bar, the sign-out confirmation), `inbox.js`
+  (search form, results, detail panel), `email.js`, and two modules with
+  Node unit tests:
   `datepicker.js` (the date field) and `date-ranges.js` (range-day
   arithmetic, mirroring `countDaysCovered` in `dates.go`).
 - Components follow Flag's anatomy and class names (`.ds-app-header`,

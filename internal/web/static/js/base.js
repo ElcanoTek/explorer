@@ -56,6 +56,28 @@
     });
   }
 
+  // Signing out asks first: a form marked data-confirm-dialog opens that
+  // dialog instead of posting, and the dialog's own form signs out. Without
+  // script, or without <dialog>, the form posts at once as it always did.
+  document.querySelectorAll("form[data-confirm-dialog]").forEach(function (form) {
+    const dialog = document.getElementById(form.getAttribute("data-confirm-dialog"));
+    if (!dialog || typeof dialog.showModal !== "function") return;
+    const trigger = form.querySelector('button[type="submit"]');
+    if (trigger) {
+      trigger.setAttribute("aria-haspopup", "dialog");
+      trigger.setAttribute("aria-controls", dialog.id);
+    }
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!dialog.open) dialog.showModal();
+    });
+    // Safari does not focus a clicked button, so the browser's own focus
+    // restore can land on <body>; send it back to the opener.
+    dialog.addEventListener("close", function () {
+      if (trigger) trigger.focus();
+    });
+  });
+
   if (!loadingBar || !loadingNote) return;
 
   let active = false;

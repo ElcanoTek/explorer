@@ -456,6 +456,74 @@ func TestCentralLogoutRequiresCSRFThenSignsOutEverywhere(t *testing.T) {
 	}
 }
 
+// Log out asks first. With script, base.js turns the header form's submit
+// into opening a centred confirmation dialog whose own form signs out (same
+// endpoint and CSRF token) and whose Cancel closes it without a request.
+// Without script the header form still posts /logout directly.
+func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
+	e := centralEnv(t)
+	e.completeLogin("/")
+	body := e.get("/").body
+	token := centralauth.CSRFToken(e.cookie(centralauth.CookieName))
+	csrf := `<input type="hidden" name="csrf_token" value="` + token + `" />`
+
+	header := regexp.MustCompile(`(?s)<form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">(.*?)</form>`).FindStringSubmatch(body)
+	if header == nil {
+		t.Fatal("the header log-out form does not name its confirmation dialog")
+	}
+	if !strings.Contains(header[1], csrf) || !strings.Contains(header[1], `type="submit" data-tooltip="Log out"`) {
+		t.Fatalf("without script the header button no longer posts /logout with the CSRF token:\n%s", header[1])
+	}
+
+	dialog := regexp.MustCompile(`(?s)<dialog id="sign-out-dialog" class="modal" role="alertdialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description">(.*?)</dialog>`).FindStringSubmatch(body)
+	if dialog == nil {
+		t.Fatal("no sign-out confirmation dialog")
+	}
+	for _, want := range []string{
+		`<form method="post" action="/logout">`,
+		csrf,
+		`<h2 id="sign-out-title" class="modal__title">Sign out?</h2>`,
+		`<p id="sign-out-description" class="modal__description">You'll be signed out of all your apps, not just Explorer.</p>`,
+		`<button class="btn btn-ghost" type="submit" formmethod="dialog" autofocus>Cancel</button>`,
+		`<button class="btn btn-primary" type="submit">Sign out</button>`,
+	} {
+		if !strings.Contains(dialog[1], want) {
+			t.Errorf("sign-out dialog lacks %q", want)
+		}
+	}
+
+	// The dialog's form is the one that signs out.
+	resp := e.post("/logout", url.Values{"csrf_token": {token}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != e.auth.ts.URL+"/logout?client_id=explorer" {
+		t.Fatalf("status %d location %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	js, err := staticFS.ReadFile("static/js/base.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`document.querySelectorAll("form[data-confirm-dialog]")`,
+		`typeof dialog.showModal !== "function") return;`,
+		`event.preventDefault();`,
+		`if (!dialog.open) dialog.showModal();`,
+		`if (trigger) trigger.focus();`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Errorf("base.js lacks %q", want)
+		}
+	}
+	css, err := staticFS.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".modal {", ".modal::backdrop {", "background: var(--color-scrim);", ".modal__footer {"} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("styles.css lacks %q", want)
+		}
+	}
+}
+
 func TestBackchannelLogoutRevokesSubjectIdempotently(t *testing.T) {
 	e := centralEnv(t)
 	e.completeLogin("/")

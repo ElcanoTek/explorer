@@ -1,11 +1,29 @@
 {{define "header_intro"}}{{- "" -}}{{end}}
 {{define "topbar_actions"}}
-<form method="post" action="/logout">
+<form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Log out" aria-label="Log out" title="Log out">
     <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#logout"></use></svg>
   </button>
 </form>
+{{- /* Signing out asks first: base.js opens this dialog from the form above
+       instead of posting it. The dialog carries its own logout form (same
+       endpoint and CSRF token); Cancel closes it with method="dialog", no
+       script needed. Without script the button above posts at once, as it
+       always did. */}}
+<dialog id="sign-out-dialog" class="modal" role="alertdialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-description">
+  <form method="post" action="/logout">
+    {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
+    <div class="modal__header">
+      <h2 id="sign-out-title" class="modal__title">Sign out?</h2>
+      <p id="sign-out-description" class="modal__description">You'll be signed out of all your apps, not just Explorer.</p>
+    </div>
+    <div class="modal__footer">
+      <button class="btn btn-ghost" type="submit" formmethod="dialog" autofocus>Cancel</button>
+      <button class="btn btn-primary" type="submit">Sign out</button>
+    </div>
+  </form>
+</dialog>
 {{- end}}
 {{define "hidden_fields"}}{{range .}}
         <input type="hidden" name="{{.Key}}" value="{{.Value}}" />{{end}}{{end}}

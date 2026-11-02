@@ -367,6 +367,55 @@ summary:focus-visible,
   transform: none;
 }
 
+/* Flag's modal (COMPONENTS.md "dialog, alert-dialog", the shadcn-parity
+   anatomy): a <dialog class="modal"> opened with showModal(), so the browser
+   centres it in the top layer, keeps focus inside and closes it on Escape.
+   The sign-out confirmation uses it. Actions sit right, stacked under 40rem
+   with the primary on top. */
+.modal {
+  width: min(32rem, calc(100% - 2rem));
+  padding: var(--space-6);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-1);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+.modal::backdrop {
+  background: var(--color-scrim);
+  backdrop-filter: blur(3px);
+}
+
+.modal__header {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.modal__title {
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-subtitle);
+}
+
+.modal__description {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body-md);
+}
+
+.modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 39.9375rem) {
+  .modal__footer {
+    flex-direction: column-reverse;
+  }
+}
+
 .subtle {
   color: var(--color-text-secondary);
 }
