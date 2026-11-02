@@ -505,8 +505,7 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	for _, want := range []string{
 		`document.querySelectorAll("form[data-confirm-dialog]")`,
 		`typeof dialog.showModal !== "function") return;`,
-		`event.preventDefault();`,
-		`if (!dialog.open) dialog.showModal();`,
+		"form.addEventListener(\"submit\", function (event) {\n      event.preventDefault();\n      if (!dialog.open) dialog.showModal();",
 		`if (trigger) trigger.focus();`,
 	} {
 		if !strings.Contains(string(js), want) {
