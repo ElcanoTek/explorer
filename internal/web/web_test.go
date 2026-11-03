@@ -516,7 +516,7 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".modal {", ".modal::backdrop {", "background: var(--color-scrim);", ".modal__footer {"} {
+	for _, want := range []string{"dialog:not([open]) {\n  display: none;\n}", ".modal {", ".modal::backdrop {", "background: var(--color-scrim);", ".modal__footer {"} {
 		if !strings.Contains(string(css), want) {
 			t.Errorf("styles.css lacks %q", want)
 		}

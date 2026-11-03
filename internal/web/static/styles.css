@@ -367,6 +367,13 @@ summary:focus-visible,
   transform: none;
 }
 
+/* A browser without <dialog> has no rule hiding a closed one; keep the
+   confirmation out of the header there, where the header form signs out
+   directly. */
+dialog:not([open]) {
+  display: none;
+}
+
 /* Flag's modal (COMPONENTS.md "dialog, alert-dialog", the shadcn-parity
    anatomy): a <dialog class="modal"> opened with showModal(), so the browser
    centres it in the top layer, keeps focus inside and closes it on Escape.
