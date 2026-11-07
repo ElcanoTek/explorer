@@ -213,8 +213,12 @@ explorer_release_fetch() {
     _max="$EXPLORER_RELEASE_MAX_META"
     [[ "$name" == "explorer-linux-${arch}" ]] && _max="$EXPLORER_RELEASE_MAX_BINARY"
     if ! explorer_release_get "$base/$name" "$tmp/$name" "$_max"; then
-      echo "could not download ${name} for ${tag}" >&2
-      rc=1; break
+      if [[ -f "$cache/releases/$tag/$name" ]] && explorer_release_private_dir "$cache/releases/$tag" 2>/dev/null; then
+        cp -f --no-preserve=ownership "$cache/releases/$tag/$name" "$tmp/$name" && chmod 0600 "$tmp/$name" || { rc=1; break; }
+      else
+        echo "could not download ${name} for ${tag}" >&2
+        rc=1; break
+      fi
     fi
   done
   [[ "$rc" == 0 ]] && { explorer_release_verify_blob "$cosign" "$tmp/SHA256SUMS" || rc=1; }
@@ -247,6 +251,9 @@ explorer_release_fetch() {
       chmod 0755 "$dir/explorer-linux-${arch}"
       want="$(awk -v n="explorer-linux-${arch}" '$2==n || $2=="*"n {print $1}' "$tmp/SHA256SUMS")"
       [[ "$(sha256sum "$dir/explorer-linux-${arch}" | awk '{print $1}')" == "$want" ]] && explorer_release_private_dir "$dir" || rc=1
+      if [[ "$rc" == 0 ]] && install -d -m 0700 "$cache/releases/$tag" 2>/dev/null && chmod 0700 "$cache/releases" "$cache/releases/$tag" 2>/dev/null; then
+        cp -f --no-preserve=ownership "$dir"/* "$cache/releases/$tag"/ 2>/dev/null || true
+      fi
     fi
   fi
   rm -rf "$tmp"

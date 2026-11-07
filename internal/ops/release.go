@@ -561,6 +561,11 @@ type Fetched struct {
 // installed and AllowDowngrade is false.
 var ErrDowngrade = errors.New("downgrade refused")
 
+// ErrReleaseAssetsNotFound is returned when a release tag has no published
+// binary assets on the release server (for example, after GitHub prunes
+// release objects beyond the newest 20).
+var ErrReleaseAssetsNotFound = errors.New("signed release assets not found")
+
 // FetchRelease downloads and verifies one signed release before making its
 // binary executable.
 func FetchRelease(ctx context.Context, d *Downloader, v Verifier, o FetchOptions) (*Fetched, error) {
@@ -591,6 +596,9 @@ func FetchRelease(ctx context.Context, d *Downloader, v Verifier, o FetchOptions
 		return nil
 	}
 	if err := get(SumsFile, maxMetaBytes); err != nil {
+		if IsNotFound(err) {
+			return nil, fmt.Errorf("%w: %s has no published release assets (GitHub retains the newest 20 releases; pass --from-source to build an older tag from git): %w", ErrReleaseAssetsNotFound, o.Tag, err)
+		}
 		return nil, err
 	}
 	if err := get(SumsFile+BundleSuffix, maxMetaBytes); err != nil {
@@ -909,5 +917,78 @@ func CheckPrivateDir(dir string) error {
 		if p == "/" || p == filepath.Dir(p) {
 			return nil
 		}
+	}
+}
+
+// CacheReleaseBundle copies the verified release artifacts from srcDir into
+// cacheRoot/<tag> (0700) so the host can roll back to its previously installed
+// release even after GitHub prunes release objects beyond the newest 20.
+func CacheReleaseBundle(cacheRoot string, tag Tag, keepTag, srcDir, arch string) {
+	if cacheRoot == "" || !SupportedArch(arch) {
+		return
+	}
+	dst := filepath.Join(cacheRoot, tag.String())
+	if filepath.Clean(srcDir) == filepath.Clean(dst) {
+		return
+	}
+	if EnsurePrivateDir(cacheRoot) != nil {
+		return
+	}
+	tmp := dst + ".tmp"
+	_ = os.RemoveAll(tmp)
+	if EnsurePrivateDir(tmp) != nil {
+		return
+	}
+	asset := BinaryAsset(arch)
+	for _, name := range []string{SumsFile, SumsFile + BundleSuffix, ManifestFile, asset, asset + BundleSuffix} {
+		data, err := readPrivateFile(srcDir, name)
+		if err != nil {
+			_ = os.RemoveAll(tmp)
+			return
+		}
+		mode := os.FileMode(0o600)
+		if name == asset {
+			mode = 0o700
+		}
+		if err := os.WriteFile(filepath.Join(tmp, name), data, mode); err != nil {
+			_ = os.RemoveAll(tmp)
+			return
+		}
+	}
+	_ = os.RemoveAll(dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.RemoveAll(tmp)
+		return
+	}
+	pruneReleaseCache(cacheRoot, tag.String(), keepTag)
+}
+
+func pruneReleaseCache(cacheRoot, current, previous string) {
+	entries, err := os.ReadDir(cacheRoot)
+	if err != nil {
+		return
+	}
+	var tags []Tag
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if t, err := ParseTag(e.Name()); err == nil {
+			tags = append(tags, t)
+		}
+	}
+	for i := 0; i < len(tags); i++ {
+		for j := i + 1; j < len(tags); j++ {
+			if tags[i].Compare(tags[j]) < 0 {
+				tags[i], tags[j] = tags[j], tags[i]
+			}
+		}
+	}
+	for idx, t := range tags {
+		name := t.String()
+		if name == current || name == previous || idx < 2 {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(cacheRoot, name))
 	}
 }

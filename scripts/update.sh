@@ -129,23 +129,42 @@ git_safe() {
     -c gc.auto=0 -c maintenance.auto=false -C "$SRC_DIR" "$@"
 }
 
-before="${EXPLORER_UPDATE_BASE_SHA:-$(git_safe rev-parse HEAD)}"
+before="${EXPLORER_UPDATE_BASE_SHA:-}"
+if [[ -z $before && -f $APP_DIR/.explorer-revision ]]; then
+  rev="$(tr -d '[:space:]' < "$APP_DIR/.explorer-revision" 2>/dev/null || true)"
+  [[ $rev =~ ^[0-9a-f]{40}$ ]] && before="$rev"
+fi
+[[ -n $before ]] || before="$(git_safe rev-parse HEAD)"
+
 if [[ $no_pull -eq 0 ]]; then
   printf '▸ Fetching release tags from origin\n'
   git_safe fetch --quiet --force --tags origin || die "git fetch --tags origin failed"
 fi
 
 if [[ -z $release_tag ]]; then
-  if [[ $no_pull -eq 1 ]]; then
+  if [[ $no_pull -eq 1 && -z ${EXPLORER_UPDATE_BASE_SHA:-} ]]; then
     release_tag="$("$SRC_DIR/scripts/version.sh" released-at HEAD)"
-    [[ -n $release_tag ]] || die "HEAD is not at a release tag; pass --tag vYYYY.MM.DD.N or --from-source"
-  else
+  fi
+  if [[ -z $release_tag ]]; then
+    if [[ $no_pull -eq 1 ]]; then
+      printf '▸ Fetching release tags from origin\n'
+      git_safe fetch --quiet --force --tags origin || die "git fetch --tags origin failed"
+    fi
     release_tag="$(explorer_release_latest_tag)" || die "could not resolve the latest published Explorer release"
   fi
 fi
 
-commit="$(git_safe rev-parse "refs/tags/${release_tag}^{commit}" 2>/dev/null)" \
-  || die "release tag ${release_tag} does not exist in $SRC_DIR"
+if ! commit="$(git_safe rev-parse --verify --quiet "refs/tags/${release_tag}^{commit}")"; then
+  git_safe fetch --quiet --force --tags origin || die "git fetch --tags origin failed"
+  commit="$(git_safe rev-parse --verify --quiet "refs/tags/${release_tag}^{commit}")" \
+    || die "release tag ${release_tag} does not exist in $SRC_DIR"
+fi
+
+if [[ -z ${EXPLORER_UPDATE_BASE_SHA:-} && ! -f $APP_DIR/.explorer-revision ]]; then
+  if [[ $before != "$commit" ]] && git_safe merge-base --is-ancestor "$commit" "$before" 2>/dev/null; then
+    before="$commit"
+  fi
+fi
 
 printf '▸ Downloading and verifying signed release %s (%s)\n' "$release_tag" "${commit:0:12}"
 verified_bin="$(explorer_release_fetch "$SRC_DIR" "$release_tag" "$staging/release" "$COSIGN_CACHE" "$commit")" \

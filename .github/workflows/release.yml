@@ -20,7 +20,10 @@
 #            and SHA256SUMS, signs explorer-linux-amd64, explorer-linux-arm64
 #            and SHA256SUMS with keyless Sigstore OIDC, verifies every signature
 #            against the release workflow identity, creates the GitHub Release,
-#            and prunes superseded releases beyond the newest 20 (keeping tags).
+#            and retains the newest 20 release objects as the remote signed
+#            rollback window (older git tags remain for version comparison,
+#            audit history, and --from-source builds, while hosts also cache
+#            their own installed release bundles locally).
 name: Release
 
 on:
@@ -127,17 +130,6 @@ jobs:
             fi
           fi
 
-          # Superseded by a workflow or release-helper change on main: GitHub
-          # refuses a GITHUB_TOKEN push of a ref whose .github/workflows differ
-          # from the default branch tip without `workflows` permission, and
-          # release helpers / cosign.lock must match the certified commit.
-          tip="$(git rev-parse HEAD)"
-          if [ "${HEAD_SHA}" != "${tip}" ] && ! git diff --quiet "${HEAD_SHA}" "${tip}" -- .github/workflows scripts cosign.lock internal/ops/cosign.lock; then
-            echo "::notice::${HEAD_SHA} is superseded: main is at ${tip}, whose workflow or release helper files differ. ${tip}'s own release covers this commit; not tagging it."
-            echo "released=false" >>"${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
           # Pin the working tree to the CI-certified commit before running any
           # helper scripts from the repository.
           git checkout --detach --quiet "${HEAD_SHA}"
@@ -198,13 +190,19 @@ jobs:
             case "${kind}" in
               contention) ;;
               workflow-permission)
+                git_remote fetch --force --tags origin || true
+                check_superseded_by_descendant
                 tip="$(git_remote ls-remote origin HEAD | cut -f1)"
                 if [ -n "${tip}" ] && [ "${tip}" != "${HEAD_SHA}" ]; then
-                  echo "::notice::pushing ${tag} was refused because main (now ${tip}) changed the workflow files after ${HEAD_SHA}, so ${HEAD_SHA} is superseded; ${tip}'s release covers it. Not tagging it."
-                  echo "released=false" >>"${GITHUB_OUTPUT}"
-                  exit 0
+                  tip_ci_ok="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${tip}&status=completed&per_page=20" \
+                    --jq '[.workflow_runs[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | length' 2>/dev/null || echo 0)"
+                  if [ "${tip_ci_ok:-0}" -ge 1 ]; then
+                    echo "::notice::pushing ${tag} was refused because certified descendant ${tip} on main changed the workflow files after ${HEAD_SHA}; ${tip}'s release covers it. Not tagging it."
+                    echo "released=false" >>"${GITHUB_OUTPUT}"
+                    exit 0
+                  fi
                 fi
-                echo "::error::pushing ${tag} was refused for missing workflows permission although ${HEAD_SHA} is main's tip. Not retrying."
+                echo "::error::pushing ${tag} was refused for missing workflows permission and no certified descendant release exists yet."
                 exit 1
                 ;;
               *)
@@ -469,8 +467,17 @@ jobs:
             fi
           fi
 
-          # Prune superseded release objects beyond the newest 20 (tags are kept).
-          RETAIN=20
+          # Retain the newest RETAIN (20) GitHub Release objects as the remote
+          # signed-binary rollback horizon (`explorer update --tag <older>
+          # --allow-downgrade`). Hosts also cache their installed release
+          # bundles locally under /var/cache/explorer-build/cosign/releases/<tag>
+          # so a host can always roll back to its previously installed release
+          # even after more than RETAIN releases have been published. Older git
+          # tags are intentionally kept (`gh release delete` without
+          # `--cleanup-tag`) so boxes upgrading from an older release still
+          # resolve their current tag, same-day ordinals are never reused, and
+          # older tags can still be built with `--from-source`.
+          RETAIN="${RELEASE_RETAIN:-20}"
           prune_failed=0
           for _pass in 1 2 3 4 5; do
             if ! superseded="$(gh release list --limit 200 --exclude-drafts --json tagName --jq '.[].tagName' \

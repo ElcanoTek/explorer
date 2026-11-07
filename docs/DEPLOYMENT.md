@@ -580,9 +580,17 @@ release tag with `--allow-downgrade`:
 sudo explorer update --tag v2026.11.07.1 --allow-downgrade
 ```
 
+GitHub Releases retains signed binary artifacts for the newest 20 releases,
+and each host also caches its installed release bundles in
+`/var/cache/explorer-build/cosign/releases/<tag>` so rolling back to the
+previously installed release on that box always works without Go. To roll back
+to an older tag outside the 20-release retention window that is not cached on
+the host, add `--from-source`.
+
 Or check out a specific commit in `/opt/explorer-src` and run `explorer rebuild`
-(which installs the signed release when `HEAD` is at a release tag, or builds
-from source if `HEAD` is an untagged commit):
+(which installs the signed release when `HEAD` is at a published or cached
+release tag, and falls back to building from source when `HEAD` is an untagged
+commit or an older tag whose release assets were pruned):
 
 ```bash
 cd /opt/explorer-src

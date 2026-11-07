@@ -149,15 +149,24 @@ func runUpdate(ctx context.Context, u *ui, r Runner, p Paths, rebuild bool, args
 	if err != nil {
 		return err
 	}
+	autoRebuildTag := false
 	if rebuild && !o.modeExplicit && o.tag == "" {
 		if t, ok := releaseTagAt(ctx, r, p.SrcDir, before); ok {
 			o.tag = t.String()
+			autoRebuildTag = true
 		} else {
 			o.fromSource = true
 		}
 	}
 	if !o.fromSource {
-		return runSignedReleaseUpdate(ctx, u, r, p, lock, o, before, stdin)
+		err := runSignedReleaseUpdate(ctx, u, r, p, lock, o, before, stdin)
+		if err != nil && autoRebuildTag && errors.Is(err, ErrReleaseAssetsNotFound) {
+			u.warnf("signed release assets for %s were pruned; falling back to --from-source", o.tag)
+			o.fromSource = true
+			o.tag = ""
+		} else {
+			return err
+		}
 	}
 
 	after := before
@@ -336,9 +345,16 @@ func resolveReleaseTarget(ctx context.Context, u *ui, r Runner, p Paths, o updat
 		}
 	case o.noPull:
 		var ok bool
-		targetTag, ok = releaseTagAt(ctx, r, p.SrcDir, headSHA)
+		if o.baseSHA == "" {
+			targetTag, ok = releaseTagAt(ctx, r, p.SrcDir, headSHA)
+		}
 		if !ok {
-			return Tag{}, "", fmt.Errorf("HEAD (%s) is not at a release tag (pass --tag vYYYY.MM.DD.N or --from-source)", short(headSHA))
+			_, _ = gitOut(ctx, r, p.SrcDir, "fetch", "--quiet", "--force", "--tags", "origin")
+			var lerr error
+			targetTag, lerr = NewDownloader().LatestTag(ctx)
+			if lerr != nil {
+				return Tag{}, "", fmt.Errorf("HEAD (%s) is not at a release tag (pass --tag vYYYY.MM.DD.N or --from-source)", short(headSHA))
+			}
 		}
 	default:
 		targetTag, err = NewDownloader().LatestTag(ctx)
@@ -349,7 +365,7 @@ func resolveReleaseTarget(ctx context.Context, u *ui, r Runner, p Paths, o updat
 
 	tagRef := "refs/tags/" + targetTag.String()
 	after, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
-	if err != nil && !o.noPull {
+	if err != nil {
 		if _, ferr := gitOut(ctx, r, p.SrcDir, "fetch", "--quiet", "--force", "origin", tagRef+":"+tagRef); ferr == nil {
 			after, err = gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
 		}
@@ -436,6 +452,7 @@ func stageSignedRelease(ctx context.Context, p Paths, targetTag Tag, commit, cur
 			return err
 		}
 		defer rel.BinaryFile.Close()
+		CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, preStaged, arch)
 		if err := copyFromFD(rel.BinaryFile, dstBinary, rel.BinarySHA256); err != nil {
 			return err
 		}
@@ -452,8 +469,19 @@ func stageSignedRelease(ctx context.Context, p Paths, targetTag Tag, commit, cur
 		Commit:         commit,
 	})
 	if err != nil {
+		if errors.Is(err, ErrReleaseAssetsNotFound) {
+			cachedDir := filepath.Join(p.ReleaseCacheDir(), targetTag.String())
+			if cachedRel, cerr := LoadVerifiedRelease(ctx, verifier, cachedDir, targetTag, arch, commit); cerr == nil {
+				defer cachedRel.BinaryFile.Close()
+				if err := copyFromFD(cachedRel.BinaryFile, dstBinary, cachedRel.BinarySHA256); err != nil {
+					return err
+				}
+				return os.Chmod(dstBinary, 0o755) //nolint:gosec // G302: staged binary is executed for __apply-update.
+			}
+		}
 		return err
 	}
+	CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, relDir, arch)
 	return os.Rename(rel.Binary, dstBinary)
 }
 

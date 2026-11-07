@@ -115,6 +115,14 @@ func (p Paths) InstalledReleaseReceipt() string {
 	return filepath.Join(p.CosignCacheDir(), "installed-release")
 }
 
+// ReleaseCacheDir holds locally cached verified release bundles (the current
+// and previous installed releases on this host) so rolling back to the
+// previously installed release works even after GitHub prunes release objects
+// beyond the newest 20.
+func (p Paths) ReleaseCacheDir() string {
+	return filepath.Join(p.CosignCacheDir(), "releases")
+}
+
 // Legacy units of the Python era, removed by update.
 func (p Paths) legacyUnits() []string {
 	return []string{

@@ -508,6 +508,22 @@ func TestResolveAndStageSignedReleaseWithoutGo(t *testing.T) {
 		t.Fatalf("allowDowngrade from untagged source commit failed: %v %s", err, gotAfter)
 	}
 
+	// Legacy bridge handoff (o.noPull=true with o.baseSHA set when HEAD moved to
+	// an untagged commit ahead of the latest published release) resolves the
+	// latest published release instead of failing.
+	if gotTag, gotAfter, err := resolveReleaseTarget(context.Background(), u, r, p, updateOpts{yes: true, noPull: true, baseSHA: commit2}, commit2, untaggedTip, "", strings.NewReader("")); err != nil || gotTag != targetTag || gotAfter != commit2 {
+		t.Fatalf("bridge handoff on untagged HEAD failed: tag=%s after=%s err=%v", gotTag, gotAfter, err)
+	}
+
+	// Cached release bundle allows signed rollback even after remote release
+	// assets are pruned (404).
+	t.Setenv("EXPLORER_RELEASE_BASE_URL", srv.URL+"/pruned")
+	dstCached := filepath.Join(staging, "explorer-from-cache")
+	if err := stageSignedRelease(context.Background(), p, targetTag, after, "v2026.11.07.3", true, staging, dstCached); err != nil {
+		t.Fatalf("stageSignedRelease from local release cache failed: %v", err)
+	}
+	t.Setenv("EXPLORER_RELEASE_BASE_URL", srv.URL)
+
 	// Same-revision source build (before == after without matching release receipt)
 	// does not no-op until the verified release binary receipt matches.
 	if err := os.MkdirAll(filepath.Dir(p.BinPath()), 0o755); err != nil {
@@ -575,6 +591,15 @@ func TestVersionAndReleaseScriptsContract(t *testing.T) {
 	permCmd.Env = append(os.Environ(), "RETRY_BASE_DELAY=0", "RETRY_ATTEMPTS=3")
 	if out, err := permCmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "retrying cannot fix") {
 		t.Fatalf("expected permanent error not to retry: %v\n%s", err, out)
+	}
+
+	// install.sh does not unconditionally install golang.
+	installSh, err := os.ReadFile(filepath.Join("..", "..", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(installSh, []byte("golang")) {
+		t.Fatal("install.sh still installs golang on the default artifact path")
 	}
 
 	// .github/workflows/release.yml pins SignerIdentity and cosign.lock.

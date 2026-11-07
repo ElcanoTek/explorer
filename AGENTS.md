@@ -66,9 +66,12 @@ date-partitioned search, ranged header reads, message view, attachments.
 (`deploy/systemd/explorer.service`); every other verb is the operator CLI
 installed at `/usr/local/bin/explorer` (`doctor`, `update`, `rebuild`,
 `access`, `env`, `tls`, `provision`, `bootstrap`, service control).
-`install.sh` → `scripts/bootstrap.sh` builds the binary from the root-owned
-checkout and hands over to `explorer bootstrap` (which also removes Cockpit
-and makes SSH key-only); `explorer update` fetches, builds a staged binary
+`install.sh` → `scripts/bootstrap.sh` verifies the root-owned checkout,
+downloads and verifies the keyless-signed release binary with the pinned
+`cosign` in `cosign.lock` (or compiles from source when `--from-source` is
+passed), and hands over to `explorer bootstrap` (which also removes Cockpit
+and makes SSH key-only); `explorer update` fetches release tags, verifies a
+staged signed release binary (or builds from source with `--from-source`),
 and lets that new binary perform the swap, health check and rollback.
 Licensed BSL 1.1; every first-party source file carries the SPDX header
 (CONTRIBUTING.md).
