@@ -72,6 +72,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Create and push the next date-based tag
         id: tag
@@ -89,6 +90,10 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git_auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          git_remote() {
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${git_auth}" "$@"
+          }
 
           if [ "${EVENT_NAME}" = "workflow_run" ]; then
             HEAD_SHA="${WORKFLOW_RUN_SHA}"
@@ -122,6 +127,21 @@ jobs:
             fi
           fi
 
+          # Superseded by a workflow or release-helper change on main: GitHub
+          # refuses a GITHUB_TOKEN push of a ref whose .github/workflows differ
+          # from the default branch tip without `workflows` permission, and
+          # release helpers / cosign.lock must match the certified commit.
+          tip="$(git rev-parse HEAD)"
+          if [ "${HEAD_SHA}" != "${tip}" ] && ! git diff --quiet "${HEAD_SHA}" "${tip}" -- .github/workflows scripts cosign.lock internal/ops/cosign.lock; then
+            echo "::notice::${HEAD_SHA} is superseded: main is at ${tip}, whose workflow or release helper files differ. ${tip}'s own release covers this commit; not tagging it."
+            echo "released=false" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Pin the working tree to the CI-certified commit before running any
+          # helper scripts from the repository.
+          git checkout --detach --quiet "${HEAD_SHA}"
+
           # Idempotence: a re-run for a commit that already has a release tag
           # reuses that tag instead of minting a second ordinal.
           if existing="$(scripts/version.sh released-at "${HEAD_SHA}")" && [ -n "${existing}" ]; then
@@ -134,15 +154,21 @@ jobs:
             exit 0
           fi
 
-          # Superseded by a workflow change on main: GitHub refuses a
-          # GITHUB_TOKEN push of a ref whose .github/workflows differ from the
-          # default branch tip without `workflows` permission.
-          tip="$(git rev-parse HEAD)"
-          if [ "${HEAD_SHA}" != "${tip}" ] && ! git diff --quiet "${HEAD_SHA}" "${tip}" -- .github/workflows; then
-            echo "::notice::${HEAD_SHA} is superseded: main is at ${tip}, whose workflow files differ, so a release tag on ${HEAD_SHA} cannot be pushed with this token. ${tip}'s own release covers this commit; not tagging it."
-            echo "released=false" >>"${GITHUB_OUTPUT}"
-            exit 0
-          fi
+          # Commit-order preservation: if a descendant commit on main already
+          # carries a release tag, do not mint a newer ordinal for this older
+          # ancestor commit.
+          check_superseded_by_descendant() {
+            local rel_tag
+            while IFS= read -r rel_tag; do
+              [ -n "${rel_tag}" ] || continue
+              if git merge-base --is-ancestor "${HEAD_SHA}" "refs/tags/${rel_tag}^{commit}" 2>/dev/null; then
+                echo "::notice::${HEAD_SHA} is already superseded by descendant release ${rel_tag}; skipping out-of-order tag assignment."
+                echo "released=false" >>"${GITHUB_OUTPUT}"
+                exit 0
+              fi
+            done < <(git tag -l 'v*' | scripts/version.sh filter)
+          }
+          check_superseded_by_descendant
 
           MAX_ATTEMPTS="${TAG_MAX_ATTEMPTS:-40}"
           attempt=0
@@ -157,7 +183,7 @@ jobs:
           CI: ${RUN_URL}"
 
             push_log="$(mktemp)"
-            if git push origin "refs/tags/${tag}" >"${push_log}" 2>&1; then
+            if git_remote push origin "refs/tags/${tag}" >"${push_log}" 2>&1; then
               cat "${push_log}"
               {
                 echo "tag=${tag}"
@@ -172,7 +198,7 @@ jobs:
             case "${kind}" in
               contention) ;;
               workflow-permission)
-                tip="$(git ls-remote origin HEAD | cut -f1)"
+                tip="$(git_remote ls-remote origin HEAD | cut -f1)"
                 if [ -n "${tip}" ] && [ "${tip}" != "${HEAD_SHA}" ]; then
                   echo "::notice::pushing ${tag} was refused because main (now ${tip}) changed the workflow files after ${HEAD_SHA}, so ${HEAD_SHA} is superseded; ${tip}'s release covers it. Not tagging it."
                   echo "released=false" >>"${GITHUB_OUTPUT}"
@@ -193,7 +219,7 @@ jobs:
             backoff=$(( (attempt < 10 ? attempt : 10) + RANDOM % 5 ))
             echo "::warning::pushing ${tag} was rejected (attempt ${attempt}/${MAX_ATTEMPTS}); refetching tags and retrying in ${backoff}s"
             sleep "${backoff}"
-            git fetch --force --tags origin || echo "::warning::refetching tags failed; retrying"
+            git_remote fetch --force --tags origin || echo "::warning::refetching tags failed; retrying"
             if existing="$(scripts/version.sh released-at "${HEAD_SHA}")" && [ -n "${existing}" ]; then
               echo "::notice::${HEAD_SHA} was tagged ${existing} meanwhile."
               {
@@ -203,6 +229,7 @@ jobs:
               } >>"${GITHUB_OUTPUT}"
               exit 0
             fi
+            check_superseded_by_descendant
           done
 
       - name: Releases are immutable — skip a published tag, refuse a partial one
@@ -331,6 +358,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      - name: Pin working tree to the CI-certified release commit
+        run: |
+          set -euo pipefail
+          tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          if [ "${tag_sha}" != "${HEAD_SHA}" ]; then
+            echo "::error::tag ${TAG} points to ${tag_sha}, not certified commit ${HEAD_SHA}."
+            exit 1
+          fi
+          git checkout --detach --quiet "${HEAD_SHA}"
 
       - name: Download the builds
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

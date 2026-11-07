@@ -643,23 +643,53 @@ func (d *doctor) git(ctx context.Context, args ...string) (int, string) {
 	return res.Code, strings.TrimSpace(res.Stdout)
 }
 
-func (d *doctor) detachedReleaseTag(ctx context.Context, branch string) string {
+func (d *doctor) detachedReleaseTag(ctx context.Context, branch string) (Tag, bool) {
 	if branch != "HEAD" {
-		return ""
+		return Tag{}, false
 	}
 	cTag, tags := d.git(ctx, "tag", "--points-at", "HEAD")
 	if cTag != 0 || tags == "" {
-		return ""
+		return Tag{}, false
 	}
 	var best Tag
-	out := ""
+	found := false
 	for _, line := range strings.Split(tags, "\n") {
-		if t, err := ParseTag(line); err == nil && (out == "" || t.Compare(best) > 0) {
+		if t, err := ParseTag(line); err == nil && (!found || t.Compare(best) > 0) {
 			best = t
-			out = t.String()
+			found = true
 		}
 	}
-	return out
+	return best, found
+}
+
+func (d *doctor) checkReleaseCheckout(ctx context.Context, curTag Tag) bool {
+	codeRemote, remoteTags := d.git(ctx, "ls-remote", "--tags", "origin", "v*")
+	if codeRemote != 0 {
+		d.add("branch", false, "", "could not reach origin — cannot compare with upstream; check network or remote credentials", true)
+		return true
+	}
+	var latestRemote Tag
+	hasRemote := false
+	for _, line := range strings.Split(remoteTags, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ref := strings.TrimSuffix(strings.TrimPrefix(fields[1], "refs/tags/"), "^{}")
+		if t, err := ParseTag(ref); err == nil && (!hasRemote || t.Compare(latestRemote) > 0) {
+			latestRemote = t
+			hasRemote = true
+		}
+	}
+	if !hasRemote {
+		return false
+	}
+	if curTag.Compare(latestRemote) < 0 {
+		d.add("branch", false, "", fmt.Sprintf("checkout is on release %s, behind latest release %s — run explorer update", curTag, latestRemote), true)
+		return true
+	}
+	d.add("branch", true, fmt.Sprintf("on release %s, up to date with origin", curTag), "", false)
+	return true
 }
 
 // checkCheckout compares the checkout with the LIVE remote using ls-remote:
@@ -674,9 +704,12 @@ func (d *doctor) checkCheckout(ctx context.Context) {
 	code, dirty := d.git(ctx, "status", "--porcelain")
 	d.add("checkout", code == 0 && dirty == "", "clean", "Resolve local source changes before explorer update", false)
 	code, branch := d.git(ctx, "rev-parse", "--abbrev-ref", "HEAD")
-	releaseTag := d.detachedReleaseTag(ctx, branch)
-	if code == 0 && branch != "main" && releaseTag == "" {
+	releaseTag, isReleaseTag := d.detachedReleaseTag(ctx, branch)
+	if code == 0 && branch != "main" && !isReleaseTag {
 		d.add("branch", false, "", fmt.Sprintf("checkout is on '%s', not main — run explorer update or: git -C %s checkout main", branch, d.p.SrcDir), true)
+		return
+	}
+	if isReleaseTag && d.checkReleaseCheckout(ctx, releaseTag) {
 		return
 	}
 	codeHead, head := d.git(ctx, "rev-parse", "HEAD")
@@ -691,8 +724,8 @@ func (d *doctor) checkCheckout(ctx context.Context) {
 	}
 	if head == remoteSHA {
 		detail := "on main, up to date with origin"
-		if releaseTag != "" {
-			detail = "on release " + releaseTag + ", up to date with origin"
+		if isReleaseTag {
+			detail = "on release " + releaseTag.String() + ", up to date with origin"
 		}
 		d.add("branch", true, detail, "", false)
 		return

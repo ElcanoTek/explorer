@@ -324,17 +324,17 @@ func parseBootstrapArgs(p Paths, args []string) (bootstrapOpts, error) {
 	return o, nil
 }
 
-func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o bootstrapOpts, staging, staged string) (string, error) {
+func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o bootstrapOpts, staging, staged string) (string, Tag, error) {
 	if o.fromSource {
 		u.stepf("3/7  Building the Explorer binary")
 		revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "HEAD^{commit}")
 		if err != nil {
-			return "", fmt.Errorf("could not resolve the installed source revision: %w", err)
+			return "", Tag{}, fmt.Errorf("could not resolve the installed source revision: %w", err)
 		}
 		if err := buildBinary(ctx, u, r, p, p.SrcDir, staged, revision); err != nil {
-			return "", fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
+			return "", Tag{}, fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
 		}
-		return revision, nil
+		return revision, Tag{}, nil
 	}
 	u.stepf("3/7  Verifying the signed Explorer release binary")
 	var targetTag Tag
@@ -345,7 +345,7 @@ func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o boots
 		targetTag, err = NewDownloader().LatestTag(ctx)
 	}
 	if err != nil {
-		return "", fmt.Errorf("resolve release tag: %w", err)
+		return "", Tag{}, fmt.Errorf("resolve release tag: %w", err)
 	}
 	tagRef := "refs/tags/" + targetTag.String()
 	revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
@@ -355,16 +355,16 @@ func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o boots
 		}
 	}
 	if err != nil || revision == "" {
-		return "", fmt.Errorf("release tag %s was not found in %s", targetTag, p.SrcDir)
+		return "", Tag{}, fmt.Errorf("release tag %s was not found in %s", targetTag, p.SrcDir)
 	}
 	if err := stageSignedRelease(ctx, p, targetTag, revision, "", true, staging, staged); err != nil {
-		return "", fmt.Errorf("%w\nrelease verification failed — the installed service was not changed", err)
+		return "", Tag{}, fmt.Errorf("%w\nrelease verification failed — the installed service was not changed", err)
 	}
 	if err := checkoutReleaseCommit(ctx, r, p.SrcDir, revision); err != nil {
-		return "", err
+		return "", Tag{}, err
 	}
 	u.okf("verified signed release %s (%s)", targetTag, short(revision))
-	return revision, nil
+	return revision, targetTag, nil
 }
 
 func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) error {
@@ -416,7 +416,7 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	}
 	defer os.RemoveAll(staging)
 	staged := filepath.Join(staging, "explorer")
-	revision, err := stageBootstrapBinary(ctx, u, r, p, o, staging, staged)
+	revision, targetTag, err := stageBootstrapBinary(ctx, u, r, p, o, staging, staged)
 	if err != nil {
 		return err
 	}
@@ -433,6 +433,11 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	}
 	if err := installApp(p, acct, staged, revision); err != nil {
 		return err
+	}
+	if o.fromSource {
+		removeInstalledRelease(p)
+	} else {
+		_ = writeInstalledRelease(p, targetTag, revision, p.BinPath())
 	}
 	u.okf("binary installed at %s (%s)", p.BinPath(), short(revision))
 

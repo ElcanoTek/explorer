@@ -35,11 +35,13 @@ rather than in `/tmp`, and runs `restorecon` after swapping files in). It
 will not run on Debian/Ubuntu without translating the package step; see
 [Manual install](#manual-install-without-bootstrapsh).
 
-**Packages** (installed for you by bootstrap): `git` and `golang`. The box
-builds Explorer from its own verified checkout. Fedora's `golang` is usually
-older than the release `go.mod` pins; the build sets `GOTOOLCHAIN=auto`, so
-Go downloads the pinned toolchain (checksum-verified against the Go
-checksum database) into Explorer's root-owned build cache.
+**Packages** (installed for you by bootstrap): `git`, `curl`, and
+`ca-certificates`. By default, `bootstrap` and `explorer update` download and
+verify the latest keyless Sigstore-signed release binary (`vYYYY.MM.DD.N`)
+using the `cosign` digest pinned in `cosign.lock` — no Go toolchain is needed
+on the box. Pass `--from-source` (or `EXPLORER_FROM_SOURCE=1`) to install
+`golang` and compile from the verified checkout instead (with `GOTOOLCHAIN=auto`
+using Explorer's root-owned build cache).
 
 **You also need:**
 
@@ -85,9 +87,13 @@ knobs, custom keys and the `explorer provision` block. In order it:
    when `sshd -T` still reports `passwordauthentication yes` or
    `permitrootlogin yes`.
 2. Creates the `explorer` system user and `/opt/explorer`.
-3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch`).
-4. Builds the binary from that checkout (`scripts/bootstrap.sh` does this
-   before handing over to `explorer bootstrap`) and installs it as
+3. Seeds `/opt/explorer-src` (with `.git`, so updates can `git fetch --tags`).
+4. Downloads and verifies the latest signed release binary (`SHA256SUMS` +
+   `.sigstore.json`, `release.json` matching the tag and commit, and
+   `explorer-linux-<arch>` + `.sigstore.json` verified against
+   `.github/workflows/release.yml@refs/heads/main` with the pinned `cosign` in
+   `cosign.lock`; or builds from source when `--from-source` is passed), checks
+   out the release commit in `/opt/explorer-src`, and installs the binary as
    `/opt/explorer/bin/explorer`, with the commit it was built from recorded
    in `/opt/explorer/.explorer-revision`. Anything else in `/opt/explorer`
    that is not the env files (a Python-era install's source copy and
@@ -177,7 +183,7 @@ present, bootstrap silently skips this step.
 | `/opt/explorer/bin/explorer` | `root:root`, `0755` | The service binary. Templates, static assets, the systemd unit, the Caddy template and the motd are compiled into it. |
 | `/opt/explorer/.explorer-revision` | `root:root`, `0644` | Commit the installed binary was built from; prevents a rolled-back install being mistaken for current. |
 | `/opt/explorer/.env` | `explorer:explorer`, `0600` | Configuration and secrets. Never overwritten by an update. |
-| `/var/cache/explorer-build` | `root:root`, `0700` | Go module, build and toolchain cache used by `bootstrap`/`update`. |
+| `/var/cache/explorer-build` | `root:root`, `0700` | Pinned `cosign` cache (`cosign/`, plus `installed-release` receipt) and optional `--from-source` Go build/module/toolchain cache. |
 | `/var/lib/explorer/access.db` | `explorer:explorer`, `0600` | Central-mode email access list and app-scoped session hashes. Contains no passwords. |
 | `/etc/systemd/system/explorer.service` | root | Unit, reinstalled on every update. |
 | `/etc/tmpfiles.d/explorer.conf` | root | Creates `/var/lib/explorer` on boot. |
@@ -520,7 +526,9 @@ hand.
 
 ```bash
 sudo explorer update                        # shows incoming commits, asks to confirm
-sudo explorer update --yes                  # unattended
+sudo explorer update --yes                  # unattended (latest signed release)
+sudo explorer update --tag v2026.11.07.1    # install a specific signed release
+sudo explorer update --from-source          # compile from /opt/explorer-src instead
 echo y | sudo explorer update               # also works over a non-interactive ssh
 sudo EXPLORER_UPDATE_YES=1 explorer update
 ```
@@ -532,18 +540,25 @@ root-owned, not group/other-writable and symlink-free, and takes
 bootstrap, update or provision from a checkout writable by the service
 account.
 
-1. `git fetch` in `/opt/explorer-src`, resolve the target branch (following
-   the attached branch or defaulting to `origin/HEAD` if HEAD is detached),
-   print the incoming commits, and confirm. Fast-forward only — a diverged
-   branch aborts rather than merging. HEAD is never detached.
+1. By default (signed-release mode), `git fetch --force --tags origin` in
+   `/opt/explorer-src`, resolve the latest published release tag (`vYYYY.MM.DD.N`,
+   or the `--tag` requested), refuse a downgrade unless `--allow-downgrade` is
+   passed, print the incoming commits, and confirm. (With `--from-source` /
+   `EXPLORER_FROM_SOURCE=1`, it instead fast-forwards the tracked branch from
+   `origin`.)
 2. Parse `.env.shared` and `.env` as data (never shell source) and check that
    `AUTH_SIGNING_PUBKEY` is present; on a terminal it offers to add it.
-3. Build the new binary from the verified checkout into
-   `/opt/.explorer-build.XXXXXX` — beside `/opt/explorer`, not in `/tmp`, so
-   no `tmp_t` SELinux label follows it — with a clean environment
-   (`CGO_ENABLED=0`, `-trimpath`, `-mod=readonly`, root-owned caches, the
-   commit stamped in). A failed build aborts here; the live install is
-   untouched.
+3. Stage the new binary into a root-private staging directory beside
+   `/opt/explorer` (not in `/tmp`, so no `tmp_t` SELinux label follows it):
+   in default mode it ensures the pinned `cosign` binary (`cosign.lock`) in
+   `/var/cache/explorer-build/cosign`, downloads and verifies `SHA256SUMS` (+
+   `.sigstore.json`), `release.json` (matching the tag and commit), and
+   `explorer-linux-<arch>` (+ `.sigstore.json`) against the release workflow's
+   Sigstore OIDC identity, and checks out the release commit in
+   `/opt/explorer-src` (updating `main` when the tag is at `origin/main`, or
+   detaching at the release tag). With `--from-source`, it compiles the binary
+   from `/opt/explorer-src` with `CGO_ENABLED=0 -trimpath -mod=readonly`. Any
+   verification or build failure aborts here; the live install is untouched.
 4. Hand over to the **new** binary's apply step, so a release's own update
    logic always performs its swap. It snapshots the installed binary, unit,
    tmpfiles rule, CLI and MOTD in a root-private directory, stops the
@@ -558,9 +573,16 @@ account.
 
 ### Rollback
 
-If the new revision starts but misbehaves, check out the previous commit and
-rebuild **without** fetching (`explorer update` would fast-forward you
-straight back to the tip):
+If the new release starts but misbehaves, roll back to a previous signed
+release tag with `--allow-downgrade`:
+
+```bash
+sudo explorer update --tag v2026.11.07.1 --allow-downgrade
+```
+
+Or check out a specific commit in `/opt/explorer-src` and run `explorer rebuild`
+(which installs the signed release when `HEAD` is at a release tag, or builds
+from source if `HEAD` is an untagged commit):
 
 ```bash
 cd /opt/explorer-src
@@ -774,10 +796,12 @@ echo y | sudo explorer update
 ```
 
 The Python-era `explorer update` fetches the new commits, sees that
-`scripts/update.sh` changed, and re-runs the new one. That script installs
-`golang` if needed, builds the binary from the verified checkout and hands
-over to `explorer update` in rebuild mode, which swaps it in exactly as
-above. On top of the normal update it:
+`scripts/update.sh` changed, and re-runs the new one. By default, that script
+downloads and verifies the latest signed release binary with the pinned
+`cosign` in `cosign.lock` (or, with `--from-source` / `EXPLORER_FROM_SOURCE=1`,
+installs `golang` and compiles from the verified checkout) and hands over to
+`explorer update`, which swaps it in exactly as above. On top of the normal
+update it:
 
 - moves the old Python tree (`app/`, `.venv`, `.tmp`, scripts) out of
   `/opt/explorer` — into the rollback snapshot while the update runs, then

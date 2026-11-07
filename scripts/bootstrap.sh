@@ -27,7 +27,7 @@ if [[ ! -t 0 && -t 1 ]]; then exec </dev/tty; fi
 
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="${APP_DIR:-/opt/explorer}"
-COSIGN_CACHE="${EXPLORER_COSIGN_CACHE:-/var/cache/explorer-cosign}"
+COSIGN_CACHE="${EXPLORER_COSIGN_CACHE:-${EXPLORER_BUILD_CACHE:-/var/cache/explorer-build}/cosign}"
 
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 
@@ -138,5 +138,6 @@ git_safe checkout --detach --quiet "$commit" || die "could not check out ${relea
 require_trusted_checkout "$SRC_DIR" \
   || die "the checked-out release tree at $SRC_DIR violates the root ownership policy"
 
-EXPLORER_RELEASE_STAGING="$staging/release" \
+EXPLORER_COSIGN_CACHE="$COSIGN_CACHE" \
+  EXPLORER_RELEASE_STAGING="$staging/release" \
   "$verified_bin" bootstrap --source "$SRC_DIR" --tag "$release_tag" "${forward_args[@]}"

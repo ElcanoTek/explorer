@@ -26,7 +26,7 @@ set -euo pipefail
 
 SRC_DIR="${SRC_DIR:-${EXPLORER_SRC_DIR:-/opt/explorer-src}}"
 APP_DIR="${APP_DIR:-${EXPLORER_APP_DIR:-/opt/explorer}}"
-COSIGN_CACHE="${EXPLORER_COSIGN_CACHE:-/var/cache/explorer-cosign}"
+COSIGN_CACHE="${EXPLORER_COSIGN_CACHE:-${EXPLORER_BUILD_CACHE:-/var/cache/explorer-build}/cosign}"
 
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 
@@ -156,6 +156,7 @@ require_trusted_checkout "$SRC_DIR" \
   || die "the checked-out release tree at $SRC_DIR violates the root ownership policy"
 
 EXPLORER_SRC_DIR="$SRC_DIR" EXPLORER_APP_DIR="$APP_DIR" \
+  EXPLORER_COSIGN_CACHE="$COSIGN_CACHE" \
   EXPLORER_UPDATE_BASE_SHA="$before" \
   EXPLORER_RELEASE_STAGING="$staging/release" \
   "$verified_bin" update --no-pull --tag "$release_tag" "${forward_args[@]}"

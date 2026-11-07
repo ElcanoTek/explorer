@@ -109,6 +109,12 @@ func (p Paths) CosignCacheDir() string {
 	return filepath.Join(p.BuildCache, "cosign")
 }
 
+// InstalledReleaseReceipt records the tag, commit, and binary SHA-256 of the
+// currently installed verified release binary.
+func (p Paths) InstalledReleaseReceipt() string {
+	return filepath.Join(p.CosignCacheDir(), "installed-release")
+}
+
 // Legacy units of the Python era, removed by update.
 func (p Paths) legacyUnits() []string {
 	return []string{

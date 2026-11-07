@@ -207,6 +207,7 @@ func runUpdate(ctx context.Context, u *ui, r Runner, p Paths, rebuild bool, args
 	if code := r.Interactive(ctx, Cmd{Name: staged, Args: []string{applyVerb}, Env: env}); code != 0 {
 		return exitCodeError{code}
 	}
+	removeInstalledRelease(p)
 	return nil
 }
 
@@ -261,7 +262,37 @@ func runSignedReleaseUpdate(ctx context.Context, u *ui, r Runner, p Paths, lock 
 	if code := r.Interactive(ctx, Cmd{Name: staged, Args: []string{applyVerb}, Env: env}); code != 0 {
 		return exitCodeError{code}
 	}
+	_ = writeInstalledRelease(p, targetTag, after, p.BinPath())
 	return nil
+}
+
+func writeInstalledRelease(p Paths, tag Tag, commit, binPath string) error {
+	sum, err := fileSHA256(binPath)
+	if err != nil {
+		return err
+	}
+	if err := EnsurePrivateDir(p.CosignCacheDir()); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%s %s %s\n", tag, strings.ToLower(commit), sum)
+	return writeFileAtomic(p.InstalledReleaseReceipt(), []byte(line), 0o600, -1, -1)
+}
+
+func removeInstalledRelease(p Paths) {
+	_ = os.Remove(p.InstalledReleaseReceipt())
+}
+
+func releaseBinaryMatches(p Paths, tag Tag, commit string) bool {
+	raw, err := os.ReadFile(p.InstalledReleaseReceipt())
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) != 3 || fields[0] != tag.String() || !strings.EqualFold(fields[1], commit) || len(fields[2]) != 64 {
+		return false
+	}
+	gotSHA, err := fileSHA256(p.BinPath())
+	return err == nil && strings.EqualFold(gotSHA, fields[2])
 }
 
 func releaseTagAt(ctx context.Context, r Runner, srcDir, rev string) (Tag, bool) {
@@ -316,10 +347,6 @@ func resolveReleaseTarget(ctx context.Context, u *ui, r Runner, p Paths, o updat
 		}
 	}
 
-	if cur, ok := ParseVersion(curTagStr); ok && !o.allowDowngrade && targetTag.Compare(cur) < 0 {
-		return Tag{}, "", fmt.Errorf("%w: %s is older than the installed %s (pass --allow-downgrade to roll back on purpose)", ErrDowngrade, targetTag, cur)
-	}
-
 	tagRef := "refs/tags/" + targetTag.String()
 	after, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
 	if err != nil && !o.noPull {
@@ -334,22 +361,35 @@ func resolveReleaseTarget(ctx context.Context, u *ui, r Runner, p Paths, o updat
 		return Tag{}, "", fmt.Errorf("EXPLORER_RELEASE_COMMIT %s does not match tag %s (%s)", envCommit, targetTag, after)
 	}
 
+	isDowngrade := false
+	if cur, ok := ParseVersion(curTagStr); ok && targetTag.Compare(cur) < 0 {
+		isDowngrade = true
+	} else if before != "" && before != after && git(ctx, r, p.SrcDir, "merge-base", "--is-ancestor", after, before).Code == 0 {
+		isDowngrade = true
+	}
+	if isDowngrade && !o.allowDowngrade {
+		if curTagStr != "" {
+			return Tag{}, "", fmt.Errorf("%w: %s is older than the installed %s (pass --allow-downgrade to roll back on purpose)", ErrDowngrade, targetTag, curTagStr)
+		}
+		return Tag{}, "", fmt.Errorf("%w: %s (%s) is older than the installed commit %s (pass --allow-downgrade to roll back on purpose)", ErrDowngrade, targetTag, short(after), short(before))
+	}
+
 	if o.noPull {
 		u.okf("signed release mode — target %s (%s)", targetTag, short(after))
 		return targetTag, after, nil
 	}
 
 	if before == after {
-		if layoutCheck(p) == nil && revisionMatches(p, after) {
+		if layoutCheck(p) == nil && revisionMatches(p, after) && releaseBinaryMatches(p, targetTag, after) {
 			u.okf("already on %s (%s); installed layout is healthy", targetTag, short(after))
 			return Tag{}, "", nil
 		}
-		u.warnf("source is current (%s), but the installed layout is legacy or unhealthy; reinstalling it", targetTag)
+		u.warnf("source is current (%s), but the installed binary or layout is not the verified release; reinstalling it", targetTag)
 		return targetTag, after, nil
 	}
 
 	logRange := before + ".." + after
-	if cur, ok := ParseVersion(curTagStr); ok && targetTag.Compare(cur) < 0 {
+	if isDowngrade {
 		logRange = after + ".." + before
 	}
 	log, _ := gitOut(ctx, r, p.SrcDir, "--no-pager", "log", "--oneline", "--no-decorate", logRange)

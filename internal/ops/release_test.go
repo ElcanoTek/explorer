@@ -414,12 +414,21 @@ func TestDoctorDoesNotRequireGoInSignedReleaseMode(t *testing.T) {
 		t.Fatalf("expected go check to fail when EXPLORER_FROM_SOURCE=1: %+v", c)
 	}
 
-	// Detached HEAD at a release tag is accepted by checkCheckout.
-	_, _, clone := cloneBehindOrigin(t)
-	gitT(t, clone, "tag", "v2026.11.07.1")
+	// Detached HEAD at a release tag is compared against published release tags
+	// on origin, not unreleased commits on origin/main.
+	_, seed, clone := cloneBehindOrigin(t)
+	gitT(t, seed, "tag", "v2026.11.07.1")
+	gitT(t, seed, "push", "-q", "origin", "refs/tags/v2026.11.07.1")
+	gitT(t, clone, "fetch", "-q", "--tags", "origin")
 	gitT(t, clone, "checkout", "--detach", "-q", "v2026.11.07.1")
+	pushSeed(t, seed, "unreleased commit on main\n")
 	if c := branchCheck(t, clone); c.Status != "ok" || !strings.Contains(c.Detail, "v2026.11.07.1") {
-		t.Fatalf("detached at release tag: %+v", c)
+		t.Fatalf("detached at latest release tag with newer unreleased main: %+v", c)
+	}
+	gitT(t, seed, "tag", "v2026.11.07.2")
+	gitT(t, seed, "push", "-q", "origin", "refs/tags/v2026.11.07.2")
+	if c := branchCheck(t, clone); c.Status != "warn" || !strings.Contains(c.Detail, "behind latest release v2026.11.07.2") {
+		t.Fatalf("detached behind newer release tag: %+v", c)
 	}
 }
 
@@ -484,6 +493,42 @@ func TestResolveAndStageSignedReleaseWithoutGo(t *testing.T) {
 	}
 	if fi, err := os.Stat(dst); err != nil || fi.Mode().Perm() != 0o755 {
 		t.Fatalf("staged binary: %v %v", fi, err)
+	}
+
+	// Downgrade from a newer untagged source commit (curTagStr == "") is refused
+	// unless allowDowngrade is true.
+	pushSeed(t, seed, "untagged newer source commit\n")
+	gitT(t, clone, "fetch", "-q", "origin", "main")
+	gitT(t, clone, "checkout", "-q", "-B", "main", "origin/main")
+	untaggedTip := gitT(t, clone, "rev-parse", "HEAD")
+	if _, _, err := resolveReleaseTarget(context.Background(), u, r, p, updateOpts{yes: true}, untaggedTip, untaggedTip, "", strings.NewReader("")); !errors.Is(err, ErrDowngrade) {
+		t.Fatalf("downgrade from untagged source commit not refused: %v", err)
+	}
+	if _, gotAfter, err := resolveReleaseTarget(context.Background(), u, r, p, updateOpts{yes: true, allowDowngrade: true}, untaggedTip, untaggedTip, "", strings.NewReader("")); err != nil || gotAfter != commit2 {
+		t.Fatalf("allowDowngrade from untagged source commit failed: %v %s", err, gotAfter)
+	}
+
+	// Same-revision source build (before == after without matching release receipt)
+	// does not no-op until the verified release binary receipt matches.
+	if err := os.MkdirAll(filepath.Dir(p.BinPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p.BinPath(), "source-built-binary", 0o755)
+	if releaseBinaryMatches(p, targetTag, commit2) {
+		t.Fatal("releaseBinaryMatches succeeded without receipt")
+	}
+	if gotTag, gotAfter, err := resolveReleaseTarget(context.Background(), u, r, p, updateOpts{yes: true}, commit2, commit2, targetTag.String(), strings.NewReader("")); err != nil || gotTag != targetTag || gotAfter != commit2 {
+		t.Fatalf("same-revision source build took no-op: tag=%s after=%s err=%v", gotTag, gotAfter, err)
+	}
+	if err := writeInstalledRelease(p, targetTag, commit2, p.BinPath()); err != nil {
+		t.Fatal(err)
+	}
+	if !releaseBinaryMatches(p, targetTag, commit2) {
+		t.Fatal("releaseBinaryMatches failed after writing receipt")
+	}
+	writeFile(t, p.BinPath(), "tampered-binary", 0o755)
+	if releaseBinaryMatches(p, targetTag, commit2) {
+		t.Fatal("releaseBinaryMatches succeeded after binary changed")
 	}
 }
 
