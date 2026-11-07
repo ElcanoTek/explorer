@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ElcanoTek/explorer/internal/config"
 	"github.com/ElcanoTek/explorer/internal/dotenv"
 )
 
@@ -286,30 +287,99 @@ func seedSource(src, dst string) error {
 	})
 }
 
-func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) error {
-	source := ""
+type bootstrapOpts struct {
+	source     string
+	fromSource bool
+	tag        string
+}
+
+func parseBootstrapArgs(p Paths, args []string) (bootstrapOpts, error) {
+	o := bootstrapOpts{
+		fromSource: config.Truthy(os.Getenv("EXPLORER_FROM_SOURCE")) || config.Truthy(os.Getenv("EXPLORER_UPDATE_FROM_SOURCE")),
+		tag:        envOr("", "EXPLORER_RELEASE_TAG", "EXPLORER_UPDATE_TAG"),
+	}
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--source" && i+1 < len(args):
 			i++
-			source = args[i]
+			o.source = args[i]
 		case strings.HasPrefix(args[i], "--source="):
-			source = strings.TrimPrefix(args[i], "--source=")
+			o.source = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--from-source":
+			o.fromSource = true
+		case args[i] == "--artifact":
+			o.fromSource = false
+		case args[i] == "--tag" && i+1 < len(args):
+			i++
+			o.tag = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--tag="):
+			o.tag = strings.TrimSpace(strings.TrimPrefix(args[i], "--tag="))
 		default:
-			return usageError{"usage: explorer bootstrap [--source DIR]"}
+			return o, usageError{"usage: explorer bootstrap [--source DIR] [--tag vYYYY.MM.DD.N] [--from-source]"}
 		}
 	}
-	if source == "" {
-		source = p.SrcDir
+	if o.source == "" {
+		o.source = p.SrcDir
+	}
+	return o, nil
+}
+
+func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o bootstrapOpts, staging, staged string) (string, error) {
+	if o.fromSource {
+		u.stepf("3/7  Building the Explorer binary")
+		revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "HEAD^{commit}")
+		if err != nil {
+			return "", fmt.Errorf("could not resolve the installed source revision: %w", err)
+		}
+		if err := buildBinary(ctx, u, r, p, p.SrcDir, staged, revision); err != nil {
+			return "", fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
+		}
+		return revision, nil
+	}
+	u.stepf("3/7  Verifying the signed Explorer release binary")
+	var targetTag Tag
+	var err error
+	if o.tag != "" {
+		targetTag, err = ParseTag(o.tag)
+	} else {
+		targetTag, err = NewDownloader().LatestTag(ctx)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve release tag: %w", err)
+	}
+	tagRef := "refs/tags/" + targetTag.String()
+	revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
+	if err != nil || revision == "" {
+		if _, ferr := gitOut(ctx, r, p.SrcDir, "fetch", "--quiet", "--force", "--tags", "origin"); ferr == nil {
+			revision, err = gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
+		}
+	}
+	if err != nil || revision == "" {
+		return "", fmt.Errorf("release tag %s was not found in %s", targetTag, p.SrcDir)
+	}
+	if err := stageSignedRelease(ctx, p, targetTag, revision, "", true, staging, staged); err != nil {
+		return "", fmt.Errorf("%w\nrelease verification failed — the installed service was not changed", err)
+	}
+	if err := checkoutReleaseCommit(ctx, r, p.SrcDir, revision); err != nil {
+		return "", err
+	}
+	u.okf("verified signed release %s (%s)", targetTag, short(revision))
+	return revision, nil
+}
+
+func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) error {
+	o, err := parseBootstrapArgs(p, args)
+	if err != nil {
+		return err
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("run as root: sudo bash scripts/bootstrap.sh")
 	}
-	if !exists(filepath.Join(source, "go.mod")) {
-		return fmt.Errorf("not an Explorer checkout at %s", source)
+	if !exists(filepath.Join(o.source, "go.mod")) {
+		return fmt.Errorf("not an Explorer checkout at %s", o.source)
 	}
-	if err := RequireTrusted(source); err != nil {
-		return fmt.Errorf("%s is not an exclusively root-owned, non-writable, symlink-free checkout: %w", source, err)
+	if err := RequireTrusted(o.source); err != nil {
+		return fmt.Errorf("%s is not an exclusively root-owned, non-writable, symlink-free checkout: %w", o.source, err)
 	}
 	pr := newPrompter(u, os.Getenv("EXPLORER_BOOTSTRAP_NON_INTERACTIVE") == "1")
 	h := hostEnvFromEnv(u, r)
@@ -321,7 +391,10 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	u.sayf("Safe to re-run: existing .env is preserved; only missing values are prompted.")
 
 	u.stepf("1/7  Installing system dependencies via dnf")
-	pkgs := []string{"git", "golang", "ca-certificates"}
+	pkgs := []string{"git", "curl", "ca-certificates"}
+	if o.fromSource {
+		pkgs = []string{"git", "golang", "ca-certificates"}
+	}
 	if h.dryRun {
 		u.infof("[dry-run] dnf install -y %s", strings.Join(pkgs, " "))
 	} else if res := r.Run(ctx, Cmd{Name: "dnf", Args: append([]string{"install", "-y"}, pkgs...), Timeout: 30 * time.Minute}); res.Code != 0 {
@@ -332,24 +405,20 @@ func runBootstrap(ctx context.Context, u *ui, r Runner, p Paths, args []string) 
 	h.sshKeyOnly(ctx)
 
 	u.stepf("2/7  Preparing %s + '%s' user", p.AppDir, p.AppUser)
-	acct, err := prepareAccountAndSource(ctx, u, r, p, source)
+	acct, err := prepareAccountAndSource(ctx, u, r, p, o.source)
 	if err != nil {
 		return err
 	}
 
-	u.stepf("3/7  Building the Explorer binary")
-	revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "HEAD^{commit}")
-	if err != nil {
-		return fmt.Errorf("could not resolve the installed source revision: %w", err)
-	}
 	staging, err := newStaging(p, ".explorer-build.")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(staging)
 	staged := filepath.Join(staging, "explorer")
-	if err := buildBinary(ctx, u, r, p, p.SrcDir, staged, revision); err != nil {
-		return fmt.Errorf("%w\nbuild failed — the installed service was not changed", err)
+	revision, err := stageBootstrapBinary(ctx, u, r, p, o, staging, staged)
+	if err != nil {
+		return err
 	}
 	// Before anything in the app directory moves: it must be a real
 	// directory under a trusted parent, on the same filesystem.

@@ -101,6 +101,14 @@ func (p Paths) UnitPath() string { return filepath.Join(p.SystemdDir, p.Service)
 // TmpfilesPath is the installed tmpfiles rule.
 func (p Paths) TmpfilesPath() string { return filepath.Join(p.TmpfilesDir, "explorer.conf") }
 
+// CosignCacheDir is the root-owned directory holding the pinned cosign binary.
+func (p Paths) CosignCacheDir() string {
+	if v := os.Getenv("EXPLORER_COSIGN_CACHE"); v != "" {
+		return v
+	}
+	return filepath.Join(p.BuildCache, "cosign")
+}
+
 // Legacy units of the Python era, removed by update.
 func (p Paths) legacyUnits() []string {
 	return []string{

@@ -35,11 +35,11 @@ SERVICE
   explorer version                  print the source revision of this binary
 
 UPDATES
-  explorer update [--yes]           git pull + build + staged swap + health check
-                                    (also EXPLORER_UPDATE_YES=1, or answer y on stdin;
-                                    rolls back automatically when the new build is unhealthy)
-  explorer rebuild                  rebuild + reinstall the current checkout
-                                    (no fetch — use after a manual rollback)
+  explorer update [--yes]           verify + install the latest signed release + health check
+                                    (--tag vYYYY.MM.DD.N, --allow-downgrade, --from-source;
+                                    also EXPLORER_UPDATE_YES=1; rolls back when unhealthy)
+  explorer rebuild                  reinstall the current checkout (signed release or source;
+                                    no fetch — use after a manual rollback)
   explorer doctor [--json] [--strict]
                                     read-only diagnostics: configuration, service,
                                     readiness, TLS, disk, packages (--check is accepted
