@@ -452,7 +452,7 @@ func stageSignedRelease(ctx context.Context, p Paths, targetTag Tag, commit, cur
 			return err
 		}
 		defer rel.BinaryFile.Close()
-		CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, preStaged, arch)
+		CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, preStaged, arch, rel.BinarySHA256)
 		if err := copyFromFD(rel.BinaryFile, dstBinary, rel.BinarySHA256); err != nil {
 			return err
 		}
@@ -481,7 +481,7 @@ func stageSignedRelease(ctx context.Context, p Paths, targetTag Tag, commit, cur
 		}
 		return err
 	}
-	CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, relDir, arch)
+	CacheReleaseBundle(p.ReleaseCacheDir(), targetTag, currentTag, relDir, arch, rel.BinarySHA256)
 	return os.Rename(rel.Binary, dstBinary)
 }
 

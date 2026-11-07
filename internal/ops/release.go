@@ -923,8 +923,8 @@ func CheckPrivateDir(dir string) error {
 // CacheReleaseBundle copies the verified release artifacts from srcDir into
 // cacheRoot/<tag> (0700) so the host can roll back to its previously installed
 // release even after GitHub prunes release objects beyond the newest 20.
-func CacheReleaseBundle(cacheRoot string, tag Tag, keepTag, srcDir, arch string) {
-	if cacheRoot == "" || !SupportedArch(arch) {
+func CacheReleaseBundle(cacheRoot string, tag Tag, keepTag, srcDir, arch, binarySHA256 string) {
+	if cacheRoot == "" || !SupportedArch(arch) || binarySHA256 == "" {
 		return
 	}
 	dst := filepath.Join(cacheRoot, tag.String())
@@ -940,20 +940,27 @@ func CacheReleaseBundle(cacheRoot string, tag Tag, keepTag, srcDir, arch string)
 		return
 	}
 	asset := BinaryAsset(arch)
-	for _, name := range []string{SumsFile, SumsFile + BundleSuffix, ManifestFile, asset, asset + BundleSuffix} {
+	for _, name := range []string{SumsFile, SumsFile + BundleSuffix, ManifestFile, asset + BundleSuffix} {
 		data, err := readPrivateFile(srcDir, name)
 		if err != nil {
 			_ = os.RemoveAll(tmp)
 			return
 		}
-		mode := os.FileMode(0o600)
-		if name == asset {
-			mode = 0o700
-		}
-		if err := os.WriteFile(filepath.Join(tmp, name), data, mode); err != nil {
+		if err := os.WriteFile(filepath.Join(tmp, name), data, 0o600); err != nil {
 			_ = os.RemoveAll(tmp)
 			return
 		}
+	}
+	bf, err := openVerifiedBinary(srcDir, asset, binarySHA256, arch)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return
+	}
+	copyErr := copyFromFD(bf, filepath.Join(tmp, asset), binarySHA256)
+	_ = bf.Close()
+	if copyErr != nil || os.Chmod(filepath.Join(tmp, asset), 0o700) != nil { //nolint:gosec // G302: private cached binary in 0700 dir.
+		_ = os.RemoveAll(tmp)
+		return
 	}
 	_ = os.RemoveAll(dst)
 	if err := os.Rename(tmp, dst); err != nil {
