@@ -311,3 +311,69 @@ func TestLifecycleLockIsExclusive(t *testing.T) {
 		t.Fatalf("second update ran concurrently: %v", err)
 	}
 }
+
+func TestLifecycleSignedReleaseUpdateWithoutGo(t *testing.T) {
+	lc := newLifecycle(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	origin := filepath.Join(lc.base, "origin.git")
+	gitT(t, lc.base, "init", "-q", "--bare", "-b", "main", origin)
+	gitT(t, lc.p.SrcDir, "remote", "add", "origin", origin)
+	gitT(t, lc.p.SrcDir, "tag", "v2026.11.07.1")
+	gitT(t, lc.p.SrcDir, "push", "-q", "origin", "main", "refs/tags/v2026.11.07.1")
+
+	seed := filepath.Join(lc.base, "seed")
+	gitT(t, lc.base, "clone", "-q", origin, seed)
+	writeFile(t, filepath.Join(seed, "release.txt"), "v2\n", 0o644)
+	gitT(t, seed, "add", ".")
+	gitT(t, seed, "commit", "-qm", "release two")
+	commit2 := gitT(t, seed, "rev-parse", "HEAD")
+	gitT(t, seed, "tag", "v2026.11.07.2")
+	gitT(t, seed, "push", "-q", "origin", "main", "refs/tags/v2026.11.07.2")
+
+	fx := newReleaseFixture(t, "v2026.11.07.2", commit2)
+	srv := fx.server(t)
+	t.Setenv("EXPLORER_RELEASE_BASE_URL", srv.URL)
+	t.Setenv("EXPLORER_RELEASE_LATEST_URL", srv.URL+"/latest")
+	t.Setenv("EXPLORER_RELEASE_STAGING", "")
+	t.Setenv("EXPLORER_FROM_SOURCE", "")
+
+	origVerifier := newReleaseVerifier
+	t.Cleanup(func() { newReleaseVerifier = origVerifier })
+	newReleaseVerifier = func(context.Context, *Downloader, Paths, string) (Verifier, error) {
+		return &fakeVerifier{}, nil
+	}
+
+	lc.f.real["git"] = true
+	origHandle := lc.f.handle
+	lc.f.handle = func(c Cmd) Result {
+		if len(c.Args) == 1 && c.Args[0] == applyVerb {
+			u, _ := testUI()
+			before, after := "", ""
+			for _, kv := range c.Env {
+				if v, ok := strings.CutPrefix(kv, "EXPLORER_UPDATE_BEFORE="); ok {
+					before = v
+				}
+				if v, ok := strings.CutPrefix(kv, "EXPLORER_UPDATE_AFTER="); ok {
+					after = v
+				}
+			}
+			if err := applyUpdate(context.Background(), u, lc.f, lc.p, applyInput{
+				binary: c.Name, before: before, after: after, locked: true,
+			}); err != nil {
+				return Result{Code: 1, Stderr: err.Error()}
+			}
+			return Result{}
+		}
+		return origHandle(c)
+	}
+
+	u, _ := testUI()
+	if err := runUpdate(context.Background(), u, lc.f, lc.p, false, []string{"--yes"}, strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	if !revisionMatches(lc.p, commit2) || gitT(t, lc.p.SrcDir, "rev-parse", "HEAD") != commit2 {
+		t.Fatalf("installed revision or checkout not at %s", commit2)
+	}
+}

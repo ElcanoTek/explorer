@@ -164,10 +164,14 @@ func readOSRelease(path string) (map[string]string, error) {
 // Diagnose runs every check.
 func (d *doctor) Diagnose(ctx context.Context) []Check {
 	d.checks = nil
-	for _, tool := range []string{"git", "go", "systemctl"} {
+	tools := []string{"git", "systemctl"}
+	if fromSourceEnv(d.environ()) {
+		tools = []string{"git", "go", "systemctl"}
+	}
+	for _, tool := range tools {
 		remedy := "Run bootstrap to install " + tool
 		if tool == "go" {
-			remedy = "the Go toolchain is missing, so explorer update cannot build — run: dnf install -y golang"
+			remedy = "the Go toolchain is missing, so explorer update --from-source cannot build — run: dnf install -y golang"
 		}
 		d.add(tool, d.has(tool), "installed", remedy, false)
 	}
@@ -639,6 +643,55 @@ func (d *doctor) git(ctx context.Context, args ...string) (int, string) {
 	return res.Code, strings.TrimSpace(res.Stdout)
 }
 
+func (d *doctor) detachedReleaseTag(ctx context.Context, branch string) (Tag, bool) {
+	if branch != "HEAD" {
+		return Tag{}, false
+	}
+	cTag, tags := d.git(ctx, "tag", "--points-at", "HEAD")
+	if cTag != 0 || tags == "" {
+		return Tag{}, false
+	}
+	var best Tag
+	found := false
+	for _, line := range strings.Split(tags, "\n") {
+		if t, err := ParseTag(line); err == nil && (!found || t.Compare(best) > 0) {
+			best = t
+			found = true
+		}
+	}
+	return best, found
+}
+
+func (d *doctor) checkReleaseCheckout(ctx context.Context, curTag Tag) bool {
+	codeRemote, remoteTags := d.git(ctx, "ls-remote", "--tags", "origin", "v*")
+	if codeRemote != 0 {
+		d.add("branch", false, "", "could not reach origin — cannot compare with upstream; check network or remote credentials", true)
+		return true
+	}
+	var latestRemote Tag
+	hasRemote := false
+	for _, line := range strings.Split(remoteTags, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ref := strings.TrimSuffix(strings.TrimPrefix(fields[1], "refs/tags/"), "^{}")
+		if t, err := ParseTag(ref); err == nil && (!hasRemote || t.Compare(latestRemote) > 0) {
+			latestRemote = t
+			hasRemote = true
+		}
+	}
+	if !hasRemote {
+		return false
+	}
+	if curTag.Compare(latestRemote) < 0 {
+		d.add("branch", false, "", fmt.Sprintf("checkout is on release %s, behind latest release %s — run explorer update", curTag, latestRemote), true)
+		return true
+	}
+	d.add("branch", true, fmt.Sprintf("on release %s, up to date with origin", curTag), "", false)
+	return true
+}
+
 // checkCheckout compares the checkout with the LIVE remote using ls-remote:
 // a fetch would write FETCH_HEAD and move refs, and doctor never mutates
 // what it diagnoses. Direction comes from local ancestry, so a checkout
@@ -651,8 +704,12 @@ func (d *doctor) checkCheckout(ctx context.Context) {
 	code, dirty := d.git(ctx, "status", "--porcelain")
 	d.add("checkout", code == 0 && dirty == "", "clean", "Resolve local source changes before explorer update", false)
 	code, branch := d.git(ctx, "rev-parse", "--abbrev-ref", "HEAD")
-	if code == 0 && branch != "main" {
+	releaseTag, isReleaseTag := d.detachedReleaseTag(ctx, branch)
+	if code == 0 && branch != "main" && !isReleaseTag {
 		d.add("branch", false, "", fmt.Sprintf("checkout is on '%s', not main — run explorer update or: git -C %s checkout main", branch, d.p.SrcDir), true)
+		return
+	}
+	if isReleaseTag && d.checkReleaseCheckout(ctx, releaseTag) {
 		return
 	}
 	codeHead, head := d.git(ctx, "rev-parse", "HEAD")
@@ -666,7 +723,11 @@ func (d *doctor) checkCheckout(ctx context.Context) {
 		return
 	}
 	if head == remoteSHA {
-		d.add("branch", true, "on main, up to date with origin", "", false)
+		detail := "on main, up to date with origin"
+		if isReleaseTag {
+			detail = "on release " + releaseTag.String() + ", up to date with origin"
+		}
+		d.add("branch", true, detail, "", false)
 		return
 	}
 	direction := ""

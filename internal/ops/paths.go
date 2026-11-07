@@ -101,6 +101,28 @@ func (p Paths) UnitPath() string { return filepath.Join(p.SystemdDir, p.Service)
 // TmpfilesPath is the installed tmpfiles rule.
 func (p Paths) TmpfilesPath() string { return filepath.Join(p.TmpfilesDir, "explorer.conf") }
 
+// CosignCacheDir is the root-owned directory holding the pinned cosign binary.
+func (p Paths) CosignCacheDir() string {
+	if v := os.Getenv("EXPLORER_COSIGN_CACHE"); v != "" {
+		return v
+	}
+	return filepath.Join(p.BuildCache, "cosign")
+}
+
+// InstalledReleaseReceipt records the tag, commit, and binary SHA-256 of the
+// currently installed verified release binary.
+func (p Paths) InstalledReleaseReceipt() string {
+	return filepath.Join(p.CosignCacheDir(), "installed-release")
+}
+
+// ReleaseCacheDir holds locally cached verified release bundles (the current
+// and previous installed releases on this host) so rolling back to the
+// previously installed release works even after GitHub prunes release objects
+// beyond the newest 20.
+func (p Paths) ReleaseCacheDir() string {
+	return filepath.Join(p.CosignCacheDir(), "releases")
+}
+
 // Legacy units of the Python era, removed by update.
 func (p Paths) legacyUnits() []string {
 	return []string{

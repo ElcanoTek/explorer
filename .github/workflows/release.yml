@@ -1,0 +1,499 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 ElcanoTek, Inc.
+#
+# Automatic date-based releases with keyless Sigstore OIDC signed binary
+# artifacts (`vYYYY.MM.DD.N`).
+#
+# Three jobs, split by privilege:
+#
+#   tag      contents: write. Verifies CI succeeded on the target commit on
+#            main, checks whether it is already released or superseded by a
+#            .github/workflows change, and mints `vYYYY.MM.DD.N` on the
+#            certified SHA using only the default branch's scripts/version.sh.
+#   build    contents: read, nothing else. Per architecture (amd64, arm64):
+#            checks out the release tag, verifies the commit SHA matches,
+#            cross-compiles the static explorer binary stamped with the commit
+#            revision, asserts it is static (and on amd64 that `explorer version`
+#            reports the certified SHA), and uploads the build artifact.
+#   publish  contents: write, id-token: write. Downloads the build artifacts,
+#            installs the pinned cosign from cosign.lock, writes release.json
+#            and SHA256SUMS, signs explorer-linux-amd64, explorer-linux-arm64
+#            and SHA256SUMS with keyless Sigstore OIDC, verifies every signature
+#            against the release workflow identity, creates the GitHub Release,
+#            and retains the newest 20 release objects as the remote signed
+#            rollback window (older git tags remain for version comparison,
+#            audit history, and --from-source builds, while hosts also cache
+#            their own installed release bundles locally).
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Optional commit SHA on main to release (defaults to HEAD of main)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed to the target commit SHA (or dispatch input / ref SHA) so concurrent
+  # pushes to main never cancel or displace each other; contention on the day's
+  # ordinal is resolved by the tag job's retry loop.
+  group: release-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      ${{ (github.event_name == 'workflow_run'
+           && github.event.workflow_run.conclusion == 'success'
+           && github.event.workflow_run.event == 'push'
+           && github.event.workflow_run.head_branch == 'main')
+          || (github.event_name == 'workflow_dispatch'
+              && github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+      released: ${{ steps.tag.outputs.released }}
+      build: ${{ steps.state.outputs.build }}
+    steps:
+      # Check out the DEFAULT BRANCH (trusted code), never an untrusted ref
+      # from the event payload.
+      - name: Check out the default branch (trusted code) with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Create and push the next date-based tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          INPUT_SHA: ${{ inputs.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git_auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          git_remote() {
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${git_auth}" "$@"
+          }
+
+          if [ "${EVENT_NAME}" = "workflow_run" ]; then
+            HEAD_SHA="${WORKFLOW_RUN_SHA}"
+            RUN_URL="${WORKFLOW_RUN_URL}"
+          else
+            if [ -n "${INPUT_SHA}" ]; then
+              HEAD_SHA="$(git rev-parse --verify "${INPUT_SHA}^{commit}")"
+            else
+              HEAD_SHA="$(git rev-parse HEAD)"
+            fi
+            RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+          fi
+
+          if ! printf '%s' "${HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid target commit SHA: ${HEAD_SHA}"
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${HEAD_SHA}" HEAD; then
+            echo "::error::${HEAD_SHA} is not an ancestor of the checked-out default branch. main was rewritten, or this run does not belong to it. Refusing to tag."
+            exit 1
+          fi
+
+          # For manual workflow_dispatch runs, verify CI succeeded on HEAD_SHA on main.
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            ci_ok="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | length')"
+            if [ "${ci_ok:-0}" -lt 1 ]; then
+              echo "::error::No successful CI workflow run found for ${HEAD_SHA} on main. Refusing to release an uncertified commit."
+              exit 1
+            fi
+          fi
+
+          # Pin the working tree to the CI-certified commit before running any
+          # helper scripts from the repository.
+          git checkout --detach --quiet "${HEAD_SHA}"
+
+          # Idempotence: a re-run for a commit that already has a release tag
+          # reuses that tag instead of minting a second ordinal.
+          if existing="$(scripts/version.sh released-at "${HEAD_SHA}")" && [ -n "${existing}" ]; then
+            echo "::notice::${HEAD_SHA} is already tagged ${existing}; not re-tagging. Checking its release is published."
+            {
+              echo "tag=${existing}"
+              echo "sha=${HEAD_SHA}"
+              echo "released=true"
+            } >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Commit-order preservation: if a descendant commit on main already
+          # carries a release tag, do not mint a newer ordinal for this older
+          # ancestor commit.
+          check_superseded_by_descendant() {
+            local rel_tag
+            while IFS= read -r rel_tag; do
+              [ -n "${rel_tag}" ] || continue
+              if git merge-base --is-ancestor "${HEAD_SHA}" "refs/tags/${rel_tag}^{commit}" 2>/dev/null; then
+                echo "::notice::${HEAD_SHA} is already superseded by descendant release ${rel_tag}; skipping out-of-order tag assignment."
+                echo "released=false" >>"${GITHUB_OUTPUT}"
+                exit 0
+              fi
+            done < <(git tag -l 'v*' | scripts/version.sh filter)
+          }
+          check_superseded_by_descendant
+
+          MAX_ATTEMPTS="${TAG_MAX_ATTEMPTS:-40}"
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            tag="$(scripts/version.sh next)"
+            echo "attempt ${attempt}: tagging ${HEAD_SHA} as ${tag}"
+
+            git tag -a "${tag}" "${HEAD_SHA}" -m "explorer ${tag#v}
+
+          Rolling release, tagged automatically from the green CI run on main.
+          CI: ${RUN_URL}"
+
+            push_log="$(mktemp)"
+            if git_remote push origin "refs/tags/${tag}" >"${push_log}" 2>&1; then
+              cat "${push_log}"
+              {
+                echo "tag=${tag}"
+                echo "sha=${HEAD_SHA}"
+                echo "released=true"
+              } >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            cat "${push_log}"
+            git tag -d "${tag}"
+            kind="$(scripts/release-push-rejection.sh "${push_log}")"
+            case "${kind}" in
+              contention) ;;
+              workflow-permission)
+                git_remote fetch --force --tags origin || true
+                check_superseded_by_descendant
+                tip="$(git_remote ls-remote origin HEAD | cut -f1)"
+                if [ -n "${tip}" ] && [ "${tip}" != "${HEAD_SHA}" ]; then
+                  tip_ci_ok="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${tip}&status=completed&per_page=20" \
+                    --jq '[.workflow_runs[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | length' 2>/dev/null || echo 0)"
+                  if [ "${tip_ci_ok:-0}" -ge 1 ]; then
+                    echo "::notice::pushing ${tag} was refused because certified descendant ${tip} on main changed the workflow files after ${HEAD_SHA}; ${tip}'s release covers it. Not tagging it."
+                    echo "released=false" >>"${GITHUB_OUTPUT}"
+                    exit 0
+                  fi
+                fi
+                echo "::error::pushing ${tag} was refused for missing workflows permission and no certified descendant release exists yet."
+                exit 1
+                ;;
+              *)
+                echo "::error::pushing ${tag} was refused for a reason retrying cannot fix (above). Not retrying."
+                exit 1
+                ;;
+            esac
+            if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+              echo "::error::could not push a release tag after ${attempt} attempts; re-run this workflow to tag ${HEAD_SHA}."
+              exit 1
+            fi
+            backoff=$(( (attempt < 10 ? attempt : 10) + RANDOM % 5 ))
+            echo "::warning::pushing ${tag} was rejected (attempt ${attempt}/${MAX_ATTEMPTS}); refetching tags and retrying in ${backoff}s"
+            sleep "${backoff}"
+            git_remote fetch --force --tags origin || echo "::warning::refetching tags failed; retrying"
+            if existing="$(scripts/version.sh released-at "${HEAD_SHA}")" && [ -n "${existing}" ]; then
+              echo "::notice::${HEAD_SHA} was tagged ${existing} meanwhile."
+              {
+                echo "tag=${existing}"
+                echo "sha=${HEAD_SHA}"
+                echo "released=true"
+              } >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            check_superseded_by_descendant
+          done
+
+      - name: Releases are immutable — skip a published tag, refuse a partial one
+        id: state
+        if: ${{ steps.tag.outputs.released == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if info="$(gh release view "${TAG}" --json isDraft,assets 2>/dev/null)"; then
+            draft="$(printf '%s' "${info}" | jq -r '.isDraft')"
+            sums="$(printf '%s' "${info}" | jq -r '[.assets[].name] | index("SHA256SUMS") != null')"
+            if [ "${draft}" = "false" ] && [ "${sums}" = "true" ]; then
+              echo "::notice::${TAG} is already published with its artifacts; releases are immutable, so nothing is rebuilt."
+              echo "build=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            echo "::error::${TAG} has a partial GitHub release (draft=${draft}, SHA256SUMS present=${sums}). Releases are immutable: refusing to rebuild over it. Delete that release and re-run, or let the next green push release."
+            exit 1
+          fi
+          echo "build=true" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: tag
+    if: ${{ needs.tag.outputs.released == 'true' && needs.tag.outputs.build == 'true' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+      TAG: ${{ needs.tag.outputs.tag }}
+      HEAD_SHA: ${{ needs.tag.outputs.sha }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: The tag names the commit CI certified
+        run: |
+          set -euo pipefail
+          got="$(git rev-parse HEAD)"
+          if [ "${got}" != "${HEAD_SHA}" ]; then
+            echo "::error::${TAG} resolves to ${got}, but CI certified ${HEAD_SHA}. Refusing to build."
+            exit 1
+          fi
+          version="$(scripts/version.sh describe)"
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "::error::scripts/version.sh describes this tree as ${version}, not ${TAG#v}."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build the static explorer binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ElcanoTek/explorer/internal/version.revision=${HEAD_SHA}" \
+            -o "dist/explorer-linux-${ARCH}" ./cmd/explorer
+
+      - name: Verify binary is static and stamped with the release commit
+        run: |
+          set -euo pipefail
+          bin="dist/explorer-linux-${ARCH}"
+          settings="$(go version -m "${bin}")"
+          printf '%s\n' "${settings}"
+          printf '%s\n' "${settings}" | grep -Eq '^[[:space:]]+build[[:space:]]+CGO_ENABLED=0$' \
+            || { echo "::error::${bin} is not a static (CGO_ENABLED=0) build."; exit 1; }
+          printf '%s\n' "${settings}" | grep -Eq "^[[:space:]]+build[[:space:]]+GOARCH=${ARCH}\$" \
+            || { echo "::error::${bin} is not a ${ARCH} binary."; exit 1; }
+          if file "${bin}" | grep -Eqi 'dynamically linked|interpreter'; then
+            echo "::error::${bin} is dynamically linked: $(file "${bin}")"
+            exit 1
+          fi
+          if [ "${ARCH}" = "amd64" ]; then
+            got_ver="$("./${bin}" version)"
+            printf '%s\n' "${got_ver}"
+            [ "${got_ver}" = "explorer ${HEAD_SHA}" ] \
+              || { echo "::error::${bin} version reported '${got_ver}', want 'explorer ${HEAD_SHA}'."; exit 1; }
+          fi
+
+      - name: Upload the build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ matrix.arch }}
+          path: dist/explorer-linux-${{ matrix.arch }}
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    name: Sign + publish the release
+    needs: [tag, build]
+    if: ${{ needs.tag.outputs.released == 'true' && needs.tag.outputs.build == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+      HEAD_SHA: ${{ needs.tag.outputs.sha }}
+      GH_TOKEN: ${{ github.token }}
+      SIGNER_IDENTITY: https://github.com/ElcanoTek/explorer/.github/workflows/release.yml@refs/heads/main
+      OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - name: Check out the default branch (trusted code) with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Pin working tree to the CI-certified release commit
+        run: |
+          set -euo pipefail
+          tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          if [ "${tag_sha}" != "${HEAD_SHA}" ]; then
+            echo "::error::tag ${TAG} points to ${tag_sha}, not certified commit ${HEAD_SHA}."
+            exit 1
+          fi
+          git checkout --detach --quiet "${HEAD_SHA}"
+
+      - name: Download the builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install the pinned cosign
+        run: |
+          set -euo pipefail
+          lock=cosign.lock
+          ver="$(awk '$1=="version"{print $2}' "${lock}")"
+          want="$(awk '$1=="linux/amd64"{print $2}' "${lock}")"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/${ver}/cosign-linux-amd64"
+          echo "${want}  ${RUNNER_TEMP}/cosign" | sha256sum -c -
+          chmod 0755 "${RUNNER_TEMP}/cosign"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Write release.json and SHA256SUMS, and sign them
+        run: |
+          set -euo pipefail
+          cd dist
+          for arch in amd64 arm64; do
+            [ -f "explorer-linux-${arch}" ] || { echo "::error::missing explorer-linux-${arch}"; exit 1; }
+          done
+          amd64_sha="$(sha256sum explorer-linux-amd64 | awk '{print $1}')"
+          arm64_sha="$(sha256sum explorer-linux-arm64 | awk '{print $1}')"
+          built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n \
+            --arg tag "${TAG}" \
+            --arg version "${TAG#v}" \
+            --arg commit "${HEAD_SHA}" \
+            --arg built_at "${built_at}" \
+            --arg amd64_sha "${amd64_sha}" \
+            --arg arm64_sha "${arm64_sha}" \
+            '{
+              schema: 1,
+              tag: $tag,
+              version: $version,
+              commit: $commit,
+              built_at: $built_at,
+              binaries: {
+                "linux/amd64": { name: "explorer-linux-amd64", sha256: $amd64_sha },
+                "linux/arm64": { name: "explorer-linux-arm64", sha256: $arm64_sha }
+              }
+            }' > release.json
+          sha256sum explorer-linux-amd64 explorer-linux-arm64 release.json > SHA256SUMS
+          cat SHA256SUMS
+          for f in explorer-linux-amd64 explorer-linux-arm64 SHA256SUMS; do
+            ../scripts/retry-transient.sh cosign sign-blob --yes --bundle "${f}.sigstore.json" "${f}"
+            cosign verify-blob --bundle "${f}.sigstore.json" \
+              --certificate-identity "${SIGNER_IDENTITY}" \
+              --certificate-oidc-issuer "${OIDC_ISSUER}" "${f}"
+          done
+          ls -la
+
+      - name: Publish the GitHub release
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::error::release ${TAG} appeared while this run was building; releases are immutable, so this run does not overwrite it."
+            exit 1
+          fi
+
+          notes="$(mktemp)"
+          git log -1 --format=%B "${HEAD_SHA}" >"${notes}"
+
+          latest_flag="--latest=false"
+          if newer="$(scripts/release-newer-published.sh "${TAG}")"; then
+            [ -z "${newer}" ] && latest_flag="--latest"
+          else
+            echo "::warning::could not list the published releases; publishing ${TAG} without the Latest mark."
+          fi
+
+          gh release create "${TAG}" \
+            --title "explorer ${TAG#v}" \
+            --notes-file "${notes}" \
+            --generate-notes \
+            "${latest_flag}" \
+            --verify-tag \
+            dist/*
+
+          if ! newer="$(scripts/release-newer-published.sh "${TAG}")"; then
+            echo "::warning::could not list the published releases after publishing ${TAG}; leaving its Latest mark as it is."
+          elif [ -n "${newer}" ]; then
+            if [ "${latest_flag}" = "--latest" ]; then
+              echo "::notice::${TAG} was superseded by $(printf '%s' "${newer}" | tail -n 1) while publishing; clearing its Latest mark."
+              gh release edit "${TAG}" --latest=false \
+                || echo "::warning::could not clear the Latest mark on ${TAG}; /releases/latest may name it until the next release."
+            else
+              echo "::notice::${TAG} published, not Latest: $(printf '%s' "${newer}" | tail -n 1) is newer and published."
+            fi
+          else
+            if [ "${latest_flag}" != "--latest" ]; then
+              gh release edit "${TAG}" --latest \
+                || echo "::warning::could not mark ${TAG} Latest; the next release sets it."
+            fi
+          fi
+
+          # Retain the newest RETAIN (20) GitHub Release objects as the remote
+          # signed-binary rollback horizon (`explorer update --tag <older>
+          # --allow-downgrade`). Hosts also cache their installed release
+          # bundles locally under /var/cache/explorer-build/cosign/releases/<tag>
+          # so a host can always roll back to its previously installed release
+          # even after more than RETAIN releases have been published. Older git
+          # tags are intentionally kept (`gh release delete` without
+          # `--cleanup-tag`) so boxes upgrading from an older release still
+          # resolve their current tag, same-day ordinals are never reused, and
+          # older tags can still be built with `--from-source`.
+          RETAIN="${RELEASE_RETAIN:-20}"
+          prune_failed=0
+          for _pass in 1 2 3 4 5; do
+            if ! superseded="$(gh release list --limit 200 --exclude-drafts --json tagName --jq '.[].tagName' \
+                                | scripts/version.sh filter | head -n "-${RETAIN}")"; then
+              echo "::warning::could not list releases to prune; ${TAG} is published, the Releases page just lists more than ${RETAIN} entries."
+              prune_failed=1
+              break
+            fi
+            [ -n "${superseded}" ] || break
+            deleted=0
+            for old in ${superseded}; do
+              echo "pruning superseded release ${old} (its tag stays)"
+              if gh release delete "${old}" --yes; then deleted=1; else prune_failed=1; fi
+            done
+            [ "${deleted}" -eq 1 ] || break
+          done
+          if [ "${prune_failed}" -ne 0 ]; then
+            echo "::warning::could not prune every older release; ${TAG} is published, the Releases page just lists more than ${RETAIN} entries."
+          fi

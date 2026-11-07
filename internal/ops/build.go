@@ -113,7 +113,15 @@ func buildBinary(ctx context.Context, u *ui, r Runner, p Paths, src, out, revisi
 	}
 	goBin, err := resolveGo(r, "/usr/local/go/bin/go")
 	if err != nil {
-		return err
+		if _, hasDnf := r.LookPath("dnf"); hasDnf {
+			u.infof("installing the Go toolchain via dnf (golang)")
+			if res := r.Run(ctx, Cmd{Name: "dnf", Args: []string{"install", "-y", "golang"}, Timeout: 30 * time.Minute}); res.Code == 0 {
+				goBin, err = resolveGo(r, "/usr/local/go/bin/go")
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if err := prepareBuildCache(p.BuildCache); err != nil {
 		return err

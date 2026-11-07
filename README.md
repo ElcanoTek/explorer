@@ -289,12 +289,14 @@ curl -fsSL https://raw.githubusercontent.com/ElcanoTek/explorer/main/install.sh 
 ```
 
 The installer clones this repository into `/opt/explorer-src` and runs
-`scripts/bootstrap.sh`, which builds the `explorer` binary from that verified
-checkout and hands over to `explorer bootstrap`: it installs the
-dependencies, writes `/opt/explorer/.env`, installs the binary, the systemd
-unit and the `explorer` operator CLI, and optionally sets up Caddy with
-automatic TLS. It asks for the authentication mode, the auth service's public
-key, and an optional S3 bucket; have those ready.
+`scripts/bootstrap.sh`, which downloads and verifies the latest keyless
+Sigstore-signed `explorer` release binary (or compiles from source when
+`--from-source` / `EXPLORER_FROM_SOURCE=1` is passed) and hands over to
+`explorer bootstrap`: it installs the dependencies, writes
+`/opt/explorer/.env`, installs the binary, the systemd unit and the `explorer`
+operator CLI, and optionally sets up Caddy with automatic TLS. It asks for the
+authentication mode, the auth service's public key, and an optional S3 bucket;
+have those ready.
 
 Equivalent manual steps, if you'd rather clone yourself:
 
@@ -307,7 +309,7 @@ Then manage the install with:
 
 ```bash
 explorer doctor    # read-only diagnostics: config, service, readiness, TLS, disk
-explorer update    # git pull + build + swap + restart (staged, health-checked, rolled back on failure)
+explorer update    # verify + install the latest signed release + restart (rolled back on failure)
 ```
 
 ## Security posture
