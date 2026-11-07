@@ -169,17 +169,9 @@ func runUpdate(ctx context.Context, u *ui, r Runner, p Paths, rebuild bool, args
 		}
 	}
 
-	after := before
-	if o.noPull {
-		if o.baseSHA != "" {
-			before = o.baseSHA
-		}
-		u.okf("rebuild-only mode — skipping fetch, building %s", short(after))
-	} else {
-		after, err = fetchAndMerge(ctx, u, r, p, o, before, stdin)
-		if err != nil || after == "" {
-			return err
-		}
+	before, after, err := resolveSourceTarget(ctx, u, r, p, o, before, stdin)
+	if err != nil || after == "" {
+		return err
 	}
 
 	if !exists(filepath.Join(p.SrcDir, "go.mod")) {
@@ -218,6 +210,41 @@ func runUpdate(ctx context.Context, u *ui, r Runner, p Paths, rebuild bool, args
 	}
 	removeInstalledRelease(p)
 	return nil
+}
+
+func resolveSourceTarget(ctx context.Context, u *ui, r Runner, p Paths, o updateOpts, before string, stdin io.Reader) (string, string, error) {
+	after := before
+	switch {
+	case o.tag != "":
+		headSHA := before
+		if o.noPull && o.baseSHA != "" {
+			before = o.baseSHA
+		}
+		curTagStr := ""
+		if curTag, ok := releaseTagAt(ctx, r, p.SrcDir, before); ok {
+			curTagStr = curTag.String()
+		}
+		_, resolved, err := resolveReleaseTarget(ctx, u, r, p, o, before, headSHA, curTagStr, stdin)
+		if err != nil || resolved == "" {
+			return before, resolved, err
+		}
+		after = resolved
+		if !o.noPull || headSHA != after {
+			if err := checkoutReleaseCommit(ctx, r, p.SrcDir, after); err != nil {
+				return before, "", err
+			}
+		}
+		return before, after, nil
+	case o.noPull:
+		if o.baseSHA != "" {
+			before = o.baseSHA
+		}
+		u.okf("rebuild-only mode — skipping fetch, building %s", short(after))
+		return before, after, nil
+	default:
+		resolved, err := fetchAndMerge(ctx, u, r, p, o, before, stdin)
+		return before, resolved, err
+	}
 }
 
 func runSignedReleaseUpdate(ctx context.Context, u *ui, r Runner, p Paths, lock *os.File, o updateOpts, before string, stdin io.Reader) error {
@@ -305,10 +332,18 @@ func releaseBinaryMatches(p Paths, tag Tag, commit string) bool {
 }
 
 func releaseTagAt(ctx context.Context, r Runner, srcDir, rev string) (Tag, bool) {
-	if rev == "" {
+	return bestReleaseTagFromGit(ctx, r, srcDir, "tag", "--points-at", rev)
+}
+
+func newestMergedReleaseTag(ctx context.Context, r Runner, srcDir, rev string) (Tag, bool) {
+	return bestReleaseTagFromGit(ctx, r, srcDir, "tag", "--merged", rev, "--list", "v*")
+}
+
+func bestReleaseTagFromGit(ctx context.Context, r Runner, srcDir string, args ...string) (Tag, bool) {
+	if len(args) == 0 || args[len(args)-1] == "" {
 		return Tag{}, false
 	}
-	out, err := gitOut(ctx, r, srcDir, "tag", "--points-at", rev)
+	out, err := gitOut(ctx, r, srcDir, args...)
 	if err != nil || out == "" {
 		return Tag{}, false
 	}
@@ -396,7 +431,7 @@ func resolveReleaseTarget(ctx context.Context, u *ui, r Runner, p Paths, o updat
 	}
 
 	if before == after {
-		if layoutCheck(p) == nil && revisionMatches(p, after) && releaseBinaryMatches(p, targetTag, after) {
+		if layoutCheck(p) == nil && revisionMatches(p, after) && (o.fromSource || releaseBinaryMatches(p, targetTag, after)) {
 			u.okf("already on %s (%s); installed layout is healthy", targetTag, short(after))
 			return Tag{}, "", nil
 		}
@@ -485,18 +520,13 @@ func stageSignedRelease(ctx context.Context, p Paths, targetTag Tag, commit, cur
 	return os.Rename(rel.Binary, dstBinary)
 }
 
+var checkTrustedCheckout = RequireTrusted
+
 func checkoutReleaseCommit(ctx context.Context, r Runner, srcDir, commit string) error {
-	mainSHA, err := gitOut(ctx, r, srcDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}")
-	if err == nil && mainSHA == commit {
-		if _, err := gitOut(ctx, r, srcDir, "checkout", "--quiet", "-B", "main", commit); err != nil {
-			return err
-		}
-	} else {
-		if _, err := gitOut(ctx, r, srcDir, "checkout", "--detach", "--quiet", commit); err != nil {
-			return err
-		}
+	if _, err := gitOut(ctx, r, srcDir, "checkout", "--detach", "--quiet", commit); err != nil {
+		return err
 	}
-	if err := RequireTrusted(srcDir); err != nil {
+	if err := checkTrustedCheckout(srcDir); err != nil {
 		return fmt.Errorf("the updated checkout violates the root ownership policy: %w", err)
 	}
 	return nil

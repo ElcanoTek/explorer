@@ -327,6 +327,25 @@ func parseBootstrapArgs(p Paths, args []string) (bootstrapOpts, error) {
 func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o bootstrapOpts, staging, staged string) (string, Tag, error) {
 	if o.fromSource {
 		u.stepf("3/7  Building the Explorer binary")
+		if o.tag != "" {
+			t, err := ParseTag(o.tag)
+			if err != nil {
+				return "", Tag{}, err
+			}
+			tagRef := "refs/tags/" + t.String()
+			rev, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
+			if err != nil || rev == "" {
+				if _, ferr := gitOut(ctx, r, p.SrcDir, "fetch", "--quiet", "--force", "--tags", "origin"); ferr == nil {
+					rev, err = gitOut(ctx, r, p.SrcDir, "rev-parse", "--verify", "--quiet", tagRef+"^{commit}")
+				}
+			}
+			if err != nil || rev == "" {
+				return "", Tag{}, fmt.Errorf("release tag %s was not found in %s", t, p.SrcDir)
+			}
+			if err := checkoutReleaseCommit(ctx, r, p.SrcDir, rev); err != nil {
+				return "", Tag{}, err
+			}
+		}
 		revision, err := gitOut(ctx, r, p.SrcDir, "rev-parse", "HEAD^{commit}")
 		if err != nil {
 			return "", Tag{}, fmt.Errorf("could not resolve the installed source revision: %w", err)
@@ -342,7 +361,11 @@ func stageBootstrapBinary(ctx context.Context, u *ui, r Runner, p Paths, o boots
 	if o.tag != "" {
 		targetTag, err = ParseTag(o.tag)
 	} else {
+		minTag, hasMinTag := newestMergedReleaseTag(ctx, r, p.SrcDir, "HEAD")
 		targetTag, err = NewDownloader().LatestTag(ctx)
+		if err == nil && hasMinTag && targetTag.Compare(minTag) < 0 {
+			return "", Tag{}, fmt.Errorf("latest release %s is older than the checkout's release %s — pass --tag %s to install an older release on purpose", targetTag, minTag, targetTag)
+		}
 	}
 	if err != nil {
 		return "", Tag{}, fmt.Errorf("resolve release tag: %w", err)

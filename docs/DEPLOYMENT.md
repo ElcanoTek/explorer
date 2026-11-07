@@ -528,7 +528,7 @@ hand.
 sudo explorer update                        # shows incoming commits, asks to confirm
 sudo explorer update --yes                  # unattended (latest signed release)
 sudo explorer update --tag v2026.11.07.1    # install a specific signed release
-sudo explorer update --from-source          # compile from /opt/explorer-src instead
+sudo explorer update --from-source          # install golang (if needed) + compile from /opt/explorer-src
 echo y | sudo explorer update               # also works over a non-interactive ssh
 sudo EXPLORER_UPDATE_YES=1 explorer update
 ```
@@ -554,10 +554,10 @@ account.
    `/var/cache/explorer-build/cosign`, downloads and verifies `SHA256SUMS` (+
    `.sigstore.json`), `release.json` (matching the tag and commit), and
    `explorer-linux-<arch>` (+ `.sigstore.json`) against the release workflow's
-   Sigstore OIDC identity, and checks out the release commit in
-   `/opt/explorer-src` (updating `main` when the tag is at `origin/main`, or
-   detaching at the release tag). With `--from-source`, it compiles the binary
-   from `/opt/explorer-src` with `CGO_ENABLED=0 -trimpath -mod=readonly`. Any
+   Sigstore OIDC identity, and detaches `/opt/explorer-src` at the release
+   commit (preserving any local branch commits). With `--from-source`, it
+   installs `golang` via `dnf` when missing and compiles the binary from
+   `/opt/explorer-src` with `CGO_ENABLED=0 -trimpath -mod=readonly`. Any
    verification or build failure aborts here; the live install is untouched.
 4. Hand over to the **new** binary's apply step, so a release's own update
    logic always performs its swap. It snapshots the installed binary, unit,
@@ -585,7 +585,12 @@ and each host also caches its installed release bundles in
 `/var/cache/explorer-build/cosign/releases/<tag>` so rolling back to the
 previously installed release on that box always works without Go. To roll back
 to an older tag outside the 20-release retention window that is not cached on
-the host, add `--from-source`.
+the host, add `--from-source` (which resolves and checks out `--tag`, installs
+`golang` via `dnf` if needed, and compiles that tag from source):
+
+```bash
+sudo explorer update --tag v2026.11.07.1 --allow-downgrade --from-source
+```
 
 Or check out a specific commit in `/opt/explorer-src` and run `explorer rebuild`
 (which installs the signed release when `HEAD` is at a published or cached

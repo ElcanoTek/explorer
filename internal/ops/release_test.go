@@ -515,6 +515,26 @@ func TestResolveAndStageSignedReleaseWithoutGo(t *testing.T) {
 		t.Fatalf("bridge handoff on untagged HEAD failed: tag=%s after=%s err=%v", gotTag, gotAfter, err)
 	}
 
+	// Source-mode update with --tag checks out the requested tag in detached HEAD
+	// without force-resetting a divergent local main branch.
+	origTrusted := checkTrustedCheckout
+	t.Cleanup(func() { checkTrustedCheckout = origTrusted })
+	checkTrustedCheckout = func(string) error { return nil }
+	gitT(t, clone, "checkout", "-q", "-B", "main", untaggedTip)
+	writeFile(t, filepath.Join(clone, "local-patch.txt"), "local-only\n", 0o644)
+	gitT(t, clone, "add", "local-patch.txt")
+	gitT(t, clone, "commit", "-q", "-m", "local patch on main")
+	divergentMain := gitT(t, clone, "rev-parse", "refs/heads/main")
+	if _, gotAfter, err := resolveSourceTarget(context.Background(), u, r, p, updateOpts{fromSource: true, tag: "v2026.11.07.1", allowDowngrade: true, yes: true}, divergentMain, strings.NewReader("")); err != nil || gotAfter != before {
+		t.Fatalf("resolveSourceTarget --from-source --tag failed: after=%s err=%v", gotAfter, err)
+	}
+	if gotHead := gitT(t, clone, "rev-parse", "HEAD"); gotHead != before {
+		t.Fatalf("HEAD after resolveSourceTarget = %s, want %s", gotHead, before)
+	}
+	if gotMain := gitT(t, clone, "rev-parse", "refs/heads/main"); gotMain != divergentMain {
+		t.Fatalf("refs/heads/main was clobbered: got %s, want %s", gotMain, divergentMain)
+	}
+
 	// Cached release bundle allows signed rollback even after remote release
 	// assets are pruned (404).
 	t.Setenv("EXPLORER_RELEASE_BASE_URL", srv.URL+"/pruned")
