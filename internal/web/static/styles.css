@@ -51,10 +51,6 @@ svg {
   fill: none;
 }
 
-[hidden] {
-  display: none !important;
-}
-
 /* A browser without <dialog> has no rule hiding a closed one; keep the
    confirmation out of the header there, where the header form signs out
    directly. */
@@ -522,7 +518,7 @@ input.custom-datepicker[readonly] {
   margin: 0;
 }
 
-.empty-state {
+.inbox-empty {
   display: grid;
   justify-items: center;
   gap: var(--space-3);
@@ -530,17 +526,17 @@ input.custom-datepicker[readonly] {
   text-align: center;
 }
 
-.empty-state__icon {
+.inbox-empty__icon {
   width: 3rem;
   height: 3rem;
   color: var(--color-text-muted);
 }
 
-.empty-state__title {
+.inbox-empty__title {
   margin: 0;
 }
 
-.empty-state__hint {
+.inbox-empty__hint {
   max-width: 30rem;
   color: var(--color-text-secondary);
 }
