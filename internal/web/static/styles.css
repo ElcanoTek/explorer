@@ -97,46 +97,6 @@ section.card {
   display: none;
 }
 
-.icon-action.theme-toggle {
-  padding: 0;
-}
-
-/* Anchor controls (.btn on <a>) keep their button surface foreground rather
-   than Flag's inline-link underline and light-theme link colour. */
-a.btn {
-  text-decoration: none;
-}
-
-:root[data-theme="light"] a.btn-primary,
-:root[data-theme="light"] a.btn-primary:hover,
-:root[data-theme="light"] a.btn-primary:focus-visible {
-  color: var(--color-on-primary-fill);
-}
-
-:root[data-theme="light"] a.btn-secondary,
-:root[data-theme="light"] a.btn-secondary:hover,
-:root[data-theme="light"] a.btn-secondary:focus-visible,
-:root[data-theme="light"] a.btn-outline,
-:root[data-theme="light"] a.btn-outline:hover,
-:root[data-theme="light"] a.btn-outline:focus-visible {
-  color: var(--color-text-primary);
-}
-
-:root[data-theme="light"] a.btn-ghost {
-  color: var(--color-text-secondary);
-}
-
-:root[data-theme="light"] a.btn-ghost:hover,
-:root[data-theme="light"] a.btn-ghost:focus-visible {
-  color: var(--color-text-primary);
-}
-
-:root[data-theme="light"] a.btn-danger,
-:root[data-theme="light"] a.btn-danger:hover,
-:root[data-theme="light"] a.btn-danger:focus-visible {
-  color: var(--color-status-error-fg);
-}
-
 /* The log-out button is the rightmost control in the top bar: anchor its
    Flag .tooltip to the right edge so it never overflows the viewport on
    phones. */

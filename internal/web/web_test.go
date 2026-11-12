@@ -519,11 +519,36 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	if !strings.Contains(string(css), "dialog:not([open]) {\n  display: none;\n}") {
 		t.Errorf("styles.css lacks closed-dialog fallback")
 	}
+	if strings.Contains(string(css), "a.btn") {
+		t.Errorf("styles.css must not fork shared Flag .btn anchor rules")
+	}
+	componentsCSS, err := staticFS.ReadFile("static/design-system/components/components.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`[hidden]:not([hidden="until-found"])`,
+		"justify-content: center;",
+		"text-decoration: none;",
+		".icon-action {\n  flex: 0 0 2rem;\n  width: 2rem;\n  height: 2rem;\n  min-width: 2rem;\n  min-height: 2rem;\n  padding: 0;",
+		`a:where(:not(.btn, .icon-action,`,
+		`[data-theme="light"] a:where(:not(.btn, .icon-action,`,
+	} {
+		if !strings.Contains(string(componentsCSS), want) {
+			t.Errorf("components.css lacks %q", want)
+		}
+	}
 	parityCSS, err := staticFS.ReadFile("static/design-system/components/shadcn-parity.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".modal {", ".modal::backdrop", "background: var(--color-scrim);", ".modal__footer {"} {
+	for _, want := range []string{
+		".modal {",
+		".modal::backdrop",
+		"background: var(--color-scrim);",
+		".modal__footer {",
+		`.btn-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover`,
+	} {
 		if !strings.Contains(string(parityCSS), want) {
 			t.Errorf("shadcn-parity.css lacks %q", want)
 		}
