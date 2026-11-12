@@ -519,11 +519,48 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	if !strings.Contains(string(css), "dialog:not([open]) {\n  display: none;\n}") {
 		t.Errorf("styles.css lacks closed-dialog fallback")
 	}
+	for _, forbidden := range []string{"a.btn", ".empty-state", "[hidden]"} {
+		if strings.Contains(string(css), forbidden) {
+			t.Errorf("styles.css must not override shared Flag %q contract", forbidden)
+		}
+	}
+	componentsCSS, err := staticFS.ReadFile("static/design-system/components/components.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`[hidden]:not([hidden="until-found"])`,
+		`a:where(:not(.btn, .icon-action,`,
+		`[data-theme="light"] a:where(:not(.btn, .icon-action,`,
+	} {
+		if !strings.Contains(string(componentsCSS), want) {
+			t.Errorf("components.css lacks %q", want)
+		}
+	}
+	btnBlock := regexp.MustCompile(`(?m)^\.btn\s*\{([^}]*)\}`).FindStringSubmatch(string(componentsCSS))
+	if btnBlock == nil {
+		t.Fatal("components.css lacks .btn rule block")
+	}
+	for _, want := range []string{"justify-content: center;", "text-decoration: none;"} {
+		if !strings.Contains(btnBlock[1], want) {
+			t.Errorf(".btn rule lacks %q", want)
+		}
+	}
+	iconActionBlock := regexp.MustCompile(`(?m)^\.icon-action\s*\{([^}]*)\}`).FindStringSubmatch(string(componentsCSS))
+	if iconActionBlock == nil || !strings.Contains(iconActionBlock[1], "padding: 0;") {
+		t.Errorf(".icon-action rule lacks padding: 0;")
+	}
 	parityCSS, err := staticFS.ReadFile("static/design-system/components/shadcn-parity.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".modal {", ".modal::backdrop", "background: var(--color-scrim);", ".modal__footer {"} {
+	for _, want := range []string{
+		".modal {",
+		".modal::backdrop",
+		"background: var(--color-scrim);",
+		".modal__footer {",
+		`.btn-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover`,
+	} {
 		if !strings.Contains(string(parityCSS), want) {
 			t.Errorf("shadcn-parity.css lacks %q", want)
 		}

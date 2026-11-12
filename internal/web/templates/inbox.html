@@ -282,10 +282,10 @@
     </div>
     {{- end}}
     {{- else}}
-    <div class="empty-state">
-      <svg class="empty-state__icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#search"></use></svg>
-      <h3 class="empty-state__title">No emails matched this search</h3>
-      <p class="empty-state__hint">Try broadening your date range, adjusting filters, or switching to Fuzzy Search for more flexible matching.</p>
+    <div class="inbox-empty">
+      <svg class="inbox-empty__icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#search"></use></svg>
+      <h3 class="inbox-empty__title">No emails matched this search</h3>
+      <p class="inbox-empty__hint">Try broadening your date range, adjusting filters, or switching to Fuzzy Search for more flexible matching.</p>
       <a class="btn btn-secondary" href="/">Reset search</a>
     </div>
     {{- end}}

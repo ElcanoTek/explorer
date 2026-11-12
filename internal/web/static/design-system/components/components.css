@@ -12,10 +12,11 @@
  *
  * Load after fonts/fonts.css and tokens/design-tokens.css. Every color,
  * radius, shadow and transition reads a token; the theme switches through
- * html[data-theme]. It sets `* { box-sizing: border-box }` and inherits fonts
- * on form controls, and styles bare `a`, `label`, `input`, `select` and
- * `table` elements; page layout (body background, containers, headings) is
- * left to the product. Never edit a vendored copy: ask Flag for the change.
+ * html[data-theme]. It sets `* { box-sizing: border-box }`, preserves
+ * `[hidden]` on flexed/gridded components, inherits fonts on form controls,
+ * and styles bare `a`, `label`, `input`, `select` and `table` elements; page
+ * layout (body background, containers, headings) is left to the product.
+ * Never edit a vendored copy: ask Flag for the change.
  *
  * Flag's own preview loads a byte-identical copy (preview/components.css,
  * refreshed by design-system/sync-preview.sh; CI fails on drift).
@@ -23,6 +24,10 @@
 
 * {
   box-sizing: border-box;
+}
+
+[hidden]:not([hidden="until-found"]) {
+  display: none !important;
 }
 
 [data-theme="light"] .btn-primary,
@@ -40,7 +45,11 @@ body.theme-light .btn-primary:where(:not(:disabled, [aria-disabled="true"], .is-
 }
 
 [data-theme="light"] .btn-primary:disabled,
-body.theme-light .btn-primary:disabled {
+[data-theme="light"] .btn-primary[aria-disabled="true"],
+[data-theme="light"] .btn-primary.is-disabled,
+body.theme-light .btn-primary:disabled,
+body.theme-light .btn-primary[aria-disabled="true"],
+body.theme-light .btn-primary.is-disabled {
   background: var(--gradient-action-disabled);
   border-color: var(--color-border-strong);
   color: var(--color-text-disabled);
@@ -48,21 +57,23 @@ body.theme-light .btn-primary:disabled {
 
 /* Links: --color-link (dark) is 6:1+ on every surface; --color-secondary,
    the long-standing light link color, is 4.5:1+ there but only 2.7-3.6:1
-   in dark, so it is light-only. See TOKENS.md "Links". */
+   in dark, so it is light-only. Exclude component-classed anchors (.btn,
+   .icon-action, .tab, ...) via zero-specificity :where(:not(...)) so light
+   prose-link rules never override control foregrounds. See TOKENS.md "Links". */
 
-a {
+a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)) {
   color: var(--color-link);
 }
 
-[data-theme="light"] a,
-body.theme-light a {
+[data-theme="light"] a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)),
+body.theme-light a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)) {
   color: var(--color-secondary);
 }
 
-[data-theme="light"] a:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
-[data-theme="light"] a:focus-visible,
-body.theme-light a:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
-body.theme-light a:focus-visible {
+[data-theme="light"] a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+[data-theme="light"] a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)):focus-visible,
+body.theme-light a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light a:where(:not(.btn, .icon-action, .tab, .seg-option, .menu-item, .pill-btn, .picker-icon-btn, .featured-link, .link-tile, .picker-row__link)):focus-visible {
   color: var(--color-primary-hover);
 }
 
@@ -225,7 +236,7 @@ body.theme-light .theme-toggle__icon--moon {
   transform: scale(0.86) rotate(12deg);
 }
 
-@media (max-width: 640px) {
+@media (width < 40rem) {
   .theme-toggle {
     min-width: 2.5rem;
   }
@@ -331,7 +342,9 @@ textarea {
   transition: transform var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
+  text-decoration: none;
 }
 
 .btn:focus-visible,
@@ -393,7 +406,9 @@ textarea:focus-visible {
   transition: transform var(--transition-fast);
 }
 
-.btn:disabled {
+.btn:disabled,
+.btn[aria-disabled="true"],
+.btn.is-disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
@@ -948,6 +963,7 @@ input[type="search"]::-webkit-search-results-decoration {
   height: 2rem;
   min-width: 2rem;
   min-height: 2rem;
+  padding: 0;
   border-radius: 0.5rem;
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface-2);
@@ -2050,6 +2066,7 @@ table {
 
 .icon-action:disabled,
 .icon-action[aria-disabled="true"],
+.icon-action.is-disabled,
 .number-input__btn:disabled,
 .dropzone-browse-btn:disabled {
   opacity: 0.5;
@@ -2105,7 +2122,7 @@ table {
   }
 }
 
-@media (max-width: 47.9375rem) {
+@media (width < 48rem) {
   .ds-app-header {
     align-items: flex-start;
   }
@@ -2150,7 +2167,7 @@ table {
   display: flex; align-items: stretch; justify-content: center; padding: 0;
 }
 
-@media (max-width: 39.999rem) {
+@media (width < 40rem) {
   .scrim > .picker-modal {
     max-width: 100%; height: 100dvh; border: 0; border-radius: 0; box-shadow: none;
   }
@@ -2354,6 +2371,7 @@ mark.match { background: var(--color-match-bg); color: var(--color-text-primary)
   font: inherit;
   font-size: var(--font-size-overline);
   font-weight: var(--font-weight-medium);
+  text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);

@@ -5,9 +5,9 @@
  * Plain CSS for the registry items components.css has no class for (button
  * outline/link/sizes, radio, alert, separator, line tabs, modal, sheet,
  * popover, menu, tooltip, skeleton, avatar, scroll area, toast, command,
- * clickable table rows, extra badges), so a server-rendered page can match a
- * Tier B app component for component. The mapping is Flag's
- * design-system/COMPONENTS.md "shadcn/ui (Tier B) Mapping".
+ * clickable table rows, extra badges, progress, kbd, empty state, copy button),
+ * so a server-rendered page can match a Tier B app component for component. The
+ * mapping is Flag's design-system/COMPONENTS.md "shadcn/ui (Tier B) Mapping".
  *
  * Load after fonts/fonts.css, tokens/design-tokens.css and
  * components/components.css; it builds on their classes and reads tokens
@@ -223,6 +223,7 @@ input[type="radio"].ds-radio:disabled:checked {
   font: inherit;
   font-size: var(--font-size-body-md);
   font-weight: var(--font-weight-medium);
+  text-decoration: none;
   cursor: pointer;
   transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
 }
@@ -304,7 +305,7 @@ input[type="radio"].ds-radio:disabled:checked {
   margin-top: var(--space-4);
 }
 
-@media (max-width: 39.9375rem) {
+@media (width < 40rem) {
   .modal__footer {
     flex-direction: column-reverse;
   }
@@ -364,6 +365,7 @@ input[type="radio"].ds-radio:disabled:checked {
   font: inherit;
   font-size: var(--font-size-body-md);
   text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -624,10 +626,122 @@ tr.is-interactive:focus-visible {
 .badge-outline { background: transparent; color: var(--color-text-primary); }
 .badge-accent { background: var(--color-accent); border-color: var(--color-accent); color: var(--flag-on-accent); }
 
-/* Small select (SelectTrigger size="sm"). */
+/* Small select (SelectTrigger / NativeSelect size="sm"). */
 .select-wrap--sm select {
   min-height: 2rem;
   height: 2rem;
   border-radius: var(--radius-sm);
   font-size: var(--font-size-caption);
+}
+
+/* Progress: pill track on surface-2 with a primary-fill bar (3:1+ against the
+   track in both themes). Pair with role="progressbar" and an accessible name. */
+.progress {
+  position: relative;
+  width: 100%;
+  height: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+}
+
+.progress__bar {
+  width: 100%;
+  height: 100%;
+  background: var(--color-primary-fill);
+  transition: transform var(--transition-base), width var(--transition-base);
+}
+
+/* Kbd: inline keyboard shortcut cap and combo group. */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.375rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-family: var(--font-code);
+  font-size: var(--font-size-overline);
+  line-height: 1;
+  font-weight: var(--font-weight-medium);
+  user-select: none;
+}
+
+.kbd-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Empty state (COMPONENTS.md "Empty States"): optional icon tile, title,
+   explanation and next action on a dashed subtle panel. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-6);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-overlay-soft);
+  text-align: center;
+}
+
+.empty-state__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--color-icon-tile);
+  color: var(--color-text-primary);
+}
+
+.empty-state__icon > svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.empty-state__title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-subtitle);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.empty-state__description {
+  max-width: 28rem;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body-md);
+}
+
+.empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* Copy button: combine with .btn (default: .btn.btn-ghost.btn-icon.btn-sm);
+   set data-copied="true" and aria-label="Copied" briefly after clipboard write. */
+.btn-copy {
+  position: relative;
+}
+
+.btn-copy[data-copied="true"] > svg {
+  color: var(--color-success);
 }
