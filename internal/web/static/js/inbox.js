@@ -339,7 +339,7 @@
     detailPanel.hidden = false;
     inboxShell.classList.add("is-panel-open");
     setPanelMobileState();
-    detailPanelBody.innerHTML = '<div class="detail-panel__loading"><span class="loading-dot" aria-hidden="true"></span><span>Loading email...</span></div>';
+    detailPanelBody.innerHTML = '<div class="detail-panel__loading"><span class="spinner" aria-hidden="true"></span><span>Loading email...</span></div>';
 
     try {
       const response = await fetch(openUrl, {
@@ -360,7 +360,7 @@
       syncDetailDateWithRow(row, detailPanelBody);
       normalizeDetailPanelLinks(detailPanelBody);
     } catch (_error) {
-      detailPanelBody.innerHTML = '<section class="card"><p class="error">Could not load this email. Please try again.</p></section>';
+      detailPanelBody.innerHTML = '<section class="card"><div class="alert alert--destructive" role="alert">Could not load this email. Please try again.</div></section>';
     }
   };
 
@@ -460,7 +460,7 @@
     }
     button.dataset.originalHtml = button.innerHTML;
     button.disabled = true;
-    button.innerHTML = `<span class="loading-dot" aria-hidden="true"></span><span>${loadingText}</span>`;
+    button.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${loadingText}</span>`;
   };
 
   const startSearchLoading = () => {
@@ -503,7 +503,7 @@
     const maxAllowedDays = getMaxAllowedDays();
     if (summary.totalDays > maxAllowedDays) {
       warning.hidden = false;
-      warning.className = "search-warning search-warning--error";
+      warning.className = "alert alert--destructive";
       const mode = modeInput ? modeInput.value : "view";
       const searchBody = form.querySelector('input[name="search_body"]');
       const bodyLimited = mode === "fuzzy" && searchBody && searchBody.checked && maxAllowedDays < maxSearchDays;
@@ -515,13 +515,13 @@
 
     if (summary.totalDays >= threshold) {
       warning.hidden = false;
-      warning.className = "search-warning search-warning--caution";
+      warning.className = "alert alert--warning";
       warning.textContent = `Heads up: ${summary.totalDays} days can take a while. Narrow dates if you need faster results.`;
       return;
     }
 
     warning.hidden = true;
-    warning.className = "search-warning";
+    warning.className = "alert";
     warning.textContent = "";
   };
 
