@@ -2,9 +2,10 @@
 {{define "topbar_actions"}}
 <form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
-  <button class="icon-action has-tooltip logout-icon-btn" type="submit" data-tooltip="Sign out" aria-label="Sign out" title="Sign out">
+  <button class="icon-action" type="submit" data-tooltip="Sign out" aria-label="Sign out" aria-describedby="sign-out-tooltip">
     <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#logout"></use></svg>
   </button>
+  <span id="sign-out-tooltip" class="tooltip" role="tooltip">Sign out</span>
 </form>
 {{- /* Signing out asks first: base.js opens this dialog from the form above
        instead of posting it. The dialog carries its own logout form (same
@@ -27,7 +28,7 @@
 {{- end}}
 {{define "hidden_fields"}}{{range .}}
         <input type="hidden" name="{{.Key}}" value="{{.Value}}" />{{end}}{{end}}
-{{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.2 8.4 6.6 11.6 12.8 4.8"></path></svg></span>{{end}}
+{{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"></path></svg></span>{{end}}
 {{define "date_input"}}<span class="date-input-wrap">
                 <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
                 <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else if eq .Key "date_to"}}To date{{else}}day{{end}}" aria-haspopup="dialog" aria-expanded="false">
@@ -65,22 +66,25 @@
     <input type="hidden" name="mode" value="{{.Mode}}" />
 
     {{- if ne .Mode "view"}}
-    <p class="search-warning" id="search-warning" hidden></p>
+    <p class="alert" id="search-warning" hidden></p>
     {{- end}}
 
     {{if eq .Mode "view" -}}
-    <details class="advanced-section" open>
-      <summary class="advanced-toggle">Search options</summary>
-      <fieldset class="date-ranges">
-        <legend>Day</legend>
-        <label aria-label="Day">
-          {{template "date_input" (field "day" .SelectedDay)}}
-        </label>
-      </fieldset>
-    </details>
+    <div class="ds-accordion">
+      <details open>
+        <summary>Search options</summary>
+        <fieldset class="date-ranges">
+          <legend>Day</legend>
+          <label aria-label="Day">
+            {{template "date_input" (field "day" .SelectedDay)}}
+          </label>
+        </fieldset>
+      </details>
+    </div>
     {{- else -}}
-    <details class="advanced-section" open>
-      <summary class="advanced-toggle">Search options</summary>
+    <div class="ds-accordion">
+      <details open>
+        <summary>Search options</summary>
       <fieldset class="date-ranges">
         <legend>Date ranges</legend>
         <p class="subtle date-ranges__help">Add one or more ranges to narrow the report window.</p>
@@ -157,7 +161,8 @@
         </fieldset>
       </section>
       {{- end}}
-    </details>
+      </details>
+    </div>
     {{- end}}
 
     <div class="filters__toolbar">
@@ -178,7 +183,7 @@
 
 {{- if .Error}}
 <section class="card">
-  <p class="error">{{.Error}}</p>
+  <div class="alert alert--destructive" role="alert">{{.Error}}</div>
 </section>
 {{- end}}
 
@@ -228,7 +233,7 @@
           <svg class="icon-inline" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#filter"></use></svg>
           <span>Filters</span>
         </button>
-        <div class="results-filter-menu" id="results-filter-menu" hidden>
+        <div class="popover results-filter-menu" id="results-filter-menu" hidden>
           <input class="ds-checkbox-input" type="checkbox" id="filter-has-attachments" />
           <label class="ds-checkbox results-filter-check" for="filter-has-attachments">
             {{template "check"}}

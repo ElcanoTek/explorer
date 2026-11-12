@@ -516,9 +516,16 @@ func TestSignOutAsksFirstInACentredDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dialog:not([open]) {\n  display: none;\n}", ".modal {", ".modal::backdrop {", "background: var(--color-scrim);", ".modal__footer {"} {
-		if !strings.Contains(string(css), want) {
-			t.Errorf("styles.css lacks %q", want)
+	if !strings.Contains(string(css), "dialog:not([open]) {\n  display: none;\n}") {
+		t.Errorf("styles.css lacks closed-dialog fallback")
+	}
+	parityCSS, err := staticFS.ReadFile("static/design-system/components/shadcn-parity.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".modal {", ".modal::backdrop", "background: var(--color-scrim);", ".modal__footer {"} {
+		if !strings.Contains(string(parityCSS), want) {
+			t.Errorf("shadcn-parity.css lacks %q", want)
 		}
 	}
 }
@@ -834,6 +841,7 @@ func TestStaticAssetsAreVersionedAndCached(t *testing.T) {
 	}
 	for _, want := range []string{
 		"design-system/tokens/design-tokens.css", "design-system/fonts/fonts.css",
+		"design-system/components/components.css", "design-system/components/shadcn-parity.css",
 		"design-system/icons/core-icons.svg", "design-system/logos/elcano-mark-primary.svg",
 		"design-system/logos/explorer-favicon.svg", "styles.css", "js/datepicker.js",
 	} {

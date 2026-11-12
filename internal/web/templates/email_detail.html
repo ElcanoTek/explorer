@@ -48,13 +48,15 @@
     </header>
 
     <div class="message-card__body-wrap">
-      <details class="message-advanced">
-        <summary>Advanced details</summary>
-        <div class="message-advanced__content">
-          <p class="email-meta__row"><strong>S3 key:</strong> <code>{{.Email.S3Key}}</code></p>
-          <p class="email-meta__row"><strong>Message ID:</strong> <code>{{.Email.MessageID}}</code></p>
-        </div>
-      </details>
+      <div class="ds-accordion">
+        <details class="message-advanced">
+          <summary>Advanced details</summary>
+          <div class="message-advanced__content">
+            <p class="email-meta__row"><strong>S3 key:</strong> <code>{{.Email.S3Key}}</code></p>
+            <p class="email-meta__row"><strong>Message ID:</strong> <code>{{.Email.MessageID}}</code></p>
+          </div>
+        </details>
+      </div>
 
       {{- if .Email.Attachments}}
       <div class="attachment-chips" aria-label="Attachments">

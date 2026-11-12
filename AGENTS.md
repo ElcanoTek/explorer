@@ -119,18 +119,20 @@ binary from `internal/web` via `go:embed`:
 - `templates/*.html` — `html/template` pages (`base.html` + one per page).
   No inline styles or handlers; the only inline script is the nonce'd theme
   bootstrap in `base.html`.
-- `static/styles.css` — product CSS; it reads Flag tokens and never hard-codes
-  colours. `static/js/*.js` — small plain scripts, no build step, no npm:
-  `base.js` (theme, loading bar, the sign-out confirmation), `inbox.js`
-  (search form, results, detail panel), `email.js`, and two modules with
-  Node unit tests:
-  `datepicker.js` (the date field) and `date-ranges.js` (range-day
-  arithmetic, mirroring `countDaysCovered` in `dates.go`).
-- Components follow Flag's anatomy and class names (`.ds-app-header`,
-  `.ds-checkbox`, `.btn`, … per Flag's COMPONENTS.md), implemented in
-  `styles.css` today. When Flag ships a vendorable component stylesheet
-  mirroring its shadcn/ui registry, vendor it with `flag-sync.sh add` and
-  drop the matching product rules rather than keeping two copies.
+- `static/styles.css` — Explorer-specific layout and search/filter rules
+  (inbox list, message detail view, and the in-house date-picker popup); it
+  reads Flag tokens and never hard-codes colours. `static/js/*.js` — small
+  plain scripts, no build step, no npm: `base.js` (theme, loading bar, the
+  sign-out confirmation), `inbox.js` (search form, results, detail panel),
+  `email.js`, and two modules with Node unit tests: `datepicker.js` (the date
+  field) and `date-ranges.js` (range-day arithmetic, mirroring
+  `countDaysCovered` in `dates.go`).
+- Components use Flag's vendored Tier A stylesheets
+  (`static/design-system/components/components.css` and
+  `static/design-system/components/shadcn-parity.css`, locked in `flag.lock`),
+  loaded after `design-tokens.css` and before `styles.css`. Do not re-declare
+  Flag component classes (`.ds-app-header`, `.btn`, `.ds-checkbox`, `.modal`,
+  `.alert`, `.tooltip`, …) in `styles.css`.
 - Every static URL in a page comes from the `asset` template func
   (`assetURL` in `render.go`): `/static/v-<content hash of the whole static
   tree>/<path>`, Flag's files included, so a deploy never mixes a cached old
