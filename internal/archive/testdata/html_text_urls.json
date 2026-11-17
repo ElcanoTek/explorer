@@ -140,6 +140,39 @@
    "want": [
     "https://vendor.example/w.csv"
    ]
+  },
+  {
+   "name": "a closing tag's name must end there",
+   "html": "<script>a</scriptx> https://hidden.example/x.csv</script> https://vendor.example/y.csv",
+   "want": [
+    "https://vendor.example/y.csv"
+   ]
+  },
+  {
+   "name": "entities that spell a URL stop end it",
+   "html": "https://vendor.example/x.csv&quot; &lt;https://vendor.example/y.csv&gt; 'https://vendor.example/z.csv&#39;",
+   "want": [
+    "https://vendor.example/x.csv",
+    "https://vendor.example/y.csv",
+    "https://vendor.example/z.csv"
+   ]
+  },
+  {
+   "name": "every named whitespace entity ends a URL",
+   "html": "https://vendor.example/a1.csv&hairsp;x https://vendor.example/a2.csv&ThickSpace;x https://vendor.example/a3.csv&numsp;x",
+   "want": [
+    "https://vendor.example/a1.csv",
+    "https://vendor.example/a2.csv",
+    "https://vendor.example/a3.csv"
+   ]
+  },
+  {
+   "name": "numeric control spaces end a URL; windows-1252 range does not",
+   "html": "https://vendor.example/b1.csv&#11;x https://vendor.example/b2.csv&#133;x",
+   "want": [
+    "https://vendor.example/b1.csv",
+    "https://vendor.example/b2.csv&#133;x"
+   ]
   }
  ]
 }

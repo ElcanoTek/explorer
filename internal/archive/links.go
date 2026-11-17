@@ -132,7 +132,12 @@ func dropElements(html, name string) string {
 			continue
 		}
 		e := -1
-		if k := indexFrom(lower, closing, after); k >= 0 {
+		k := indexFrom(lower, closing, after)
+		// A closing tag's name must end there: "</scriptx>" does not close <script>.
+		for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
+			k = indexFrom(lower, closing, k+len(closing))
+		}
+		if k >= 0 {
 			e = indexFrom(lower, ">", k+len(closing))
 		}
 		if e < 0 {
@@ -268,24 +273,47 @@ func htmlSpace(r rune) bool {
 	return 0x2000 <= r && r <= 0x200a
 }
 
-var spaceEntityRE = regexp.MustCompile(`&(?:(nbsp|ensp|emsp|thinsp|Tab|NewLine)|#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6}));`)
+// urlStop is a rune the text-URL pattern stops at besides whitespace.
+func urlStop(r rune) bool {
+	return htmlSpace(r) || strings.ContainsRune("<>\"')]}", r)
+}
 
-// spaceOut turns whitespace characters and the entities that spell one
-// (&nbsp; and friends, decimal or hex) into spaces, leaving everything else
-// as written (the archiver's _space_out).
+var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6}));`)
+
+// separatorRef reports whether the character reference m spells only
+// whitespace or URL stops: named ones through the HTML5 table, numeric ones
+// by their code point (0x80-0x9F decode to windows-1252 characters, none of
+// them a stop), as the archiver's _separator_ref.
+func separatorRef(m string) bool {
+	g := charRefRE.FindStringSubmatch(m)
+	if g[1] != "" {
+		decoded := stdhtml.UnescapeString(m)
+		if decoded == m || decoded == "" {
+			return false
+		}
+		for _, r := range decoded {
+			if !urlStop(r) {
+				return false
+			}
+		}
+		return true
+	}
+	digits, base := g[2], 10
+	if digits == "" {
+		digits, base = g[3], 16
+	}
+	// At most 7 decimal or 6 hex digits: always fits in 32 bits.
+	code, err := strconv.ParseInt(digits, base, 32)
+	return err == nil && (code < 0x80 || code > 0x9f) && code < 0x110000 && urlStop(rune(code))
+}
+
+// spaceOut turns whitespace characters, and every character reference
+// (named, decimal or hex) that spells only whitespace or the runes the URL
+// pattern stops at (&nbsp;, &hairsp;, &quot;, &lt;, &#39; ...), into spaces,
+// leaving everything else as written (the archiver's _space_out).
 func spaceOut(text string) string {
-	text = spaceEntityRE.ReplaceAllStringFunc(text, func(m string) string {
-		g := spaceEntityRE.FindStringSubmatch(m)
-		if g[1] != "" {
-			return " "
-		}
-		digits, base := g[2], 10
-		if digits == "" {
-			digits, base = g[3], 16
-		}
-		// At most 7 decimal or 6 hex digits: always fits in 32 bits.
-		code, err := strconv.ParseInt(digits, base, 32)
-		if err == nil && code < 0x110000 && htmlSpace(rune(code)) {
+	text = charRefRE.ReplaceAllStringFunc(text, func(m string) string {
+		if separatorRef(m) {
 			return " "
 		}
 		return m
