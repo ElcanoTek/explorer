@@ -109,53 +109,6 @@ func extractTextURLs(text string) []string {
 	return out
 }
 
-// dropElements replaces each <name ...>...</name ...> block of html with a
-// space, in one pass (ASCII case-insensitive), as the archiver's
-// _drop_elements does: both tags end at their quote-aware end (tagEnd), an
-// element left open hides the rest, as in a browser, and "<name" followed by
-// more name characters ("<styles") is not one.
-func dropElements(html, name string) string {
-	lower := asciiLower(html)
-	opening, closing := "<"+name, "</"+name
-	var out strings.Builder
-	i := 0
-	for {
-		j := indexFrom(lower, opening, i)
-		if j < 0 {
-			out.WriteString(html[i:])
-			break
-		}
-		after := j + len(opening)
-		if after < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
-			out.WriteString(html[i:after])
-			i = after
-			continue
-		}
-		e := -1
-		// The closing tag is looked for after the opening tag's own
-		// (quote-aware) end, never inside it.
-		k := -1
-		if opened := tagEnd(html, j); opened >= 0 {
-			k = indexFrom(lower, closing, opened+1)
-		}
-		// A closing tag's name must end there: "</scriptx>" does not close <script>.
-		for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
-			k = indexFrom(lower, closing, k+len(closing))
-		}
-		if k >= 0 {
-			e = tagEnd(html, k)
-		}
-		if e < 0 { // left open: the rest is the element's
-			out.WriteString(html[i:j])
-			break
-		}
-		out.WriteString(html[i:j])
-		out.WriteString(" ")
-		i = e + 1
-	}
-	return out.String()
-}
-
 // asciiLower lowercases A-Z only, so byte offsets stay those of s.
 func asciiLower(s string) string {
 	b := []byte(s)
@@ -219,12 +172,29 @@ func tagEnd(html string, j int) int {
 	return -1
 }
 
-// stripMarkup replaces each tag and comment of html with a space, in one
-// pass, as the archiver's _strip_markup does: a tag starts at "<" followed
-// by a letter, "/", "!" or "?" (else "<" is text) and ends at the first ">"
-// outside a quoted attribute value (tagEnd); a tag that never ends hides the
-// rest. A comment ends at "-->" (left open, it runs to the end).
+// rawTextName is "style" or "script" when the tag at lower[j] opens one
+// (its name ends there: "<styles" does not).
+func rawTextName(lower string, j int) string {
+	for _, name := range []string{"style", "script"} {
+		after := j + 1 + len(name)
+		if strings.HasPrefix(lower[j+1:], name) && after < len(lower) && strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
+			return name
+		}
+	}
+	return ""
+}
+
+// stripMarkup returns html's text in one left-to-right pass, as the
+// archiver's _strip_markup does: each tag and comment becomes a space, and
+// each <style> or <script> element (its raw text included) too. A tag starts
+// at "<" followed by a letter, "/", "!" or "?" (else "<" is text) and ends at
+// its first ">" outside a quoted attribute value (tagEnd). A comment ends at
+// "-->"; a raw-text element at its own closing tag (whose name ends there,
+// quote-aware). Anything left open (a tag, a quote, a comment, an element)
+// hides the rest, as in a browser. Markers inside a comment or an element's
+// raw text are never read as markup.
 func stripMarkup(html string) string {
+	lower := asciiLower(html)
 	var out strings.Builder
 	i, n := 0, len(html)
 	for {
@@ -249,13 +219,29 @@ func stripMarkup(html string) string {
 			continue
 		}
 		end := tagEnd(html, j)
+		out.WriteString(html[i:j])
 		if end < 0 { // the rest is inside the tag
-			out.WriteString(html[i:j])
 			break
 		}
-		out.WriteString(html[i:j])
 		out.WriteString(" ")
-		i = end + 1
+		name := rawTextName(lower, j)
+		if name == "" {
+			i = end + 1
+			continue
+		}
+		closing := "</" + name
+		k := indexFrom(lower, closing, end+1)
+		for k >= 0 && k+len(closing) < n && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
+			k = indexFrom(lower, closing, k+len(closing))
+		}
+		e := -1
+		if k >= 0 {
+			e = tagEnd(html, k)
+		}
+		if e < 0 { // left open: the rest is the element's
+			break
+		}
+		i = e + 1
 	}
 	return out.String()
 }
@@ -344,7 +330,7 @@ func spaceRunes(text string) string {
 // extract_urls_from_html_text.
 func extractHTMLTextURLs(html string) []string {
 	html = truncateToRunes(html, maxScanRunes)
-	return extractTextURLs(spaceOut(stripMarkup(dropElements(dropElements(html, "style"), "script"))))
+	return extractTextURLs(spaceOut(stripMarkup(html)))
 }
 
 // bodyLink is a link of a body; bare marks one found only as text in HTML.

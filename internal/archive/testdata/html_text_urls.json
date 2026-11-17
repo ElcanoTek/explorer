@@ -208,6 +208,21 @@
    "want": [
     "https://vendor.example/g2.csv"
    ]
+  },
+  {
+   "name": "a style marker inside a comment or a script is not markup",
+   "html": "<!-- <style> --> https://vendor.example/h1.csv <script>var s='<style>';</script> https://vendor.example/h2.csv",
+   "want": [
+    "https://vendor.example/h1.csv",
+    "https://vendor.example/h2.csv"
+   ]
+  },
+  {
+   "name": "a comment marker inside a script is not markup",
+   "html": "<script>x='<!--'</script> https://vendor.example/h3.csv",
+   "want": [
+    "https://vendor.example/h3.csv"
+   ]
   }
  ]
 }
