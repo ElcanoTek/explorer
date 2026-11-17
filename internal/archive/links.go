@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
@@ -166,11 +168,144 @@ func indexFrom(s, sub string, from int) int {
 	return -1
 }
 
+// The archiver's MAX_SCAN_CHARS and MAX_TAG_CHARS, counted in characters
+// (runes) as Python counts them, so both cut at the same place.
+const (
+	maxScanRunes = 2_000_000
+	maxTagRunes  = 8192
+)
+
+// truncateToRunes is s cut after n runes.
+func truncateToRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
+func isTagStart(c byte) bool {
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '/' || c == '!' || c == '?'
+}
+
+// stripMarkup replaces each tag and comment of html with a space, in one
+// pass, as the archiver's _strip_markup does: a tag starts at "<" followed
+// by a letter, "/", "!" or "?" (else "<" is text) and ends at the first ">"
+// outside a quoted attribute value, looked for within maxTagRunes (beyond
+// that, or with a quote left open, at its first ">"); a tag with no ">"
+// after it stays text. A comment ends at "-->" (left open, it runs to the end).
+func stripMarkup(html string) string {
+	var out strings.Builder
+	i, n := 0, len(html)
+	for {
+		j := indexFrom(html, "<", i)
+		if j < 0 {
+			out.WriteString(html[i:])
+			break
+		}
+		if strings.HasPrefix(html[j:], "<!--") {
+			k := indexFrom(html, "-->", j+4)
+			out.WriteString(html[i:j])
+			out.WriteString(" ")
+			if k < 0 {
+				break
+			}
+			i = k + 3
+			continue
+		}
+		if j+1 >= n || !isTagStart(html[j+1]) {
+			out.WriteString(html[i : j+1])
+			i = j + 1
+			continue
+		}
+		end, quote := -1, byte(0)
+		// Up to maxTagRunes characters from the "<", as Python's html[j:j+MAX_TAG_CHARS].
+		runes := 1
+		for k := j + 1; k < n && runes < maxTagRunes; {
+			c := html[k]
+			switch {
+			case quote != 0:
+				if c == quote {
+					quote = 0
+				}
+			case c == '"' || c == '\'':
+				quote = c
+			case c == '>':
+				end = k
+			}
+			if end >= 0 {
+				break
+			}
+			_, size := utf8.DecodeRuneInString(html[k:])
+			k += size
+			runes++
+		}
+		if end < 0 {
+			end = indexFrom(html, ">", j+1)
+			if end < 0 {
+				out.WriteString(html[i:])
+				break
+			}
+		}
+		out.WriteString(html[i:j])
+		out.WriteString(" ")
+		i = end + 1
+	}
+	return out.String()
+}
+
+// htmlSpace is every rune Python's str.isspace() calls whitespace: once
+// they are spaces, Go's \s and Python's agree on where a URL ends.
+func htmlSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', 0x1c, 0x1d, 0x1e, 0x1f, ' ', 0x85, 0xa0, 0x1680,
+		0x2028, 0x2029, 0x202f, 0x205f, 0x3000:
+		return true
+	}
+	return 0x2000 <= r && r <= 0x200a
+}
+
+var spaceEntityRE = regexp.MustCompile(`&(?:(nbsp|ensp|emsp|thinsp|Tab|NewLine)|#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6}));`)
+
+// spaceOut turns whitespace characters and the entities that spell one
+// (&nbsp; and friends, decimal or hex) into spaces, leaving everything else
+// as written (the archiver's _space_out).
+func spaceOut(text string) string {
+	text = spaceEntityRE.ReplaceAllStringFunc(text, func(m string) string {
+		g := spaceEntityRE.FindStringSubmatch(m)
+		if g[1] != "" {
+			return " "
+		}
+		digits, base := g[2], 10
+		if digits == "" {
+			digits, base = g[3], 16
+		}
+		// At most 7 decimal or 6 hex digits: always fits in 32 bits.
+		code, err := strconv.ParseInt(digits, base, 32)
+		if err == nil && code < 0x110000 && htmlSpace(rune(code)) {
+			return " "
+		}
+		return m
+	})
+	return strings.Map(func(r rune) rune {
+		if htmlSpace(r) {
+			return ' '
+		}
+		return r
+	}, text)
+}
+
 // extractHTMLTextURLs lists the URLs written as text in an HTML part,
-// outside its tags (so not hrefs) and its <style>/<script> blocks, with
-// entities kept as in an href (the archiver's extract_urls_from_html_text).
+// outside its tags, comments and attribute values (so not hrefs), with its
+// <style>/<script> blocks left out and whitespace entities as separators;
+// otherwise as written (&amp; kept, as in an href). The archiver's
+// extract_urls_from_html_text.
 func extractHTMLTextURLs(html string) []string {
-	return extractTextURLs(tagRE.ReplaceAllString(dropElements(dropElements(html, "style"), "script"), " "))
+	html = truncateToRunes(html, maxScanRunes)
+	return extractTextURLs(spaceOut(stripMarkup(dropElements(dropElements(html, "style"), "script"))))
 }
 
 type bodyLink struct{ url, text string }

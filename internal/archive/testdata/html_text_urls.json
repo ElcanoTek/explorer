@@ -1,38 +1,145 @@
 {
-  "note": "Bare URLs in an HTML part's text: ses_email_link_archiver.extract_urls_from_html_text and Explorer's extractHTMLTextURLs (internal/archive/links.go) must return exactly WANT for each HTML (the archive key is the SHA-256 of the URL as extracted). Explorer keeps a copy of this file in internal/archive/testdata/.",
-  "cases": [
-    {"name": "openx bare signed link, entities kept",
-     "html": "<p>Your report is ready:<br>https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12</p>",
-     "want": ["https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"]},
-    {"name": "hrefs are not text",
-     "html": "<a href=\"https://vendor.example/a.csv\">Download</a>",
-     "want": []},
-    {"name": "anchor text that is a URL counts",
-     "html": "<a href=\"https://t.example/c?u=1\">https://vendor.example/b.csv</a>",
-     "want": ["https://vendor.example/b.csv"]},
-    {"name": "tags end a URL",
-     "html": "<td>https://vendor.example/c.csv</td><td>next</td>",
-     "want": ["https://vendor.example/c.csv"]},
-    {"name": "trailing punctuation trimmed",
-     "html": "<p>Get it at https://vendor.example/d.csv.</p>",
-     "want": ["https://vendor.example/d.csv"]},
-    {"name": "style and script blocks skipped, any case",
-     "html": "<STYLE type=\"text/css\">@import url(https://fonts.example/css?family=x);</Style ><script>var u='https://cdn.example/app.js'</SCRIPT>after https://vendor.example/e.csv",
-     "want": ["https://vendor.example/e.csv"]},
-    {"name": "a tag name only starting with style is not style",
-     "html": "<styles>https://vendor.example/f.csv</styles>",
-     "want": ["https://vendor.example/f.csv"]},
-    {"name": "an unclosed style keeps the rest",
-     "html": "<style>https://vendor.example/g.csv",
-     "want": ["https://vendor.example/g.csv"]},
-    {"name": "a lone < stays text",
-     "html": "a < b https://vendor.example/h.csv",
-     "want": ["https://vendor.example/h.csv"]},
-    {"name": "several, in order",
-     "html": "<div>one https://a.example/1.csv two <b>https://b.example/2.xlsx</b></div>",
-     "want": ["https://a.example/1.csv", "https://b.example/2.xlsx"]},
-    {"name": "non-ASCII text around a URL",
-     "html": "<p>Ünïcode İ text https://vendor.example/i.csv ok</p>",
-     "want": ["https://vendor.example/i.csv"]}
-  ]
+ "note": "Bare URLs in an HTML part's text: ses_email_link_archiver.extract_urls_from_html_text and Explorer's extractHTMLTextURLs (internal/archive/links.go) must return exactly WANT for each HTML (the archive key is the SHA-256 of the URL as extracted). Explorer keeps a copy of this file in internal/archive/testdata/. Known difference, older than these cases: Explorer also lists URLs whose scheme is not lower case (the archiver never fetches them, so they stay live-only); the cases here use lower-case schemes.",
+ "cases": [
+  {
+   "name": "openx bare signed link, entities kept",
+   "html": "<p>Your report is ready:<br>https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12</p>",
+   "want": [
+    "https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"
+   ]
+  },
+  {
+   "name": "hrefs are not text",
+   "html": "<a href=\"https://vendor.example/a.csv\">Download</a>",
+   "want": []
+  },
+  {
+   "name": "anchor text that is a URL counts",
+   "html": "<a href=\"https://t.example/c?u=1\">https://vendor.example/b.csv</a>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "tags end a URL",
+   "html": "<td>https://vendor.example/c.csv</td><td>next</td>",
+   "want": [
+    "https://vendor.example/c.csv"
+   ]
+  },
+  {
+   "name": "trailing punctuation trimmed",
+   "html": "<p>Get it at https://vendor.example/d.csv.</p>",
+   "want": [
+    "https://vendor.example/d.csv"
+   ]
+  },
+  {
+   "name": "style and script blocks skipped, any case",
+   "html": "<STYLE type=\"text/css\">@import url(https://fonts.example/css?family=x);</Style ><script>var u='https://cdn.example/app.js'</SCRIPT>after https://vendor.example/e.csv",
+   "want": [
+    "https://vendor.example/e.csv"
+   ]
+  },
+  {
+   "name": "a tag name only starting with style is not style",
+   "html": "<styles>https://vendor.example/f.csv</styles>",
+   "want": [
+    "https://vendor.example/f.csv"
+   ]
+  },
+  {
+   "name": "an unclosed style keeps the rest",
+   "html": "<style>https://vendor.example/g.csv",
+   "want": [
+    "https://vendor.example/g.csv"
+   ]
+  },
+  {
+   "name": "a lone < stays text",
+   "html": "a < b https://vendor.example/h.csv",
+   "want": [
+    "https://vendor.example/h.csv"
+   ]
+  },
+  {
+   "name": "several, in order",
+   "html": "<div>one https://a.example/1.csv two <b>https://b.example/2.xlsx</b></div>",
+   "want": [
+    "https://a.example/1.csv",
+    "https://b.example/2.xlsx"
+   ]
+  },
+  {
+   "name": "non-ASCII text around a URL",
+   "html": "<p>Ünïcode İ text https://vendor.example/i.csv ok</p>",
+   "want": [
+    "https://vendor.example/i.csv"
+   ]
+  },
+  {
+   "name": "nbsp entity ends a URL",
+   "html": "<p>https://vendor.example/j.csv&nbsp;Next</p>",
+   "want": [
+    "https://vendor.example/j.csv"
+   ]
+  },
+  {
+   "name": "decimal and hex whitespace entities end a URL",
+   "html": "https://vendor.example/k.csv&#160;x https://vendor.example/l.csv&#x2003;y https://vendor.example/m.csv&#X0A0;z",
+   "want": [
+    "https://vendor.example/k.csv",
+    "https://vendor.example/l.csv",
+    "https://vendor.example/m.csv"
+   ]
+  },
+  {
+   "name": "a literal no-break space ends a URL",
+   "html": "https://vendor.example/n.csv next and https://vendor.example/o.csv　next",
+   "want": [
+    "https://vendor.example/n.csv",
+    "https://vendor.example/o.csv"
+   ]
+  },
+  {
+   "name": "entities that are not whitespace stay",
+   "html": "https://vendor.example/p?a=1&amp;b=2&#38;c=3",
+   "want": [
+    "https://vendor.example/p?a=1&amp;b=2&#38;c=3"
+   ]
+  },
+  {
+   "name": "a quoted > inside an attribute stays in the tag",
+   "html": "<div data-note=\"a > https://vendor.example/q.csv\" title='b > c'>hello</div>",
+   "want": []
+  },
+  {
+   "name": "comments are not text",
+   "html": "<!-- https://vendor.example/r.csv --> <!--[if mso]><v:rect href=\"x\"/><![endif]-->after https://vendor.example/s.csv",
+   "want": [
+    "https://vendor.example/s.csv"
+   ]
+  },
+  {
+   "name": "< not starting a tag is text",
+   "html": "a < https://vendor.example/t.csv > b",
+   "want": [
+    "https://vendor.example/t.csv"
+   ]
+  },
+  {
+   "name": "an unclosed comment hides the rest",
+   "html": "https://vendor.example/u.csv <!-- https://vendor.example/v.csv",
+   "want": [
+    "https://vendor.example/u.csv"
+   ]
+  },
+  {
+   "name": "a quote left open falls back to the first >",
+   "html": "<img alt='open>https://vendor.example/w.csv",
+   "want": [
+    "https://vendor.example/w.csv"
+   ]
+  }
+ ]
 }
