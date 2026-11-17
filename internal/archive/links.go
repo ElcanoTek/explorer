@@ -278,7 +278,7 @@ func urlStop(r rune) bool {
 	return htmlSpace(r) || strings.ContainsRune("<>\"')]}", r)
 }
 
-var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6}));`)
+var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#0*([0-9]{1,7})|#[xX]0*([0-9a-fA-F]{1,6}));`)
 
 // separatorRef reports whether the character reference m spells only
 // whitespace or URL stops: named ones through the HTML5 table, numeric ones
@@ -318,8 +318,15 @@ func spaceOut(text string) string {
 		}
 		return m
 	})
+	return spaceRunes(text)
+}
+
+// spaceRunes turns every whitespace rune but CR and LF into a space, so the
+// text-URL pattern ends a URL where Python's Unicode \s does (CR and LF stay
+// for its quoted-printable soft break, and \s is CR/LF in both).
+func spaceRunes(text string) string {
 	return strings.Map(func(r rune) rune {
-		if htmlSpace(r) {
+		if r != '\r' && r != '\n' && htmlSpace(r) {
 			return ' '
 		}
 		return r
@@ -336,7 +343,11 @@ func extractHTMLTextURLs(html string) []string {
 	return extractTextURLs(spaceOut(stripMarkup(dropElements(dropElements(html, "style"), "script"))))
 }
 
-type bodyLink struct{ url, text string }
+// bodyLink is a link of a body; bare marks one found only as text in HTML.
+type bodyLink struct {
+	url, text string
+	bare      bool
+}
 
 func extractHTMLLinks(html string) []bodyLink {
 	var out []bodyLink
@@ -344,7 +355,7 @@ func extractHTMLLinks(html string) []bodyLink {
 		href := strings.TrimSpace(m[1])
 		if lower := strings.ToLower(href); strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			text := strings.Join(strings.Fields(tagRE.ReplaceAllString(m[2], " ")), " ")
-			out = append(out, bodyLink{cleanURL(href), text})
+			out = append(out, bodyLink{url: cleanURL(href), text: text})
 		}
 	}
 	return out
@@ -455,6 +466,24 @@ func unwrapURL(raw string) string {
 	return current
 }
 
+// pageExtensions are web pages, never a file payload (the archiver's
+// PAGE_EXTENSIONS).
+var pageExtensions = setOf(".html", ".htm", ".xhtml", ".php", ".asp", ".aspx", ".jsp", ".cgi")
+
+// hasFileEvidence reports whether raw names a file (a download extension,
+// not a page or an image) or is presigned: the archiver's
+// has_file_evidence, which a bare URL in HTML text needs to be listed, since
+// such text is often a "paste this link" fallback for a sign-in or
+// verification button.
+func hasFileEvidence(raw string) bool {
+	u := parsedURL(unwrapURL(cleanURL(raw)))
+	if isPresigned(u) {
+		return true
+	}
+	ext := strings.ToLower(path.Ext(unquote(u.EscapedPath())))
+	return downloadExtensions[ext] && !pageExtensions[ext] && !imageExtensions[ext]
+}
+
 func isPresigned(u *url.URL) bool {
 	q := strings.ToLower(u.RawQuery)
 	if strings.Contains(q, "x-amz-signature") || strings.Contains(q, "x-amz-credential") || strings.Contains(q, "x-goog-signature") {
@@ -546,7 +575,7 @@ func bodyURLs(plain, html string) []bodyLink {
 		index[l.url] = len(out)
 		out = append(out, l)
 	}
-	for _, u := range extractTextURLs(plain) {
+	for _, u := range extractTextURLs(spaceRunes(plain)) {
 		add(bodyLink{url: u})
 	}
 	for _, l := range extractHTMLLinks(html) {
@@ -562,7 +591,7 @@ func bodyURLs(plain, html string) []bodyLink {
 			continue
 		}
 		seen[decoded] = true
-		add(bodyLink{url: u})
+		add(bodyLink{url: u, bare: true})
 	}
 	return out
 }
@@ -572,7 +601,7 @@ func downloadLinks(plain, html string) []DownloadLink {
 	var out []DownloadLink
 	for _, l := range bodyURLs(plain, html) {
 		cleaned, filename, likely, tracker := classifyURL(l.url)
-		if likely {
+		if likely && (!l.bare || hasFileEvidence(l.url)) {
 			out = append(out, DownloadLink{URL: cleaned, FetchURL: stdhtml.UnescapeString(cleaned),
 				Filename: filename, LinkText: truncateRunes(l.text, 200), IsClickTracker: tracker})
 		}

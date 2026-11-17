@@ -173,6 +173,14 @@
     "https://vendor.example/b1.csv",
     "https://vendor.example/b2.csv&#133;x"
    ]
+  },
+  {
+   "name": "zero-padded references are references",
+   "html": "https://vendor.example/c1.csv&#00000062;x https://vendor.example/c2.csv&#x00000003e;y",
+   "want": [
+    "https://vendor.example/c1.csv",
+    "https://vendor.example/c2.csv"
+   ]
   }
  ]
 }

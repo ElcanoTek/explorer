@@ -67,3 +67,29 @@ func TestAnOpenXStyleBareLinkIsADownloadLinkUnderItsExtractedForm(t *testing.T) 
 		t.Fatalf("links: %+v", links)
 	}
 }
+
+func TestABareHTMLURLWithoutFileEvidenceIsNotListed(t *testing.T) {
+	for _, fallback := range []string{
+		"https://get.vendor.example/magic?token=abc",
+		"https://app.vendor.example/u/report-settings",
+		"https://vendor.example/report/confirm.html",
+	} {
+		html := `<a href="https://t.example/c?upn=1">Open</a><p>Or paste into your browser: ` + fallback + `</p>`
+		for _, l := range downloadLinks("", html) {
+			if l.URL == fallback {
+				t.Errorf("%s listed: %+v", fallback, l)
+			}
+		}
+	}
+	// The same URL in text/plain keeps its old rule.
+	if links := downloadLinks("https://app.vendor.example/u/report-settings", ""); len(links) != 1 {
+		t.Fatalf("plain: %+v", links)
+	}
+}
+
+func TestAPlainURLEndsAtAUnicodeSpaceAsTheArchiversDoes(t *testing.T) {
+	links := downloadLinks("get https://vendor.example/r.csv (7 days)", "")
+	if len(links) != 1 || links[0].URL != "https://vendor.example/r.csv" {
+		t.Fatalf("%+v", links)
+	}
+}
