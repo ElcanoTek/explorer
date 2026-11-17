@@ -173,12 +173,12 @@ func tagEnd(html string, j int) int {
 	return -1
 }
 
-// blockTags end a block of text (as do a link's tags): they become "\n" in
-// stripMarkup, the only "\n" there (the source's own line breaks and <br>
-// are spaces); any other tag, a comment and a <style> or <script> element
-// join what is around them, as a reader sees the text. The archiver's
+// blockTags end a block of text: they become "\n" in stripMarkup, the only
+// "\n" there (the source's own line breaks and <br> are spaces); any other
+// tag (links included), a comment and a <style> or <script> element join
+// what is around them, as a reader sees the text. The archiver's
 // _BLOCK_TAGS.
-var blockTags = setOf("a", "address", "article", "aside", "blockquote", "center", "dd", "div", "dl", "dt",
+var blockTags = setOf("address", "article", "aside", "blockquote", "center", "dd", "div", "dl", "dt",
 	"footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "nav", "ol",
 	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
 
@@ -209,9 +209,9 @@ func rawTextName(lower string, j int) string {
 }
 
 // stripMarkup returns html's text as a reader sees it, in one left-to-right
-// pass, as the archiver's _strip_markup does: a block-level tag and a link's
-// tags become "\n" (the only "\n": the source's own line breaks and <br>
-// become spaces); any other tag, a comment and a <style> or <script> element
+// pass, as the archiver's _strip_markup does: a block-level tag becomes
+// "\n" (the only "\n": the source's own line breaks and <br> become
+// spaces); any other tag (links included), a comment and a <style> or <script> element
 // (its raw text included) are removed, joining what is around them. A tag
 // starts
 // at "<" followed by a letter, "/", "!" or "?" (else "<" is text) and ends at
