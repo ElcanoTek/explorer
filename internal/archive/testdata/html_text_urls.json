@@ -257,6 +257,22 @@
     "https://vendor.example/l2.csv",
     "https://vendor.example/l3?a=1&amp"
    ]
+  },
+  {
+   "name": "a semicolonless name that is not a reference stays in the URL",
+   "html": "https://vendor.example/m1?mode=full&period and https://vendor.example/m2.csv&#46 x",
+   "want": [
+    "https://vendor.example/m1?mode=full&period",
+    "https://vendor.example/m2.csv"
+   ]
+  },
+  {
+   "name": "source line breaks and <br> are spaces",
+   "html": "<p>https://vendor.example/n1.csv\nnext<br>https://vendor.example/n2.csv</p>",
+   "want": [
+    "https://vendor.example/n1.csv",
+    "https://vendor.example/n2.csv"
+   ]
   }
  ]
 }

@@ -173,11 +173,12 @@ func tagEnd(html string, j int) int {
 	return -1
 }
 
-// blockTags end a block of text (as do a link's tags and <br>): they become
-// "\n" in stripMarkup; any other tag, a comment and a <style> or <script>
-// element join what is around them, as a reader sees the text. The
-// archiver's _BLOCK_TAGS.
-var blockTags = setOf("a", "address", "article", "aside", "blockquote", "br", "center", "dd", "div", "dl", "dt",
+// blockTags end a block of text (as do a link's tags): they become "\n" in
+// stripMarkup, the only "\n" there (the source's own line breaks and <br>
+// are spaces); any other tag, a comment and a <style> or <script> element
+// join what is around them, as a reader sees the text. The archiver's
+// _BLOCK_TAGS.
+var blockTags = setOf("a", "address", "article", "aside", "blockquote", "center", "dd", "div", "dl", "dt",
 	"footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "nav", "ol",
 	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
 
@@ -208,10 +209,11 @@ func rawTextName(lower string, j int) string {
 }
 
 // stripMarkup returns html's text as a reader sees it, in one left-to-right
-// pass, as the archiver's _strip_markup does: a block-level tag, a link's
-// tags and <br> become "\n"; any other tag, a comment and a <style> or
-// <script> element (its raw text included) are removed, joining what is
-// around them. A tag starts
+// pass, as the archiver's _strip_markup does: a block-level tag and a link's
+// tags become "\n" (the only "\n": the source's own line breaks and <br>
+// become spaces); any other tag, a comment and a <style> or <script> element
+// (its raw text included) are removed, joining what is around them. A tag
+// starts
 // at "<" followed by a letter, "/", "!" or "?" (else "<" is text) and ends at
 // its first ">" outside a quoted attribute value (tagEnd). A comment ends at
 // "-->"; a raw-text element at its own closing tag (whose name ends there,
@@ -221,16 +223,18 @@ func rawTextName(lower string, j int) string {
 func stripMarkup(html string) string {
 	lower := asciiLower(html)
 	var out strings.Builder
+	sourceBreaks := strings.NewReplacer("\r", " ", "\n", " ")
+	emit := func(text string) { _, _ = sourceBreaks.WriteString(&out, text) }
 	i, n := 0, len(html)
 	for {
 		j := indexFrom(html, "<", i)
 		if j < 0 {
-			out.WriteString(html[i:])
+			emit(html[i:])
 			break
 		}
 		if strings.HasPrefix(html[j:], "<!--") {
 			k := indexFrom(html, "-->", j+4)
-			out.WriteString(html[i:j])
+			emit(html[i:j])
 			if k < 0 {
 				break
 			}
@@ -238,17 +242,20 @@ func stripMarkup(html string) string {
 			continue
 		}
 		if j+1 >= n || !isTagStart(html[j+1]) {
-			out.WriteString(html[i : j+1])
+			emit(html[i : j+1])
 			i = j + 1
 			continue
 		}
 		end := tagEnd(html, j)
-		out.WriteString(html[i:j])
+		emit(html[i:j])
 		if end < 0 { // the rest is inside the tag
 			break
 		}
-		if blockTags[tagName(lower, j)] {
+		switch name := tagName(lower, j); {
+		case blockTags[name]:
 			out.WriteString("\n")
+		case name == "br":
+			out.WriteString(" ")
 		}
 		name := rawTextName(lower, j)
 		if name == "" {
@@ -362,45 +369,53 @@ func spaceRunes(text string) string {
 // extract_urls_from_html_text.
 func extractHTMLTextURLs(html string) []string {
 	html = truncateToRunes(html, maxScanRunes)
-	urls := extractTextURLs(spaceOut(stripMarkup(html)))
-	for i, u := range urls {
-		urls[i] = trimTrailingRefs(u)
+	var out []string
+	for _, raw := range textURLRE.FindAllString(spaceOut(stripMarkup(html)), -1) {
+		if u := cleanBareURL(raw); u != "" {
+			out = append(out, u)
+		}
 	}
-	return urls
+	return out
 }
 
-var trailingRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#0*([0-9]{1,7})|#[xX]0*([0-9a-fA-F]{1,6}));?$`)
+var trailingRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31});|#0*([0-9]{1,7});?|#[xX]0*([0-9a-fA-F]{1,6});?)$`)
 
-// trimTrailingRefs is cleanURL for punctuation written as a reference:
-// "report.csv&period; Next" ends at ".csv", as the literal "report.csv. Next"
-// does. Named references decode through the HTML5 table, numeric ones by
-// code point. The archiver's _trim_trailing_refs.
-func trimTrailingRefs(u string) string {
-	for {
-		loc := trailingRefRE.FindStringSubmatchIndex(u)
-		if loc == nil {
-			return u
-		}
-		var char string
-		if loc[2] >= 0 {
-			char = stdhtml.UnescapeString("&" + u[loc[2]:loc[3]] + ";")
-		} else {
-			digits, base := "", 10
-			if loc[4] >= 0 {
-				digits = u[loc[4]:loc[5]]
+// cleanBareURL is cleanURL for a URL written as text in HTML: literal
+// trailing punctuation goes, and so does punctuation written as a real
+// reference ("report.csv&period; Next" ends at ".csv"), checked before a
+// trailing ";" is dropped so "...?mode=full&period" (no ";", not a
+// reference) keeps its "&period". Named references decode through the
+// HTML5 table, numeric ones by code point. The archiver's _clean_bare_url.
+func cleanBareURL(raw string) string {
+	u := strings.TrimSpace(strings.NewReplacer("\n", "", "\r", "").Replace(lineContRE.ReplaceAllString(raw, "")))
+	for u != "" {
+		if loc := trailingRefRE.FindStringSubmatchIndex(u); loc != nil {
+			var char string
+			if loc[2] >= 0 {
+				char = stdhtml.UnescapeString("&" + u[loc[2]:loc[3]] + ";")
 			} else {
-				digits, base = u[loc[6]:loc[7]], 16
+				digits, base := "", 10
+				if loc[4] >= 0 {
+					digits = u[loc[4]:loc[5]]
+				} else {
+					digits, base = u[loc[6]:loc[7]], 16
+				}
+				// At most 7 decimal or 6 hex digits: always fits in 32 bits.
+				if code, err := strconv.ParseInt(digits, base, 32); err == nil && code < 0x110000 && (code < 0x80 || code > 0x9f) {
+					char = string(rune(code))
+				}
 			}
-			// At most 7 decimal or 6 hex digits: always fits in 32 bits.
-			if code, err := strconv.ParseInt(digits, base, 32); err == nil && code < 0x110000 && (code < 0x80 || code > 0x9f) {
-				char = string(rune(code))
+			if len(char) == 1 && strings.IndexByte(".,;:!?", char[0]) >= 0 {
+				u = u[:loc[0]]
+				continue
 			}
 		}
-		if len(char) != 1 || strings.IndexByte(".,;:!?", char[0]) < 0 {
-			return u
+		if strings.IndexByte(".,;:!?", u[len(u)-1]) < 0 {
+			break
 		}
-		u = cleanURL(u[:loc[0]])
+		u = u[:len(u)-1]
 	}
+	return u
 }
 
 // bodyLink is a link of a body; bare marks one found only as text in HTML.
