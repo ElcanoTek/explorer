@@ -181,6 +181,23 @@
     "https://vendor.example/c1.csv",
     "https://vendor.example/c2.csv"
    ]
+  },
+  {
+   "name": "references without a semicolon that spell a separator end a URL",
+   "html": "https://vendor.example/d1.csv&nbsp Next https://vendor.example/d2.csv&quot next https://vendor.example/d3.csv&#160 x https://vendor.example/d4.csv&#62more",
+   "want": [
+    "https://vendor.example/d1.csv",
+    "https://vendor.example/d2.csv",
+    "https://vendor.example/d3.csv",
+    "https://vendor.example/d4.csv"
+   ]
+  },
+  {
+   "name": "a closing tag inside the opening tag's quoted attribute does not close it",
+   "html": "<style data-note=\"</style>\">https://cdn.example/report.css</style> after https://vendor.example/e1.csv",
+   "want": [
+    "https://vendor.example/e1.csv"
+   ]
   }
  ]
 }

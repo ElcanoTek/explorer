@@ -132,7 +132,12 @@ func dropElements(html, name string) string {
 			continue
 		}
 		e := -1
-		k := indexFrom(lower, closing, after)
+		// The closing tag is looked for after the opening tag's own
+		// (quote-aware) end, never inside it.
+		k := -1
+		if opened := tagEnd(html, j); opened >= 0 {
+			k = indexFrom(lower, closing, opened+1)
+		}
 		// A closing tag's name must end there: "</scriptx>" does not close <script>.
 		for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
 			k = indexFrom(lower, closing, k+len(closing))
@@ -196,6 +201,32 @@ func isTagStart(c byte) bool {
 	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '/' || c == '!' || c == '?'
 }
 
+// tagEnd is where the tag starting at html[j] ("<") ends: its first ">"
+// outside a quoted attribute value, looked for within maxTagRunes characters
+// from the "<" (as Python's html[j:j+MAX_TAG_CHARS]); beyond that, or with a
+// quote left open, its first ">"; -1 if there is none. The archiver's _tag_end.
+func tagEnd(html string, j int) int {
+	quote := byte(0)
+	runes := 1
+	for k := j + 1; k < len(html) && runes < maxTagRunes; {
+		c := html[k]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '>':
+			return k
+		}
+		_, size := utf8.DecodeRuneInString(html[k:])
+		k += size
+		runes++
+	}
+	return indexFrom(html, ">", j+1)
+}
+
 // stripMarkup replaces each tag and comment of html with a space, in one
 // pass, as the archiver's _strip_markup does: a tag starts at "<" followed
 // by a letter, "/", "!" or "?" (else "<" is text) and ends at the first ">"
@@ -226,34 +257,10 @@ func stripMarkup(html string) string {
 			i = j + 1
 			continue
 		}
-		end, quote := -1, byte(0)
-		// Up to maxTagRunes characters from the "<", as Python's html[j:j+MAX_TAG_CHARS].
-		runes := 1
-		for k := j + 1; k < n && runes < maxTagRunes; {
-			c := html[k]
-			switch {
-			case quote != 0:
-				if c == quote {
-					quote = 0
-				}
-			case c == '"' || c == '\'':
-				quote = c
-			case c == '>':
-				end = k
-			}
-			if end >= 0 {
-				break
-			}
-			_, size := utf8.DecodeRuneInString(html[k:])
-			k += size
-			runes++
-		}
+		end := tagEnd(html, j)
 		if end < 0 {
-			end = indexFrom(html, ">", j+1)
-			if end < 0 {
-				out.WriteString(html[i:])
-				break
-			}
+			out.WriteString(html[i:])
+			break
 		}
 		out.WriteString(html[i:j])
 		out.WriteString(" ")
@@ -278,7 +285,10 @@ func urlStop(r rune) bool {
 	return htmlSpace(r) || strings.ContainsRune("<>\"')]}", r)
 }
 
-var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#0*([0-9]{1,7})|#[xX]0*([0-9a-fA-F]{1,6}));`)
+// charRefRE: named references end in ";"; HTML also decodes a few legacy
+// names without it (of those, only these spell a separator), and numeric
+// references without it. Same pattern as the archiver's _CHAR_REF_RE.
+var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31});|#0*([0-9]{1,7});?|#[xX]0*([0-9a-fA-F]{1,6});?|(nbsp|quot|QUOT|lt|LT|gt|GT))`)
 
 // separatorRef reports whether the character reference m spells only
 // whitespace or URL stops: named ones through the HTML5 table, numeric ones
@@ -286,6 +296,9 @@ var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#0*([0-9]{1,
 // them a stop), as the archiver's _separator_ref.
 func separatorRef(m string) bool {
 	g := charRefRE.FindStringSubmatch(m)
+	if g[4] != "" { // a legacy name without ";" that spells a separator
+		return true
+	}
 	if g[1] != "" {
 		decoded := stdhtml.UnescapeString(m)
 		if decoded == m || decoded == "" {
