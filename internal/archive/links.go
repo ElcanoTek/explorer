@@ -640,14 +640,34 @@ func classifyURL(raw string) (cleaned, filename string, downloadLikely, clickTra
 	return cleaned, filename, downloadLikely, clickTracker
 }
 
-var ampRefRE = regexp.MustCompile(`&(?:(?:amp|AMP);?|#0*38;|#[xX]0*26;)`)
+var ampRefRE = regexp.MustCompile(`&(?:(?:amp|AMP);?|#0*38(;?)|#[xX]0*26(;?))`)
 
 // dedupeKey: a bare HTML URL repeats an earlier link when they are equal
 // with &amp; (any spelling) read as "&", the one difference between a
 // multipart message's text and HTML spellings. Nothing else is decoded, so
 // this agrees with the archiver's _dedupe_key whatever the entity decoders do.
 func dedupeKey(u string) string {
-	return ampRefRE.ReplaceAllString(u, "&")
+	var out strings.Builder
+	last := 0
+	for _, m := range ampRefRE.FindAllStringSubmatchIndex(u, -1) {
+		out.WriteString(u[last:m[0]])
+		last = m[1]
+		// A numeric reference without ";" ends at its last digit: "&#380" is
+		// not "&#38" + "0" (the archiver's _amp_ref).
+		next := byte(0)
+		if m[1] < len(u) {
+			next = u[m[1]]
+		}
+		decimal := m[2] >= 0 && m[2] == m[3] && '0' <= next && next <= '9'
+		hexa := m[4] >= 0 && m[4] == m[5] && (('0' <= next && next <= '9') || ('a' <= next && next <= 'f') || ('A' <= next && next <= 'F'))
+		if decimal || hexa {
+			out.WriteString(u[m[0]:m[1]])
+		} else {
+			out.WriteString("&")
+		}
+	}
+	out.WriteString(u[last:])
+	return out.String()
 }
 
 // bodyURLs lists a body's distinct links in the archiver's order:

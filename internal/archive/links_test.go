@@ -125,6 +125,12 @@ func TestTheDedupeKeyReadsOnlyAmpersands(t *testing.T) {
 	if got := dedupeKey("https://v.example/r?x=a&#1;b"); got != "https://v.example/r?x=a&#1;b" {
 		t.Fatal(got)
 	}
+	if got := dedupeKey("https://v.example/r?a=1&#38b=2&#x26next=3"); got != "https://v.example/r?a=1&b=2&next=3" {
+		t.Fatal(got)
+	}
+	if got := dedupeKey("https://v.example/r?a=&#380&#x26f"); got != "https://v.example/r?a=&#380&#x26f" {
+		t.Fatal(got)
+	}
 }
 
 func TestABareLinkSpelledWithReferencesIsJudgedDecoded(t *testing.T) {
