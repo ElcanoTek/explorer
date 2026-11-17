@@ -126,3 +126,11 @@ func TestTheDedupeKeyReadsOnlyAmpersands(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestABareLinkSpelledWithReferencesIsJudgedDecoded(t *testing.T) {
+	const url = "https://vendor.example/data&period;zip"
+	links := downloadLinks("", "<p>Get "+url+"</p>")
+	if len(links) != 1 || links[0].URL != url || links[0].Filename != "data.zip" || links[0].FetchURL != "https://vendor.example/data.zip" {
+		t.Fatalf("%+v", links)
+	}
+}

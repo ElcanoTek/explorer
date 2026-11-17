@@ -609,7 +609,14 @@ func downloadLinks(plain, html string) []DownloadLink {
 	var out []DownloadLink
 	for _, l := range bodyURLs(plain, html) {
 		cleaned, filename, likely, tracker := classifyURL(l.url)
-		if likely && (!l.bare || hasFileEvidence(stdhtml.UnescapeString(l.url))) {
+		if l.bare {
+			// A URL found only as text in HTML is judged on the request it makes
+			// (entities decoded), and needs file evidence, as in the archiver.
+			decoded := stdhtml.UnescapeString(l.url)
+			_, filename, likely, tracker = classifyURL(decoded)
+			likely = likely && hasFileEvidence(decoded)
+		}
+		if likely {
 			out = append(out, DownloadLink{URL: cleaned, FetchURL: stdhtml.UnescapeString(cleaned),
 				Filename: filename, LinkText: truncateRunes(l.text, 200), IsClickTracker: tracker})
 		}
