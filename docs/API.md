@@ -135,7 +135,8 @@ carries `unauthenticated_sender_match`.
 ### Payloads
 
 `has_payload: true` asks for a MIME attachment or an in-body download link.
-`false` asks for neither. Links come from HTML anchors and plain-text URLs.
+`false` asks for neither. Links come from plain-text URLs, HTML anchors and
+URLs written as text in HTML (OpenX puts its report link there).
 Known wrappers (Proofpoint, Amazon Ads `CL0`, `awstrack`) are unwrapped first,
 then a link is classified:
 
@@ -183,7 +184,9 @@ emails/attachments/manifests/YYYY/MM/DD/<id>.json       per-email outcomes
 
 `url` is the link exactly as extracted from the body: the outer wrapper URL,
 cleaned, with `&amp;` left escaped. Explorer extracts links the same way
-(every `text/plain` part's URLs, then every `text/html` part's anchors), so
+(every `text/plain` part's URLs, then every `text/html` part's anchors, then
+URLs written as text in the HTML outside tags and `<style>`/`<script>`, not
+seen before as written or entity-decoded), so
 the `url` `get_email` reports hashes to the cached copy. `get_download_link`
 resolves a `url` in this order:
 

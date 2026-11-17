@@ -28,8 +28,11 @@ import (
 // <EMAIL_S3_ARCHIVE_PREFIX>by-url/<sha256(url)>/<filename>, where url is the
 // string exactly as it extracts it from the body (outer wrapper, after
 // clean_url, &amp; NOT decoded). Extraction here mirrors it (all text/plain
-// parts' URLs, then all text/html parts' anchors) so the url a caller is
-// given hashes to the cached copy.
+// parts' URLs, then all text/html parts' anchors, then URLs written as text
+// in the HTML outside tags and <style>/<script> blocks, not seen before as
+// written or entity-decoded) so the url a caller is given hashes to the
+// cached copy. testdata/html_text_urls.json is a copy of the archiver's
+// shared cases (ses-s3/scripts/tests/data/html_text_urls.json).
 
 var downloadExtensions = setOf(
 	".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".txt",
@@ -103,6 +106,71 @@ func extractTextURLs(text string) []string {
 		}
 	}
 	return out
+}
+
+// dropElements replaces each <name ...>...</name ...> block of html with a
+// space, in one pass (ASCII case-insensitive), as the archiver's
+// _drop_elements does: an element left open keeps the rest as it is, and
+// "<name" followed by more name characters ("<styles") is not one.
+func dropElements(html, name string) string {
+	lower := asciiLower(html)
+	opening, closing := "<"+name, "</"+name
+	var out strings.Builder
+	i := 0
+	for {
+		j := indexFrom(lower, opening, i)
+		if j < 0 {
+			out.WriteString(html[i:])
+			break
+		}
+		after := j + len(opening)
+		if after < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
+			out.WriteString(html[i:after])
+			i = after
+			continue
+		}
+		e := -1
+		if k := indexFrom(lower, closing, after); k >= 0 {
+			e = indexFrom(lower, ">", k+len(closing))
+		}
+		if e < 0 {
+			out.WriteString(html[i:])
+			break
+		}
+		out.WriteString(html[i:j])
+		out.WriteString(" ")
+		i = e + 1
+	}
+	return out.String()
+}
+
+// asciiLower lowercases A-Z only, so byte offsets stay those of s.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// indexFrom is strings.Index of sub in s at or after from (-1 if none).
+func indexFrom(s, sub string, from int) int {
+	if from > len(s) {
+		return -1
+	}
+	if k := strings.Index(s[from:], sub); k >= 0 {
+		return from + k
+	}
+	return -1
+}
+
+// extractHTMLTextURLs lists the URLs written as text in an HTML part,
+// outside its tags (so not hrefs) and its <style>/<script> blocks, with
+// entities kept as in an href (the archiver's extract_urls_from_html_text).
+func extractHTMLTextURLs(html string) []string {
+	return extractTextURLs(tagRE.ReplaceAllString(dropElements(dropElements(html, "style"), "script"), " "))
 }
 
 type bodyLink struct{ url, text string }
@@ -300,7 +368,8 @@ func classifyURL(raw string) (cleaned, filename string, downloadLikely, clickTra
 }
 
 // bodyURLs lists a body's distinct links in the archiver's order:
-// plain-text URLs, then HTML anchors (whose text wins).
+// plain-text URLs, then HTML anchors (whose text wins), then bare URLs in the
+// HTML's text not seen before as written or entity-decoded.
 func bodyURLs(plain, html string) []bodyLink {
 	var out []bodyLink
 	index := map[string]int{}
@@ -319,6 +388,18 @@ func bodyURLs(plain, html string) []bodyLink {
 	}
 	for _, l := range extractHTMLLinks(html) {
 		add(l)
+	}
+	seen := make(map[string]bool, len(out))
+	for _, l := range out {
+		seen[stdhtml.UnescapeString(l.url)] = true
+	}
+	for _, u := range extractHTMLTextURLs(html) {
+		decoded := stdhtml.UnescapeString(u)
+		if _, ok := index[u]; ok || seen[decoded] {
+			continue
+		}
+		seen[decoded] = true
+		add(bodyLink{url: u})
 	}
 	return out
 }
