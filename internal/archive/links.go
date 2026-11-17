@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
@@ -112,8 +111,9 @@ func extractTextURLs(text string) []string {
 
 // dropElements replaces each <name ...>...</name ...> block of html with a
 // space, in one pass (ASCII case-insensitive), as the archiver's
-// _drop_elements does: an element left open keeps the rest as it is, and
-// "<name" followed by more name characters ("<styles") is not one.
+// _drop_elements does: both tags end at their quote-aware end (tagEnd), an
+// element left open hides the rest, as in a browser, and "<name" followed by
+// more name characters ("<styles") is not one.
 func dropElements(html, name string) string {
 	lower := asciiLower(html)
 	opening, closing := "<"+name, "</"+name
@@ -143,10 +143,10 @@ func dropElements(html, name string) string {
 			k = indexFrom(lower, closing, k+len(closing))
 		}
 		if k >= 0 {
-			e = indexFrom(lower, ">", k+len(closing))
+			e = tagEnd(html, k)
 		}
-		if e < 0 {
-			out.WriteString(html[i:])
+		if e < 0 { // left open: the rest is the element's
+			out.WriteString(html[i:j])
 			break
 		}
 		out.WriteString(html[i:j])
@@ -178,12 +178,9 @@ func indexFrom(s, sub string, from int) int {
 	return -1
 }
 
-// The archiver's MAX_SCAN_CHARS and MAX_TAG_CHARS, counted in characters
+// maxScanRunes is the archiver's MAX_SCAN_CHARS, counted in characters
 // (runes) as Python counts them, so both cut at the same place.
-const (
-	maxScanRunes = 2_000_000
-	maxTagRunes  = 8192
-)
+const maxScanRunes = 2_000_000
 
 // truncateToRunes is s cut after n runes.
 func truncateToRunes(s string, n int) string {
@@ -202,37 +199,31 @@ func isTagStart(c byte) bool {
 }
 
 // tagEnd is where the tag starting at html[j] ("<") ends: its first ">"
-// outside a quoted attribute value, looked for within maxTagRunes characters
-// from the "<" (as Python's html[j:j+MAX_TAG_CHARS]); beyond that, or with a
-// quote left open, its first ">"; -1 if there is none. The archiver's _tag_end.
+// outside a quoted attribute value, or -1 (a quote left open, or no ">"):
+// then, as in a browser, the rest of the document is inside the tag.
+// Callers move past the end, so each byte is scanned once. The archiver's
+// _tag_end.
 func tagEnd(html string, j int) int {
-	quote := byte(0)
-	runes := 1
-	for k := j + 1; k < len(html) && runes < maxTagRunes; {
-		c := html[k]
-		switch {
-		case quote != 0:
-			if c == quote {
-				quote = 0
+	for k := j + 1; k < len(html); k++ {
+		switch c := html[k]; c {
+		case '"', '\'':
+			q := indexFrom(html, string(c), k+1)
+			if q < 0 {
+				return -1
 			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == '>':
+			k = q
+		case '>':
 			return k
 		}
-		_, size := utf8.DecodeRuneInString(html[k:])
-		k += size
-		runes++
 	}
-	return indexFrom(html, ">", j+1)
+	return -1
 }
 
 // stripMarkup replaces each tag and comment of html with a space, in one
 // pass, as the archiver's _strip_markup does: a tag starts at "<" followed
 // by a letter, "/", "!" or "?" (else "<" is text) and ends at the first ">"
-// outside a quoted attribute value, looked for within maxTagRunes (beyond
-// that, or with a quote left open, at its first ">"); a tag with no ">"
-// after it stays text. A comment ends at "-->" (left open, it runs to the end).
+// outside a quoted attribute value (tagEnd); a tag that never ends hides the
+// rest. A comment ends at "-->" (left open, it runs to the end).
 func stripMarkup(html string) string {
 	var out strings.Builder
 	i, n := 0, len(html)
@@ -258,8 +249,8 @@ func stripMarkup(html string) string {
 			continue
 		}
 		end := tagEnd(html, j)
-		if end < 0 {
-			out.WriteString(html[i:])
+		if end < 0 { // the rest is inside the tag
+			out.WriteString(html[i:j])
 			break
 		}
 		out.WriteString(html[i:j])
@@ -493,7 +484,13 @@ func hasFileEvidence(raw string) bool {
 	if isPresigned(u) {
 		return true
 	}
-	ext := strings.ToLower(path.Ext(unquote(u.EscapedPath())))
+	// Python's urlparse leaves ";params" of the last segment out of the path,
+	// and Path(...).suffix ignores a trailing "/".
+	p := u.EscapedPath()
+	if k := strings.LastIndex(p, "/"); strings.Contains(p[k+1:], ";") {
+		p = p[:k+1+strings.Index(p[k+1:], ";")]
+	}
+	ext := strings.ToLower(path.Ext(path.Base(unquote(p))))
 	return downloadExtensions[ext] && !pageExtensions[ext] && !imageExtensions[ext]
 }
 
@@ -572,6 +569,16 @@ func classifyURL(raw string) (cleaned, filename string, downloadLikely, clickTra
 	return cleaned, filename, downloadLikely, clickTracker
 }
 
+var ampRefRE = regexp.MustCompile(`&(?:amp|AMP|#0*38|#[xX]0*26);?`)
+
+// dedupeKey: a bare HTML URL repeats an earlier link when they are equal
+// with &amp; (any spelling) read as "&", the one difference between a
+// multipart message's text and HTML spellings. Nothing else is decoded, so
+// this agrees with the archiver's _dedupe_key whatever the entity decoders do.
+func dedupeKey(u string) string {
+	return ampRefRE.ReplaceAllString(u, "&")
+}
+
 // bodyURLs lists a body's distinct links in the archiver's order:
 // plain-text URLs, then HTML anchors (whose text wins), then bare URLs in the
 // HTML's text not seen before as written or entity-decoded.
@@ -588,18 +595,20 @@ func bodyURLs(plain, html string) []bodyLink {
 		index[l.url] = len(out)
 		out = append(out, l)
 	}
-	for _, u := range extractTextURLs(spaceRunes(plain)) {
+	// Cut as the archiver cuts (MAX_SCAN_CHARS), so the dedupe below sees the
+	// same earlier links.
+	for _, u := range extractTextURLs(spaceRunes(truncateToRunes(plain, maxScanRunes))) {
 		add(bodyLink{url: u})
 	}
-	for _, l := range extractHTMLLinks(html) {
+	for _, l := range extractHTMLLinks(truncateToRunes(html, maxScanRunes)) {
 		add(l)
 	}
 	seen := make(map[string]bool, len(out))
 	for _, l := range out {
-		seen[stdhtml.UnescapeString(l.url)] = true
+		seen[dedupeKey(l.url)] = true
 	}
 	for _, u := range extractHTMLTextURLs(html) {
-		decoded := stdhtml.UnescapeString(u)
+		decoded := dedupeKey(u)
 		if _, ok := index[u]; ok || seen[decoded] {
 			continue
 		}
@@ -614,7 +623,7 @@ func downloadLinks(plain, html string) []DownloadLink {
 	var out []DownloadLink
 	for _, l := range bodyURLs(plain, html) {
 		cleaned, filename, likely, tracker := classifyURL(l.url)
-		if likely && (!l.bare || hasFileEvidence(l.url)) {
+		if likely && (!l.bare || hasFileEvidence(stdhtml.UnescapeString(l.url))) {
 			out = append(out, DownloadLink{URL: cleaned, FetchURL: stdhtml.UnescapeString(cleaned),
 				Filename: filename, LinkText: truncateRunes(l.text, 200), IsClickTracker: tracker})
 		}

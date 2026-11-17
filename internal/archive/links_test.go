@@ -93,3 +93,36 @@ func TestAPlainURLEndsAtAUnicodeSpaceAsTheArchiversDoes(t *testing.T) {
 		t.Fatalf("%+v", links)
 	}
 }
+
+func TestFileEvidenceReadsTheExtensionAsTheArchiverDoes(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://v.example/r/report.csv/":          true,
+		"https://v.example/r/report.csv;v=1":       true,
+		"https://v.example/a;b/report.csv":         true,
+		"https://v.example/r/confirm.html":         false,
+		"https://v.example/r/logo.png":             false,
+		"https://v.example/r/go?X-Amz-Signature=1": true,
+	} {
+		if got := hasFileEvidence(raw); got != want {
+			t.Errorf("%s: %v", raw, got)
+		}
+	}
+}
+
+func TestFileEvidenceIsJudgedOnTheDecodedRequest(t *testing.T) {
+	sneaky := "https://get.vendor.example/magic&quest;token=abc&amp;next=/report.csv"
+	for _, l := range downloadLinks("", "<p>Open "+sneaky+"</p>") {
+		if l.URL == sneaky {
+			t.Fatalf("listed: %+v", l)
+		}
+	}
+}
+
+func TestTheDedupeKeyReadsOnlyAmpersands(t *testing.T) {
+	if got := dedupeKey("https://v.example/r?a=1&amp;b=2&#38;c=3&#x26;d&AMP;e"); got != "https://v.example/r?a=1&b=2&c=3&d&e" {
+		t.Fatal(got)
+	}
+	if got := dedupeKey("https://v.example/r?x=a&#1;b"); got != "https://v.example/r?x=a&#1;b" {
+		t.Fatal(got)
+	}
+}

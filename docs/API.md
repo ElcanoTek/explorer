@@ -136,7 +136,10 @@ carries `unauthenticated_sender_match`.
 
 `has_payload: true` asks for a MIME attachment or an in-body download link.
 `false` asks for neither. Links come from plain-text URLs, HTML anchors and
-URLs written as text in HTML (OpenX puts its report link there).
+URLs written as text in HTML (OpenX puts its report link there); a URL found
+only as HTML text counts only when it names a file (a download extension, not
+a page or an image) or is presigned, since such text is often a "paste this
+link" fallback for a sign-in button.
 Known wrappers (Proofpoint, Amazon Ads `CL0`, `awstrack`) are unwrapped first,
 then a link is classified:
 
