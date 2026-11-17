@@ -273,6 +273,14 @@
     "https://vendor.example/n1.csv",
     "https://vendor.example/n2.csv"
    ]
+  },
+  {
+   "name": "a quote opens a value only after =",
+   "html": "<div data=x\">https://vendor.example/o1.csv</div><b title = 'a>b'>https://vendor.example/o2.csv</b>",
+   "want": [
+    "https://vendor.example/o1.csv",
+    "https://vendor.example/o2.csv"
+   ]
   }
  ]
 }

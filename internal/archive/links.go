@@ -154,20 +154,25 @@ func isTagStart(c byte) bool {
 
 // tagEnd is where the tag starting at html[j] ("<") ends: its first ">"
 // outside a quoted attribute value, or -1 (a quote left open, or no ">"):
-// then, as in a browser, the rest of the document is inside the tag.
-// Callers move past the end, so each byte is scanned once. The archiver's
-// _tag_end.
+// then, as in a browser, the rest of the document is inside the tag. A
+// quote opens a value only right after "=" (spaces allowed), as the HTML
+// tokenizer reads it; anywhere else it is an ordinary character
+// (<div data=x">). Callers move past the end, so each byte is scanned once.
+// The archiver's _tag_end.
 func tagEnd(html string, j int) int {
+	last := byte(0)
 	for k := j + 1; k < len(html); k++ {
-		switch c := html[k]; c {
-		case '"', '\'':
+		switch c := html[k]; {
+		case (c == '"' || c == '\'') && last == '=':
 			q := indexFrom(html, string(c), k+1)
 			if q < 0 {
 				return -1
 			}
-			k = q
-		case '>':
+			k, last = q, c
+		case c == '>':
 			return k
+		case c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f':
+			last = c
 		}
 	}
 	return -1
