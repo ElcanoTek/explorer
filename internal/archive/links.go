@@ -173,6 +173,28 @@ func tagEnd(html string, j int) int {
 	return -1
 }
 
+// blockTags end a block of text (as do a link's tags and <br>): they become
+// "\n" in stripMarkup; any other tag, a comment and a <style> or <script>
+// element join what is around them, as a reader sees the text. The
+// archiver's _BLOCK_TAGS.
+var blockTags = setOf("a", "address", "article", "aside", "blockquote", "br", "center", "dd", "div", "dl", "dt",
+	"footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "nav", "ol",
+	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
+
+// tagName is the lower-case name of the tag at lower[j] ("<" or "</", then a
+// letter and letters or digits), or "".
+func tagName(lower string, j int) string {
+	k := j + 1
+	if k < len(lower) && lower[k] == '/' {
+		k++
+	}
+	start := k
+	for k < len(lower) && (('a' <= lower[k] && lower[k] <= 'z') || (k > start && '0' <= lower[k] && lower[k] <= '9')) {
+		k++
+	}
+	return lower[start:k]
+}
+
 // rawTextName is "style" or "script" when the tag at lower[j] opens one
 // (its name ends there: "<styles" does not).
 func rawTextName(lower string, j int) string {
@@ -185,9 +207,11 @@ func rawTextName(lower string, j int) string {
 	return ""
 }
 
-// stripMarkup returns html's text in one left-to-right pass, as the
-// archiver's _strip_markup does: each tag and comment becomes a space, and
-// each <style> or <script> element (its raw text included) too. A tag starts
+// stripMarkup returns html's text as a reader sees it, in one left-to-right
+// pass, as the archiver's _strip_markup does: a block-level tag, a link's
+// tags and <br> become "\n"; any other tag, a comment and a <style> or
+// <script> element (its raw text included) are removed, joining what is
+// around them. A tag starts
 // at "<" followed by a letter, "/", "!" or "?" (else "<" is text) and ends at
 // its first ">" outside a quoted attribute value (tagEnd). A comment ends at
 // "-->"; a raw-text element at its own closing tag (whose name ends there,
@@ -207,7 +231,6 @@ func stripMarkup(html string) string {
 		if strings.HasPrefix(html[j:], "<!--") {
 			k := indexFrom(html, "-->", j+4)
 			out.WriteString(html[i:j])
-			out.WriteString(" ")
 			if k < 0 {
 				break
 			}
@@ -224,7 +247,9 @@ func stripMarkup(html string) string {
 		if end < 0 { // the rest is inside the tag
 			break
 		}
-		out.WriteString(" ")
+		if blockTags[tagName(lower, j)] {
+			out.WriteString("\n")
+		}
 		name := rawTextName(lower, j)
 		if name == "" {
 			i = end + 1
@@ -301,6 +326,15 @@ func separatorRef(m string) bool {
 // leaving everything else as written (the archiver's _space_out).
 func spaceOut(text string) string {
 	text = charRefRE.ReplaceAllStringFunc(text, func(m string) string {
+		if g := charRefRE.FindStringSubmatch(m); g[1] != "" && stdhtml.UnescapeString(m) == m {
+			// Not a name: HTML still reads a legacy name at its start ("&nbspNext;").
+			for _, legacy := range []string{"nbsp", "quot", "QUOT", "lt", "LT", "gt", "GT"} {
+				if strings.HasPrefix(g[1], legacy) {
+					return " " + m[1+len(legacy):]
+				}
+			}
+			return m
+		}
 		if separatorRef(m) {
 			return " "
 		}
@@ -328,7 +362,45 @@ func spaceRunes(text string) string {
 // extract_urls_from_html_text.
 func extractHTMLTextURLs(html string) []string {
 	html = truncateToRunes(html, maxScanRunes)
-	return extractTextURLs(spaceOut(stripMarkup(html)))
+	urls := extractTextURLs(spaceOut(stripMarkup(html)))
+	for i, u := range urls {
+		urls[i] = trimTrailingRefs(u)
+	}
+	return urls
+}
+
+var trailingRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31})|#0*([0-9]{1,7})|#[xX]0*([0-9a-fA-F]{1,6}));?$`)
+
+// trimTrailingRefs is cleanURL for punctuation written as a reference:
+// "report.csv&period; Next" ends at ".csv", as the literal "report.csv. Next"
+// does. Named references decode through the HTML5 table, numeric ones by
+// code point. The archiver's _trim_trailing_refs.
+func trimTrailingRefs(u string) string {
+	for {
+		loc := trailingRefRE.FindStringSubmatchIndex(u)
+		if loc == nil {
+			return u
+		}
+		var char string
+		if loc[2] >= 0 {
+			char = stdhtml.UnescapeString("&" + u[loc[2]:loc[3]] + ";")
+		} else {
+			digits, base := "", 10
+			if loc[4] >= 0 {
+				digits = u[loc[4]:loc[5]]
+			} else {
+				digits, base = u[loc[6]:loc[7]], 16
+			}
+			// At most 7 decimal or 6 hex digits: always fits in 32 bits.
+			if code, err := strconv.ParseInt(digits, base, 32); err == nil && code < 0x110000 && (code < 0x80 || code > 0x9f) {
+				char = string(rune(code))
+			}
+		}
+		if len(char) != 1 || strings.IndexByte(".,;:!?", char[0]) < 0 {
+			return u
+		}
+		u = cleanURL(u[:loc[0]])
+	}
 }
 
 // bodyLink is a link of a body; bare marks one found only as text in HTML.
@@ -553,7 +625,7 @@ func classifyURL(raw string) (cleaned, filename string, downloadLikely, clickTra
 	return cleaned, filename, downloadLikely, clickTracker
 }
 
-var ampRefRE = regexp.MustCompile(`&(?:amp|AMP|#0*38|#[xX]0*26);?`)
+var ampRefRE = regexp.MustCompile(`&(?:(?:amp|AMP);?|#0*38;|#[xX]0*26;)`)
 
 // dedupeKey: a bare HTML URL repeats an earlier link when they are equal
 // with &amp; (any spelling) read as "&", the one difference between a
@@ -581,15 +653,21 @@ func bodyURLs(plain, html string) []bodyLink {
 	}
 	// Cut as the archiver cuts (MAX_SCAN_CHARS), so the dedupe below sees the
 	// same earlier links.
-	for _, u := range extractTextURLs(spaceRunes(truncateToRunes(plain, maxScanRunes))) {
+	plainURLs := extractTextURLs(spaceRunes(truncateToRunes(plain, maxScanRunes)))
+	for _, u := range plainURLs {
 		add(bodyLink{url: u})
 	}
 	for _, l := range extractHTMLLinks(truncateToRunes(html, maxScanRunes)) {
 		add(l)
 	}
-	seen := make(map[string]bool, len(out))
-	for _, l := range out {
-		seen[dedupeKey(l.url)] = true
+	// A bare URL repeats a text/plain URL when their dedupe keys match (a
+	// multipart message's two spellings), and any earlier link when it is the
+	// same string: anchors are compared as written only, so an anchor one
+	// implementation reads and the other skips cannot change which spelling
+	// is archived.
+	seen := make(map[string]bool, len(plainURLs))
+	for _, u := range plainURLs {
+		seen[dedupeKey(u)] = true
 	}
 	for _, u := range extractHTMLTextURLs(html) {
 		decoded := dedupeKey(u)

@@ -231,6 +231,32 @@
     "https://vendor.example/i1.csv",
     "https://vendor.example/i2.csv"
    ]
+  },
+  {
+   "name": "inline tags and comments join what is around them, as shown",
+   "html": "<p>https://ex<span>ample.com/j1.csv</span> and https://vendor.example/j<!-- x -->2.csv<br>next</p>",
+   "want": [
+    "https://example.com/j1.csv",
+    "https://vendor.example/j2.csv"
+   ]
+  },
+  {
+   "name": "an unknown name starting with a legacy separator splits there",
+   "html": "https://vendor.example/k1.csv&nbspNext; https://vendor.example/k2.csv&ltx; https://vendor.example/k3.csv&ltimes;",
+   "want": [
+    "https://vendor.example/k1.csv",
+    "https://vendor.example/k2.csv",
+    "https://vendor.example/k3.csv&ltimes"
+   ]
+  },
+  {
+   "name": "punctuation written as a reference at the end is trimmed like the literal",
+   "html": "https://vendor.example/l1.csv&period; Next https://vendor.example/l2.csv&comma;&#46; x https://vendor.example/l3?a=1&amp; y",
+   "want": [
+    "https://vendor.example/l1.csv",
+    "https://vendor.example/l2.csv",
+    "https://vendor.example/l3?a=1&amp"
+   ]
   }
  ]
 }
