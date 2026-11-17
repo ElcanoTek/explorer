@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
@@ -267,8 +268,8 @@ func urlStop(r rune) bool {
 // references without it. Same pattern as the archiver's _CHAR_REF_RE.
 var charRefRE = regexp.MustCompile(`&(?:([A-Za-z][A-Za-z0-9]{1,31});|#0*([0-9]{1,7});?|#[xX]0*([0-9a-fA-F]{1,6});?|(nbsp|quot|QUOT|lt|LT|gt|GT))`)
 
-// separatorRef reports whether the character reference m spells only
-// whitespace or URL stops: named ones through the HTML5 table, numeric ones
+// separatorRef reports whether the character reference m starts with
+// whitespace or a URL stop: named ones through the HTML5 table, numeric ones
 // by their code point (0x80-0x9F decode to windows-1252 characters, none of
 // them a stop), as the archiver's _separator_ref.
 func separatorRef(m string) bool {
@@ -281,12 +282,9 @@ func separatorRef(m string) bool {
 		if decoded == m || decoded == "" {
 			return false
 		}
-		for _, r := range decoded {
-			if !urlStop(r) {
-				return false
-			}
-		}
-		return true
+		// The URL shown ends at the first decoded rune: &nvlt; is "<" plus an overlay.
+		first, _ := utf8.DecodeRuneInString(decoded)
+		return urlStop(first)
 	}
 	digits, base := g[2], 10
 	if digits == "" {

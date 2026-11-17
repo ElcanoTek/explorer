@@ -223,6 +223,14 @@
    "want": [
     "https://vendor.example/h3.csv"
    ]
+  },
+  {
+   "name": "a reference whose decoded text starts with a stop ends a URL",
+   "html": "https://vendor.example/i1.csv&nvlt; next https://vendor.example/i2.csv&nvgt;x",
+   "want": [
+    "https://vendor.example/i1.csv",
+    "https://vendor.example/i2.csv"
+   ]
   }
  ]
 }
