@@ -152,51 +152,87 @@ func isTagStart(c byte) bool {
 	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '/' || c == '!' || c == '?'
 }
 
-// tagEnd is where the tag starting at html[j] ("<") ends: its first ">"
-// outside a quoted attribute value, or -1 (a quote left open, or no ">"):
-// then, as in a browser, the rest of the document is inside the tag. As the
-// HTML tokenizer reads attributes, a quote opens a value only where a value
-// starts (after "=", spaces allowed); in an unquoted value quotes and "="
-// are ordinary characters and it ends at a space or ">" (<div data=x"> and
-// <div data=x="> end at their ">"). Callers move past the end, so each byte
+// tagEnd is where the tag starting at html[j] ("<") ends, read as the HTML
+// tokenizer reads it: its first ">" outside a quoted attribute value, or -1
+// (a quote left open, or no ">"): then, as in a browser, the rest of the
+// document is inside the tag. A quote opens a value only after an attribute
+// name and "=" (spaces allowed); in a tag name, an attribute name (which may
+// begin with "=" or hold quotes, as in <div =">) or an unquoted value,
+// quotes and "=" are ordinary characters. "<!" and "<?" (declarations, bogus
+// comments) end at their first ">". Callers move past the end, so each byte
 // is scanned once. The archiver's _tag_end.
 func tagEnd(html string, j int) int {
 	const (
-		inTag      = iota
-		valueStart // after "=": a value may start
-		unquoted   // inside an unquoted value
+		inName = iota
+		beforeAttr
+		inAttr
+		afterAttr
+		beforeValue
+		inUnquoted
+		afterQuoted
 	)
+	n := len(html)
+	if j+1 < n && (html[j+1] == '!' || html[j+1] == '?') {
+		return indexFrom(html, ">", j+1)
+	}
+	k := j + 1
+	if strings.HasPrefix(html[j:], "</") {
+		k = j + 2
+	}
 	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
-	state := inTag
-	for k := j + 1; k < len(html); k++ {
+	state := inName
+	for ; k < n; k++ {
 		c := html[k]
+		if c == '>' {
+			return k
+		}
 		switch state {
-		case unquoted:
-			if c == '>' {
-				return k
+		case inName:
+			if space(c) || c == '/' {
+				state = beforeAttr
 			}
-			if space(c) {
-				state = inTag
+		case beforeAttr:
+			if !space(c) && c != '/' {
+				state = inAttr // any other byte, "=" and quotes included, starts a name
 			}
-		case valueStart:
+		case inAttr:
+			switch {
+			case space(c):
+				state = afterAttr
+			case c == '/':
+				state = beforeAttr
+			case c == '=':
+				state = beforeValue
+			}
+		case afterAttr:
+			switch {
+			case c == '=':
+				state = beforeValue
+			case c == '/':
+				state = beforeAttr
+			case !space(c):
+				state = inAttr
+			}
+		case beforeValue:
 			switch {
 			case c == '"' || c == '\'':
 				q := indexFrom(html, string(c), k+1)
 				if q < 0 {
 					return -1
 				}
-				k, state = q, inTag
-			case c == '>':
-				return k
+				k, state = q, afterQuoted
 			case !space(c):
-				state = unquoted
+				state = inUnquoted
 			}
-		default:
-			if c == '>' {
-				return k
+		case inUnquoted:
+			if space(c) {
+				state = beforeAttr
 			}
-			if c == '=' {
-				state = valueStart
+		case afterQuoted:
+			if space(c) || c == '/' {
+				state = beforeAttr
+			} else {
+				state = inAttr
 			}
 		}
 	}

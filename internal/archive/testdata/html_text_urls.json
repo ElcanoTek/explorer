@@ -289,6 +289,15 @@
     "https://vendor.example/q1.csv",
     "https://vendor.example/q2.csv"
    ]
+  },
+  {
+   "name": "= and quotes start an attribute name, not a value, where no name was",
+   "html": "<div =\">https://vendor.example/r1.csv</div><div a b=\"c>d\" e = 'f'>https://vendor.example/r2.csv</div><!x '>https://vendor.example/r3.csv",
+   "want": [
+    "https://vendor.example/r1.csv",
+    "https://vendor.example/r2.csv",
+    "https://vendor.example/r3.csv"
+   ]
   }
  ]
 }
