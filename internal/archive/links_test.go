@@ -58,6 +58,17 @@ func TestBareHTMLURLsComeLastAndOnce(t *testing.T) {
 	}
 }
 
+func TestBareURLsInsideOutlookConditionalRegionsAreNotListed(t *testing.T) {
+	// The renderer removes these regions (downlevel-revealed content
+	// included), so a URL inside one is never shown.
+	html := "<!--[if !mso]><!--><p>https://vendor.example/hidden.csv</p><!--<![endif]-->" +
+		"<!--[if mso]><p>https://vendor.example/mso.csv</p><![endif]--><p>https://vendor.example/shown.csv</p>"
+	links := bodyURLs("", html)
+	if len(links) != 1 || links[0].url != "https://vendor.example/shown.csv" {
+		t.Fatalf("links: %+v", links)
+	}
+}
+
 func TestAnOpenXStyleBareLinkIsADownloadLinkUnderItsExtractedForm(t *testing.T) {
 	const extracted = "https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256" +
 		"&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"

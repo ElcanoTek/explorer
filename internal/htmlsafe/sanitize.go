@@ -235,6 +235,13 @@ func stripBlocks(s string) string {
 	return out.String()
 }
 
+// StripConditionalComments removes each Outlook conditional region
+// (<!--[if ...]> through <![endif]-->, downlevel-revealed content included)
+// as Sanitize does, so text it drops is dropped elsewhere too.
+func StripConditionalComments(s string) string {
+	return conditionalRE.ReplaceAllString(s, "")
+}
+
 // Sanitize cleans untrusted HTML: the block pre-pass, the allow-list, then
 // a cut to MaxPreviewRunes that is cleaned again so nothing is left
 // half-open at the boundary.
@@ -243,7 +250,7 @@ func Sanitize(htmlText string) string {
 }
 
 func sanitizeLimit(htmlText string, maxRunes int) string {
-	source := conditionalRE.ReplaceAllString(stripBlocks(htmlText), "")
+	source := StripConditionalComments(stripBlocks(htmlText))
 	out := clean(source)
 	if utf8.RuneCountInString(out) > maxRunes {
 		out = clean(truncateRunes(out, maxRunes))

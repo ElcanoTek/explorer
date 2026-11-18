@@ -1,5 +1,5 @@
 {
- "note": "Bare URLs in an HTML part's text: ses_email_link_archiver.extract_urls_from_html_text and Explorer's extractHTMLTextURLs (internal/archive/links.go) must return exactly WANT for each HTML (the archive key is the SHA-256 of the URL as extracted). Explorer keeps a copy of this file in internal/archive/testdata/. Known difference, older than these cases: Explorer also lists URLs whose scheme is not lower case (the archiver never fetches them, so they stay live-only); the cases here use lower-case schemes.",
+ "note": "Bare URLs in an HTML part's text: ses_email_link_archiver.extract_urls_from_html_text and Explorer's extractHTMLTextURLs (internal/archive/links.go) must return exactly WANT for each HTML (the archive key is the SHA-256 of the URL as extracted). Explorer keeps a copy of this file in internal/archive/testdata/. Known difference, older than these cases: Explorer also lists URLs whose scheme is not lower case (the archiver never fetches them, so they stay live-only); the cases here use lower-case schemes. Explorer lists bare URLs after removing Outlook conditional regions (<!--[if ...]> to <![endif]-->), as its renderer does; the archiver reads them (its action check sees their wording), so it may archive URLs Explorer does not list. The cases here have no conditional regions.",
  "cases": [
   {
    "name": "openx bare signed link, entities kept",
@@ -477,6 +477,20 @@
    "name": "an svg in a template is skipped whole (its cdata can hide the closing tag)",
    "html": "<template><svg><![CDATA[</template>https://vendor.example/a.csv",
    "want": []
+  },
+  {
+   "name": "an end tag without a letter is a comment to its first >",
+   "html": "<p>https://vendor.example/report</3>.csv</p>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a bogus end tag ignores quotes",
+   "html": "<p>https://vendor.example/a</3 b=\">\"/b.csv>c.csv</p>",
+   "want": [
+    "https://vendor.example/a"
+   ]
   }
  ]
 }

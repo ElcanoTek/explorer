@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ElcanoTek/explorer/internal/htmlsafe"
 	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
 
@@ -148,6 +149,24 @@ func truncateToRunes(s string, n int) string {
 	return s
 }
 
+// endsAtFirstGT reports whether the markup at html[j] ends at its first
+// ">", quotes included: "<!" and "<?" (declarations, bogus comments) and
+// "</" without a letter after it ("</3>", "</>"), which the tokenizer reads
+// as a comment.
+func endsAtFirstGT(html string, j int) bool {
+	if strings.HasPrefix(html[j:], "<!") || strings.HasPrefix(html[j:], "<?") {
+		return true
+	}
+	if !strings.HasPrefix(html[j:], "</") {
+		return false
+	}
+	if j+2 >= len(html) {
+		return true
+	}
+	c := html[j+2] | 0x20 // ASCII lower case
+	return c < 'a' || c > 'z'
+}
+
 func isTagStart(c byte) bool {
 	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '/' || c == '!' || c == '?'
 }
@@ -159,7 +178,8 @@ func isTagStart(c byte) bool {
 // name and "=" (spaces allowed); in a tag name, an attribute name (which may
 // begin with "=" or hold quotes, as in <div =">) or an unquoted value,
 // quotes and "=" are ordinary characters. "<!" and "<?" (declarations, bogus
-// comments) end at their first ">". Callers move past the end, so each byte
+// comments) end at their first ">", as does "</" without a letter after it
+// (endsAtFirstGT). Callers move past the end, so each byte
 // is scanned once. The archiver's _tag_end.
 func tagEnd(html string, j int) int {
 	end, _ := tagScan(html, j)
@@ -179,7 +199,7 @@ func tagScan(html string, j int) (int, bool) {
 		afterQuoted
 	)
 	n := len(html)
-	if j+1 < n && strings.IndexByte("!?", html[j+1]) >= 0 {
+	if endsAtFirstGT(html, j) {
 		return indexFrom(html, ">", j+1), false
 	}
 	k := j + 1
@@ -976,7 +996,10 @@ func bodyURLs(plain, html string) []bodyLink {
 	for _, u := range plainURLs {
 		seen[dedupeKey(u)] = true
 	}
-	for _, u := range extractHTMLTextURLs(html) {
+	// Bare URLs come from what the renderer shows: without the Outlook
+	// conditional regions it removes (the archiver, which also reads them,
+	// may archive more; a URL listed here is extracted as it does).
+	for _, u := range extractHTMLTextURLs(htmlsafe.StripConditionalComments(html)) {
 		decoded := dedupeKey(u)
 		if _, ok := index[u]; ok || seen[decoded] {
 			continue
