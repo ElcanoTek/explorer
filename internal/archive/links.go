@@ -162,6 +162,13 @@ func isTagStart(c byte) bool {
 // comments) end at their first ">". Callers move past the end, so each byte
 // is scanned once. The archiver's _tag_end.
 func tagEnd(html string, j int) int {
+	end, _ := tagScan(html, j)
+	return end
+}
+
+// tagScan is tagEnd and whether the tag is self-closing: it ends "/>"
+// outside a value ("<svg/>", not "<svg a=b/>"). The archiver's _tag_scan.
+func tagScan(html string, j int) (int, bool) {
 	const (
 		inName = iota
 		beforeAttr
@@ -172,8 +179,8 @@ func tagEnd(html string, j int) int {
 		afterQuoted
 	)
 	n := len(html)
-	if j+1 < n && (html[j+1] == '!' || html[j+1] == '?') {
-		return indexFrom(html, ">", j+1)
+	if j+1 < n && strings.IndexByte("!?", html[j+1]) >= 0 {
+		return indexFrom(html, ">", j+1), false
 	}
 	k := j + 1
 	if strings.HasPrefix(html[j:], "</") {
@@ -184,7 +191,7 @@ func tagEnd(html string, j int) int {
 	for ; k < n; k++ {
 		c := html[k]
 		if c == '>' {
-			return k
+			return k, state == beforeAttr && html[k-1] == '/'
 		}
 		switch state {
 		case inName:
@@ -218,7 +225,7 @@ func tagEnd(html string, j int) int {
 			case c == '"' || c == '\'':
 				q := indexFrom(html, string(c), k+1)
 				if q < 0 {
-					return -1
+					return -1, false
 				}
 				k, state = q, afterQuoted
 			case !space(c):
@@ -236,7 +243,7 @@ func tagEnd(html string, j int) int {
 			}
 		}
 	}
-	return -1
+	return -1, false
 }
 
 // blockTags end a block of text: they become "\n" in stripMarkup, the only
@@ -266,19 +273,205 @@ func tagName(lower string, j int) string {
 	return lower[start:k]
 }
 
-// rawTextName is "style" or "script" when the tag at lower[j] opens one
-// (its name ends there: "<styles" does not).
+// rawTextName is the dropped element's name when the tag at lower[j] opens
+// one (its name ends there: "<styles" does not).
 func rawTextName(lower string, j int) string {
 	// Elements whose content a reader never sees, dropped with it (as
 	// internal/htmlsafe drops them when rendering): style and script, the
-	// head's title, and inert template content. The archiver's _RAW_TEXT.
-	for _, name := range []string{"style", "script", "title", "template"} {
+	// head's title, inert template content, and SVG and MathML (foreign
+	// content). The first three end at their first closing tag; the others
+	// nest (dropEnd). The archiver's _RAW_TEXT.
+	for _, name := range []string{"style", "script", "title", "template", "svg", "math"} {
 		after := j + 1 + len(name)
 		if strings.HasPrefix(lower[j+1:], name) && after < len(lower) && strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
 			return name
 		}
 	}
 	return ""
+}
+
+// breakoutTags end SVG or MathML content in a browser (the parser's
+// "breakout" list; <font> only with certain attributes, taken here as
+// always). What follows is hard to place, so dropEnd hides it. The
+// archiver's _BREAKOUT.
+var breakoutTags = map[string]bool{
+	"b": true, "big": true, "blockquote": true, "body": true, "br": true, "center": true, "code": true,
+	"dd": true, "div": true, "dl": true, "dt": true, "em": true, "embed": true, "font": true, "h1": true,
+	"h2": true, "h3": true, "h4": true, "h5": true, "h6": true, "head": true, "hr": true, "i": true,
+	"img": true, "li": true, "listing": true, "menu": true, "meta": true, "nobr": true, "ol": true, "p": true,
+	"pre": true, "ruby": true, "s": true, "small": true, "span": true, "strike": true, "strong": true,
+	"sub": true, "sup": true, "table": true, "tt": true, "u": true, "ul": true, "var": true,
+}
+
+// integrationTags are SVG and MathML elements whose content a browser
+// parses as HTML (integration points; annotation-xml only with certain
+// encodings, taken here as always), and swallowTags the HTML elements
+// that swallow a template's closing tag (dropEnd skips the raw text of
+// style, script and title, and hides the rest at any other). The
+// archiver's _INTEGRATION and _SWALLOW.
+var (
+	integrationTags = map[string]bool{
+		"foreignobject": true, "desc": true, "title": true, "mi": true, "mo": true, "mn": true, "ms": true,
+		"mtext": true, "annotation-xml": true,
+	}
+	swallowTags = map[string]bool{
+		"template": true, "script": true, "style": true, "title": true, "textarea": true, "xmp": true,
+		"iframe": true, "noembed": true, "noframes": true, "noscript": true, "plaintext": true,
+	}
+)
+
+// commentEnd is just past the comment starting at html[j] ("<!--"), or -1
+// when it is left open: it ends at its first "-->" or "--!>", or at once as
+// "<!-->" or "<!--->", as the HTML tokenizer reads it. The archiver's
+// _comment_end.
+func commentEnd(html string, j int) int {
+	for _, short := range []string{"<!-->", "<!--->"} {
+		if strings.HasPrefix(html[j:], short) {
+			return j + len(short)
+		}
+	}
+	end, at := -1, -1
+	for _, m := range []string{"-->", "--!>"} {
+		if k := indexFrom(html, m, j+4); k >= 0 && (at < 0 || k < at) {
+			at, end = k, k+len(m)
+		}
+	}
+	return end
+}
+
+// dropEnd is where the dropped element name whose start tag ends at
+// html[end] ends (just past its end tag), or -1 when it is left open (the
+// rest is the element's). Raw text ends at its first own closing tag (whose
+// name ends there, quote-aware). A template, <svg> or <math> ends at its
+// matching closing tag: a nested element of the same name opens a level (a
+// self-closing <svg/> or <math/> does not), and a comment is skipped, as are
+// a template's own raw-text children and an SVG or MathML CDATA section.
+//
+// Where a browser could end the element elsewhere, the rest is hidden here
+// instead (dropped, never invented): in SVG or MathML, an HTML tag such as
+// <p> or <br> (breakoutTags), a closing tag with no open element of its name
+// inside (it can close the SVG from outside), or any tag but <svg> or <math>
+// opened inside an integration point (an SVG <title>, whose content is
+// HTML); in a template, an element that swallows its closing tag
+// (swallowTags) other than the raw text skipped. The archiver's _drop_end.
+func dropEnd(html, lower, name string, end int) int {
+	if name != "template" && name != "svg" && name != "math" {
+		return rawTextEnd(html, lower, name, end)
+	}
+	d := &dropLevel{name: name, foreign: name != "template", depth: 1, opened: map[string]int{}}
+	n, i := len(html), end+1
+	for {
+		j := indexFrom(html, "<", i)
+		if j < 0 {
+			return -1
+		}
+		if k, skipped := skipMarkup(html, j, d.foreign); skipped {
+			if i = k; i < 0 {
+				return -1
+			}
+			continue
+		}
+		if j+1 >= n || !isTagStart(html[j+1]) {
+			i = j + 1
+			continue
+		}
+		e, selfClosing := tagScan(html, j)
+		if e < 0 {
+			return -1
+		}
+		if inner := rawTextName(lower, j); !d.foreign && (inner == "style" || inner == "script" || inner == "title") {
+			if i = rawTextEnd(html, lower, inner, e); i < 0 {
+				return -1
+			}
+			continue
+		}
+		ends, hide := d.at(tagName(lower, j), strings.HasPrefix(lower[j:], "</"), selfClosing)
+		if hide {
+			return -1
+		}
+		if ends {
+			return e + 1
+		}
+		i = e + 1
+	}
+}
+
+// rawTextEnd is just past the closing tag of the raw-text element name
+// whose start tag ends at html[end]: its first own closing tag (whose name
+// ends there, quote-aware), or -1 when there is none.
+func rawTextEnd(html, lower, name string, end int) int {
+	closing := "</" + name
+	k := indexFrom(lower, closing, end+1)
+	for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
+		k = indexFrom(lower, closing, k+len(closing))
+	}
+	if k < 0 {
+		return -1
+	}
+	if e := tagEnd(html, k); e >= 0 {
+		return e + 1
+	}
+	return -1
+}
+
+// skipMarkup is just past the comment (or, in SVG or MathML, the CDATA
+// section) starting at html[j], or -1 when it is left open; skipped is
+// false when neither starts there.
+func skipMarkup(html string, j int, foreign bool) (next int, skipped bool) {
+	if strings.HasPrefix(html[j:], "<!--") {
+		return commentEnd(html, j), true
+	}
+	if foreign && strings.HasPrefix(html[j:], "<![CDATA[") {
+		if k := indexFrom(html, "]]>", j+9); k >= 0 {
+			return k + 3, true
+		}
+		return -1, true
+	}
+	return 0, false
+}
+
+// dropLevel is a template, <svg> or <math> element being dropped (dropEnd).
+type dropLevel struct {
+	name               string
+	foreign            bool
+	depth, integration int
+	opened             map[string]int // elements open inside a foreign one, by name
+}
+
+// at reads a tag inside the element: whether the element ends with it, or
+// whether the rest is hidden (see dropEnd).
+func (d *dropLevel) at(tag string, closing, selfClosing bool) (ends, hide bool) {
+	switch {
+	case tag == d.name:
+		if closing {
+			d.depth--
+			return d.depth == 0, false
+		}
+		if !d.foreign || !selfClosing {
+			d.depth++
+		}
+	case d.foreign && tag != "" && closing:
+		if tag == "p" || tag == "br" || d.opened[tag] == 0 {
+			return false, true
+		}
+		d.opened[tag]--
+		if integrationTags[tag] {
+			d.integration--
+		}
+	case d.foreign && tag != "":
+		if breakoutTags[tag] || (d.integration > 0 && tag != "svg" && tag != "math") {
+			return false, true
+		}
+		if !selfClosing {
+			d.opened[tag]++
+			if integrationTags[tag] {
+				d.integration++
+			}
+		}
+	case !d.foreign && !closing && swallowTags[tag]:
+		return false, true
+	}
+	return false, false
 }
 
 // stripMarkup returns html's text as a reader sees it, in one left-to-right
@@ -289,7 +482,7 @@ func rawTextName(lower string, j int) string {
 // starts
 // at "<" followed by a letter, "/", "!" or "?" (else "<" is text) and ends at
 // its first ">" outside a quoted attribute value (tagEnd). A comment ends at
-// "-->"; a raw-text element at its own closing tag (whose name ends there,
+// "-->" (commentEnd); a raw-text element at its own closing tag (whose name ends there,
 // quote-aware). Anything left open (a tag, a quote, a comment, an element)
 // hides the rest, as in a browser. Markers inside a comment or an element's
 // raw text are never read as markup.
@@ -306,12 +499,12 @@ func stripMarkup(html string) string {
 			break
 		}
 		if strings.HasPrefix(html[j:], "<!--") {
-			k := indexFrom(html, "-->", j+4)
+			k := commentEnd(html, j)
 			emit(html[i:j])
 			if k < 0 {
 				break
 			}
-			i = k + 3
+			i = k
 			continue
 		}
 		if j+1 >= n || !isTagStart(html[j+1]) {
@@ -319,7 +512,7 @@ func stripMarkup(html string) string {
 			i = j + 1
 			continue
 		}
-		end := tagEnd(html, j)
+		end, selfClosing := tagScan(html, j)
 		emit(html[i:j])
 		if end < 0 { // the rest is inside the tag
 			break
@@ -331,23 +524,13 @@ func stripMarkup(html string) string {
 			out.WriteString(" ")
 		}
 		name := rawTextName(lower, j)
-		if name == "" {
+		if name == "" || (selfClosing && (name == "svg" || name == "math")) { // <svg/> is empty
 			i = end + 1
 			continue
 		}
-		closing := "</" + name
-		k := indexFrom(lower, closing, end+1)
-		for k >= 0 && k+len(closing) < n && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
-			k = indexFrom(lower, closing, k+len(closing))
-		}
-		e := -1
-		if k >= 0 {
-			e = tagEnd(html, k)
-		}
-		if e < 0 { // left open: the rest is the element's
+		if i = dropEnd(html, lower, name, end); i < 0 { // left open: the rest is the element's
 			break
 		}
-		i = e + 1
 	}
 	return out.String()
 }

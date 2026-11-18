@@ -319,6 +319,138 @@
    "want": [
     "https://example.com/t1.csv"
    ]
+  },
+  {
+   "name": "svg text is dropped",
+   "html": "<p>See <svg><text>https://vendor.example/a.csv</text></svg> https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "mathml text is dropped, nested math matched",
+   "html": "<math><math></math>https://vendor.example/a.csv</math> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "nested template matched",
+   "html": "<template><template></template>https://vendor.example/a.csv</template> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "template script hides its closing tag",
+   "html": "<template><script>\"</template>\"</script>https://vendor.example/a.csv</template> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "self-closing svg is empty",
+   "html": "<svg/> https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "unquoted value slash is not self-closing",
+   "html": "<svg a=b/> https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "nested self-closing svg opens no level",
+   "html": "<svg><svg/>https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "svg cdata hides a closing tag",
+   "html": "<svg><![CDATA[</svg>]]>https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "svg left open hides the rest",
+   "html": "<p>x</p><svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an html tag in svg hides the rest (a script after it can swallow the closing tag)",
+   "html": "<svg><br><script>\"</svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "a closing p in math hides the rest",
+   "html": "<math></p></math> https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "svg shapes then text",
+   "html": "<svg><g><path d=\"M0 0\"/></g></svg><p>x https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a template in an svg title (html content) hides the rest",
+   "html": "<svg><title><template></svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an svg title is dropped with the svg",
+   "html": "<svg><title>Logo https://vendor.example/a.csv</title></svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a textarea in a template hides the rest",
+   "html": "<template><textarea></template>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an abrupt comment ends at once",
+   "html": "<!--> https://vendor.example/a.csv <!---> https://vendor.example/b.csv -->",
+   "want": [
+    "https://vendor.example/a.csv",
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a comment ends at --!>",
+   "html": "<!-- x --!> https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "an abrupt comment does not hide an svg",
+   "html": "<!--><svg>-->https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a stray closing tag in svg hides the rest (it can close the svg from outside)",
+   "html": "<div><svg></div>https://vendor.example/a.csv</svg>",
+   "want": []
+  },
+  {
+   "name": "an element opened in an integration point hides the rest",
+   "html": "<svg><foreignObject><foreignObject><svg></svg></svg></foreignObject>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "svg elements closed in order",
+   "html": "<svg><g><text>x</text></g></svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
   }
  ]
 }
