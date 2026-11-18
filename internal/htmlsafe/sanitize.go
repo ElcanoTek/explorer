@@ -235,11 +235,13 @@ func stripBlocks(s string) string {
 	return out.String()
 }
 
-// StripConditionalComments removes each Outlook conditional region
-// (<!--[if ...]> through <![endif]-->, downlevel-revealed content included)
-// as Sanitize does, so text it drops is dropped elsewhere too.
-func StripConditionalComments(s string) string {
-	return conditionalRE.ReplaceAllString(s, "")
+// PreStrip is the text pass Sanitize makes before parsing: the head,
+// title, script, style, meta and link blocks are removed, then each Outlook
+// conditional region (<!--[if ...]> through <![endif]-->, downlevel-revealed
+// content included). Other readers of the body use it so they drop what the
+// rendered email drops, in the same order.
+func PreStrip(s string) string {
+	return conditionalRE.ReplaceAllString(stripBlocks(s), "")
 }
 
 // Sanitize cleans untrusted HTML: the block pre-pass, the allow-list, then
@@ -250,7 +252,7 @@ func Sanitize(htmlText string) string {
 }
 
 func sanitizeLimit(htmlText string, maxRunes int) string {
-	source := StripConditionalComments(stripBlocks(htmlText))
+	source := PreStrip(htmlText)
 	out := clean(source)
 	if utf8.RuneCountInString(out) > maxRunes {
 		out = clean(truncateRunes(out, maxRunes))

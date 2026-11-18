@@ -996,10 +996,11 @@ func bodyURLs(plain, html string) []bodyLink {
 	for _, u := range plainURLs {
 		seen[dedupeKey(u)] = true
 	}
-	// Bare URLs come from what the renderer shows: without the Outlook
-	// conditional regions it removes (the archiver, which also reads them,
-	// may archive more; a URL listed here is extracted as it does).
-	for _, u := range extractHTMLTextURLs(htmlsafe.StripConditionalComments(html)) {
+	// Bare URLs come from what the renderer shows: after its pre-strip pass
+	// (blocks, then Outlook conditional regions; the archiver also reads
+	// those regions, so it may archive more; a URL listed here is extracted
+	// as it does).
+	for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(html)) {
 		decoded := dedupeKey(u)
 		if _, ok := index[u]; ok || seen[decoded] {
 			continue

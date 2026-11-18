@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/ElcanoTek/explorer/internal/htmlsafe"
 )
 
 // testdata/html_text_urls.json is a copy of the archiver's shared cases
@@ -66,6 +69,19 @@ func TestBareURLsInsideOutlookConditionalRegionsAreNotListed(t *testing.T) {
 	links := bodyURLs("", html)
 	if len(links) != 1 || links[0].url != "https://vendor.example/shown.csv" {
 		t.Fatalf("links: %+v", links)
+	}
+}
+
+func TestARegionOpenerInsideAStrippedScriptHidesNothing(t *testing.T) {
+	// The renderer removes the script block first, so the opener inside it
+	// never starts a region and the paragraph is shown.
+	html := `<script>var x="<!--[if mso]>";</script><p>https://vendor.example/report.csv</p><![endif]-->`
+	links := bodyURLs("", html)
+	if len(links) != 1 || links[0].url != "https://vendor.example/report.csv" {
+		t.Fatalf("links: %+v", links)
+	}
+	if !strings.Contains(htmlsafe.Sanitize(html), "https://vendor.example/report.csv") {
+		t.Fatal("the renderer no longer shows the link; update this test")
 	}
 }
 
