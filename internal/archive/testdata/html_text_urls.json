@@ -305,6 +305,20 @@
    "want": [
     "https://storage.googleapis.com/bq-full-download/EXAMPLE/20261118/0123456789abcdef0123456789abcdef/1700000000000/out/Full_Data_Report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"
    ]
+  },
+  {
+   "name": "title and template content is not shown",
+   "html": "<title>https://vendor.example/s1.csv</title><template><p>https://vendor.example/s2.csv</p></template><p>https://vendor.example/s3.csv</p>",
+   "want": [
+    "https://vendor.example/s3.csv"
+   ]
+  },
+  {
+   "name": "a custom element named like a block tag is inline",
+   "html": "<p-x>https://ex</p-x>ample.com/t1.csv <div-y>z</div-y>",
+   "want": [
+    "https://example.com/t1.csv"
+   ]
   }
  ]
 }

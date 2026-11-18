@@ -249,14 +249,18 @@ var blockTags = setOf("address", "article", "aside", "blockquote", "center", "dd
 	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
 
 // tagName is the lower-case name of the tag at lower[j] ("<" or "</", then a
-// letter and letters or digits), or "".
+// letter, then anything up to a space, "/" or ">"), or "".
 func tagName(lower string, j int) string {
 	k := j + 1
 	if k < len(lower) && lower[k] == '/' {
 		k++
 	}
 	start := k
-	for k < len(lower) && (('a' <= lower[k] && lower[k] <= 'z') || (k > start && '0' <= lower[k] && lower[k] <= '9')) {
+	if k >= len(lower) || lower[k] < 'a' || lower[k] > 'z' {
+		return ""
+	}
+	// The whole name, up to a space, "/" or ">": <p-x> is not <p>.
+	for k < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k])) {
 		k++
 	}
 	return lower[start:k]
@@ -265,7 +269,10 @@ func tagName(lower string, j int) string {
 // rawTextName is "style" or "script" when the tag at lower[j] opens one
 // (its name ends there: "<styles" does not).
 func rawTextName(lower string, j int) string {
-	for _, name := range []string{"style", "script"} {
+	// Elements whose content a reader never sees, dropped with it (as
+	// internal/htmlsafe drops them when rendering): style and script, the
+	// head's title, and inert template content. The archiver's _RAW_TEXT.
+	for _, name := range []string{"style", "script", "title", "template"} {
 		after := j + 1 + len(name)
 		if strings.HasPrefix(lower[j+1:], name) && after < len(lower) && strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
 			return name
