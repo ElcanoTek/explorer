@@ -154,25 +154,50 @@ func isTagStart(c byte) bool {
 
 // tagEnd is where the tag starting at html[j] ("<") ends: its first ">"
 // outside a quoted attribute value, or -1 (a quote left open, or no ">"):
-// then, as in a browser, the rest of the document is inside the tag. A
-// quote opens a value only right after "=" (spaces allowed), as the HTML
-// tokenizer reads it; anywhere else it is an ordinary character
-// (<div data=x">). Callers move past the end, so each byte is scanned once.
-// The archiver's _tag_end.
+// then, as in a browser, the rest of the document is inside the tag. As the
+// HTML tokenizer reads attributes, a quote opens a value only where a value
+// starts (after "=", spaces allowed); in an unquoted value quotes and "="
+// are ordinary characters and it ends at a space or ">" (<div data=x"> and
+// <div data=x="> end at their ">"). Callers move past the end, so each byte
+// is scanned once. The archiver's _tag_end.
 func tagEnd(html string, j int) int {
-	last := byte(0)
+	const (
+		inTag      = iota
+		valueStart // after "=": a value may start
+		unquoted   // inside an unquoted value
+	)
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+	state := inTag
 	for k := j + 1; k < len(html); k++ {
-		switch c := html[k]; {
-		case (c == '"' || c == '\'') && last == '=':
-			q := indexFrom(html, string(c), k+1)
-			if q < 0 {
-				return -1
+		c := html[k]
+		switch state {
+		case unquoted:
+			if c == '>' {
+				return k
 			}
-			k, last = q, c
-		case c == '>':
-			return k
-		case c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f':
-			last = c
+			if space(c) {
+				state = inTag
+			}
+		case valueStart:
+			switch {
+			case c == '"' || c == '\'':
+				q := indexFrom(html, string(c), k+1)
+				if q < 0 {
+					return -1
+				}
+				k, state = q, inTag
+			case c == '>':
+				return k
+			case !space(c):
+				state = unquoted
+			}
+		default:
+			if c == '>' {
+				return k
+			}
+			if c == '=' {
+				state = valueStart
+			}
 		}
 	}
 	return -1

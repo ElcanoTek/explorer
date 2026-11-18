@@ -281,6 +281,14 @@
     "https://vendor.example/o1.csv",
     "https://vendor.example/o2.csv"
    ]
+  },
+  {
+   "name": "quotes and = inside an unquoted value are ordinary",
+   "html": "<div data=x=\">https://vendor.example/q1.csv</div><i a=b'c d=\"e>f\">https://vendor.example/q2.csv</i>",
+   "want": [
+    "https://vendor.example/q1.csv",
+    "https://vendor.example/q2.csv"
+   ]
   }
  ]
 }
