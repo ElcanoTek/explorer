@@ -72,6 +72,13 @@ func TestBareURLsInsideOutlookConditionalRegionsAreNotListed(t *testing.T) {
 	}
 }
 
+func TestALongStrippedBlockDoesNotBringTextPastTheCutIntoTheScan(t *testing.T) {
+	html := "<script>" + strings.Repeat("x", maxScanRunes) + "</script> https://vendor.example/report.csv"
+	if links := bodyURLs("", html); len(links) != 0 {
+		t.Fatalf("links: %+v", links)
+	}
+}
+
 func TestARegionOpenerInsideAStrippedScriptHidesNothing(t *testing.T) {
 	// The renderer removes the script block first, so the opener inside it
 	// never starts a region and the paragraph is shown.

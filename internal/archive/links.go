@@ -984,7 +984,8 @@ func bodyURLs(plain, html string) []bodyLink {
 	for _, u := range plainURLs {
 		add(bodyLink{url: u})
 	}
-	for _, l := range extractHTMLLinks(truncateToRunes(html, maxScanRunes)) {
+	html = truncateToRunes(html, maxScanRunes)
+	for _, l := range extractHTMLLinks(html) {
 		add(l)
 	}
 	// A bare URL repeats a text/plain URL when their dedupe keys match (a
@@ -999,7 +1000,8 @@ func bodyURLs(plain, html string) []bodyLink {
 	// Bare URLs come from what the renderer shows: after its pre-strip pass
 	// (blocks, then Outlook conditional regions; the archiver also reads
 	// those regions, so it may archive more; a URL listed here is extracted
-	// as it does).
+	// as it does). The pass runs on the cut body, so a long removed block
+	// cannot bring text past the archiver's cut into the scan.
 	for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(html)) {
 		decoded := dedupeKey(u)
 		if _, ok := index[u]; ok || seen[decoded] {
