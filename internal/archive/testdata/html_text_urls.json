@@ -298,6 +298,13 @@
     "https://vendor.example/r2.csv",
     "https://vendor.example/r3.csv"
    ]
+  },
+  {
+   "name": "OpenX scheduled full data report (layout of a real one, names and ids replaced)",
+   "html": "<html><body><p>Hello Example Agency</p><p>Please find details of your scheduled full data report <b>Example_Daily_Domain_Yesterday</b> for <b>EXAMPLE</b> in <b>TimeZone(UTC (+00:00),UTC)</b>. </p><p><b>Time Range: </b>From 11-17-2026 00:00:00 to 11-17-2026 23:59:00 UTC (+00:00)</p><p><b>Include Filters: </b>Deal Name[Values[Example_Deal_A;Example_Deal_B]]</p><p>Please click on the below link to download the report requested by you on Sigview.</p><p>https://storage.googleapis.com/bq-full-download/EXAMPLE/20261118/0123456789abcdef0123456789abcdef/1700000000000/out/Full_Data_Report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12</p><p>The total number of rows in this file is 31. The above link will expire on 25 November, 2026.</p><p>If you no longer want to receive this report, you can either turn it off, or delete it from the Reports > Scheduled Reports menu within your OpenX reports dashboard.</p><p>If this scheduled report is being shared with you by another user, reach out to <b>Example Agency</b> to request removal from this report.</p><p style='margin: 0px auto 4px;'>Regards,</p><p style='margin: 0px auto 4px;'>OpenX Data Services Team</p><img alt='OpenX' width=100px  src=https://logo.example/openx.png></body></html>",
+   "want": [
+    "https://storage.googleapis.com/bq-full-download/EXAMPLE/20261118/0123456789abcdef0123456789abcdef/1700000000000/out/Full_Data_Report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"
+   ]
   }
  ]
 }
