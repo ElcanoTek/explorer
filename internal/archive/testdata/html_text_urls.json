@@ -520,6 +520,27 @@
    "want": [
     "https://vendor.example/a.csv"
    ]
+  },
+  {
+   "name": "a reference in raw text is shown as written",
+   "html": "<xmp>https://vendor.example/report.csv&lt;next</xmp>",
+   "want": [
+    "https://vendor.example/report.csv&amp;lt;next"
+   ]
+  },
+  {
+   "name": "a reference in a textarea is decoded",
+   "html": "<textarea>https://vendor.example/report.csv&lt;next</textarea>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "raw text keeps a query's ampersands",
+   "html": "<iframe>https://vendor.example/r.csv?a=1&b=2</iframe>",
+   "want": [
+    "https://vendor.example/r.csv?a=1&amp;b=2"
+   ]
   }
  ]
 }

@@ -79,6 +79,12 @@ func TestALongStrippedBlockDoesNotBringTextPastTheCutIntoTheScan(t *testing.T) {
 	}
 }
 
+func TestAReferenceInRawTextIsNotAURLBoundary(t *testing.T) {
+	if links := downloadLinks("", "<xmp>https://vendor.example/report.csv&lt;next</xmp>"); len(links) != 0 {
+		t.Fatalf("links: %+v", links)
+	}
+}
+
 func TestARegionOpenerInsideAStrippedScriptHidesNothing(t *testing.T) {
 	// The renderer removes the script block first, so the opener inside it
 	// never starts a region and the paragraph is shown.

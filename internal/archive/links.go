@@ -316,16 +316,23 @@ var literalNames = []string{"textarea", "xmp", "iframe", "noembed", "noframes", 
 // literalText is the text of the literal element name whose start tag ends
 // at html[end] (up to its own closing tag, or the rest for plaintext or one
 // left open) and just past that closing tag, or -1 when the rest is its.
+// Only a textarea (RCDATA) decodes character references; in the others
+// (RAWTEXT, plaintext) "&lt;" is shown as written, so their "&" is returned
+// escaped ("&amp;"), never read later as a reference or a separator.
 func literalText(html, lower, name string, end int) (string, int) {
+	text, next := html[end+1:], -1
 	if name != "plaintext" {
 		if k := closingTag(lower, name, end+1); k >= 0 {
+			text = html[end+1 : k]
 			if e := tagEnd(html, k); e >= 0 {
-				return html[end+1 : k], e + 1
+				next = e + 1
 			}
-			return html[end+1 : k], -1
 		}
 	}
-	return html[end+1:], -1
+	if name != "textarea" {
+		text = strings.ReplaceAll(text, "&", "&amp;")
+	}
+	return text, next
 }
 
 // openingName is the one of names whose start tag is at lower[j] (its name
