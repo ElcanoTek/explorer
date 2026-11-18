@@ -1,0 +1,553 @@
+{
+ "note": "Bare URLs in an HTML part's text: ses_email_link_archiver.extract_urls_from_html_text and Explorer's extractHTMLTextURLs (internal/archive/links.go) must return exactly WANT for each HTML (the archive key is the SHA-256 of the URL as extracted). Explorer keeps a copy of this file in internal/archive/testdata/. Known difference, older than these cases: Explorer also lists URLs whose scheme is not lower case (the archiver never fetches them, so they stay live-only); the cases here use lower-case schemes. Explorer lists bare URLs after removing Outlook conditional regions (<!--[if ...]> to <![endif]-->), as its renderer does; the archiver reads them (its action check sees their wording), so it may archive URLs Explorer does not list. The cases here have no conditional regions.",
+ "cases": [
+  {
+   "name": "openx bare signed link, entities kept",
+   "html": "<p>Your report is ready:<br>https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12</p>",
+   "want": [
+    "https://storage.googleapis.com/bq-full-download/x/report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"
+   ]
+  },
+  {
+   "name": "hrefs are not text",
+   "html": "<a href=\"https://vendor.example/a.csv\">Download</a>",
+   "want": []
+  },
+  {
+   "name": "anchor text that is a URL counts",
+   "html": "<a href=\"https://t.example/c?u=1\">https://vendor.example/b.csv</a>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "tags end a URL",
+   "html": "<td>https://vendor.example/c.csv</td><td>next</td>",
+   "want": [
+    "https://vendor.example/c.csv"
+   ]
+  },
+  {
+   "name": "trailing punctuation trimmed",
+   "html": "<p>Get it at https://vendor.example/d.csv.</p>",
+   "want": [
+    "https://vendor.example/d.csv"
+   ]
+  },
+  {
+   "name": "style and script blocks skipped, any case",
+   "html": "<STYLE type=\"text/css\">@import url(https://fonts.example/css?family=x);</Style ><script>var u='https://cdn.example/app.js'</SCRIPT>after https://vendor.example/e.csv",
+   "want": [
+    "https://vendor.example/e.csv"
+   ]
+  },
+  {
+   "name": "a tag name only starting with style is not style",
+   "html": "<styles>https://vendor.example/f.csv</styles>",
+   "want": [
+    "https://vendor.example/f.csv"
+   ]
+  },
+  {
+   "name": "an unclosed style hides the rest, as in a browser",
+   "html": "<style>https://vendor.example/g.csv",
+   "want": []
+  },
+  {
+   "name": "a lone < stays text",
+   "html": "a < b https://vendor.example/h.csv",
+   "want": [
+    "https://vendor.example/h.csv"
+   ]
+  },
+  {
+   "name": "several, in order",
+   "html": "<div>one https://a.example/1.csv two <b>https://b.example/2.xlsx</b></div>",
+   "want": [
+    "https://a.example/1.csv",
+    "https://b.example/2.xlsx"
+   ]
+  },
+  {
+   "name": "non-ASCII text around a URL",
+   "html": "<p>Ünïcode İ text https://vendor.example/i.csv ok</p>",
+   "want": [
+    "https://vendor.example/i.csv"
+   ]
+  },
+  {
+   "name": "nbsp entity ends a URL",
+   "html": "<p>https://vendor.example/j.csv&nbsp;Next</p>",
+   "want": [
+    "https://vendor.example/j.csv"
+   ]
+  },
+  {
+   "name": "decimal and hex whitespace entities end a URL",
+   "html": "https://vendor.example/k.csv&#160;x https://vendor.example/l.csv&#x2003;y https://vendor.example/m.csv&#X0A0;z",
+   "want": [
+    "https://vendor.example/k.csv",
+    "https://vendor.example/l.csv",
+    "https://vendor.example/m.csv"
+   ]
+  },
+  {
+   "name": "a literal no-break space ends a URL",
+   "html": "https://vendor.example/n.csv next and https://vendor.example/o.csv　next",
+   "want": [
+    "https://vendor.example/n.csv",
+    "https://vendor.example/o.csv"
+   ]
+  },
+  {
+   "name": "entities that are not whitespace stay",
+   "html": "https://vendor.example/p?a=1&amp;b=2&#38;c=3",
+   "want": [
+    "https://vendor.example/p?a=1&amp;b=2&#38;c=3"
+   ]
+  },
+  {
+   "name": "a quoted > inside an attribute stays in the tag",
+   "html": "<div data-note=\"a > https://vendor.example/q.csv\" title='b > c'>hello</div>",
+   "want": []
+  },
+  {
+   "name": "comments are not text",
+   "html": "<!-- https://vendor.example/r.csv --> <!--[if mso]><v:rect href=\"x\"/><![endif]-->after https://vendor.example/s.csv",
+   "want": [
+    "https://vendor.example/s.csv"
+   ]
+  },
+  {
+   "name": "< not starting a tag is text",
+   "html": "a < https://vendor.example/t.csv > b",
+   "want": [
+    "https://vendor.example/t.csv"
+   ]
+  },
+  {
+   "name": "an unclosed comment hides the rest",
+   "html": "https://vendor.example/u.csv <!-- https://vendor.example/v.csv",
+   "want": [
+    "https://vendor.example/u.csv"
+   ]
+  },
+  {
+   "name": "a quote left open hides the rest, as in a browser",
+   "html": "<img alt='open>https://vendor.example/w.csv",
+   "want": []
+  },
+  {
+   "name": "a closing tag's name must end there",
+   "html": "<script>a</scriptx> https://hidden.example/x.csv</script> https://vendor.example/y.csv",
+   "want": [
+    "https://vendor.example/y.csv"
+   ]
+  },
+  {
+   "name": "entities that spell a URL stop end it",
+   "html": "https://vendor.example/x.csv&quot; &lt;https://vendor.example/y.csv&gt; 'https://vendor.example/z.csv&#39;",
+   "want": [
+    "https://vendor.example/x.csv",
+    "https://vendor.example/y.csv",
+    "https://vendor.example/z.csv"
+   ]
+  },
+  {
+   "name": "every named whitespace entity ends a URL",
+   "html": "https://vendor.example/a1.csv&hairsp;x https://vendor.example/a2.csv&ThickSpace;x https://vendor.example/a3.csv&numsp;x",
+   "want": [
+    "https://vendor.example/a1.csv",
+    "https://vendor.example/a2.csv",
+    "https://vendor.example/a3.csv"
+   ]
+  },
+  {
+   "name": "numeric control spaces end a URL; windows-1252 range does not",
+   "html": "https://vendor.example/b1.csv&#11;x https://vendor.example/b2.csv&#133;x",
+   "want": [
+    "https://vendor.example/b1.csv",
+    "https://vendor.example/b2.csv&#133;x"
+   ]
+  },
+  {
+   "name": "zero-padded references are references",
+   "html": "https://vendor.example/c1.csv&#00000062;x https://vendor.example/c2.csv&#x00000003e;y",
+   "want": [
+    "https://vendor.example/c1.csv",
+    "https://vendor.example/c2.csv"
+   ]
+  },
+  {
+   "name": "references without a semicolon that spell a separator end a URL",
+   "html": "https://vendor.example/d1.csv&nbsp Next https://vendor.example/d2.csv&quot next https://vendor.example/d3.csv&#160 x https://vendor.example/d4.csv&#62more",
+   "want": [
+    "https://vendor.example/d1.csv",
+    "https://vendor.example/d2.csv",
+    "https://vendor.example/d3.csv",
+    "https://vendor.example/d4.csv"
+   ]
+  },
+  {
+   "name": "a closing tag inside the opening tag's quoted attribute does not close it",
+   "html": "<style data-note=\"</style>\">https://cdn.example/report.css</style> after https://vendor.example/e1.csv",
+   "want": [
+    "https://vendor.example/e1.csv"
+   ]
+  },
+  {
+   "name": "a quoted > in a closing tag stays in it",
+   "html": "<style>x</style data-note=\">https://vendor.example/f1.csv\"> after https://vendor.example/f2.csv",
+   "want": [
+    "https://vendor.example/f2.csv"
+   ]
+  },
+  {
+   "name": "a tag past 8,192 characters still ends at its unquoted >",
+   "html": "<div title=\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy > https://vendor.example/g1.csv\">text https://vendor.example/g2.csv",
+   "want": [
+    "https://vendor.example/g2.csv"
+   ]
+  },
+  {
+   "name": "a style marker inside a comment or a script is not markup",
+   "html": "<!-- <style> --> https://vendor.example/h1.csv <script>var s='<style>';</script> https://vendor.example/h2.csv",
+   "want": [
+    "https://vendor.example/h1.csv",
+    "https://vendor.example/h2.csv"
+   ]
+  },
+  {
+   "name": "a comment marker inside a script is not markup",
+   "html": "<script>x='<!--'</script> https://vendor.example/h3.csv",
+   "want": [
+    "https://vendor.example/h3.csv"
+   ]
+  },
+  {
+   "name": "a reference whose decoded text starts with a stop ends a URL",
+   "html": "https://vendor.example/i1.csv&nvlt; next https://vendor.example/i2.csv&nvgt;x",
+   "want": [
+    "https://vendor.example/i1.csv",
+    "https://vendor.example/i2.csv"
+   ]
+  },
+  {
+   "name": "inline tags and comments join what is around them, as shown",
+   "html": "<p>https://ex<span>ample.com/j1.csv</span> and https://vendor.example/j<!-- x -->2.csv<br>next</p>",
+   "want": [
+    "https://example.com/j1.csv",
+    "https://vendor.example/j2.csv"
+   ]
+  },
+  {
+   "name": "an unknown name starting with a legacy separator splits there",
+   "html": "https://vendor.example/k1.csv&nbspNext; https://vendor.example/k2.csv&ltx; https://vendor.example/k3.csv&ltimes;",
+   "want": [
+    "https://vendor.example/k1.csv",
+    "https://vendor.example/k2.csv",
+    "https://vendor.example/k3.csv&ltimes"
+   ]
+  },
+  {
+   "name": "punctuation written as a reference at the end is trimmed like the literal",
+   "html": "https://vendor.example/l1.csv&period; Next https://vendor.example/l2.csv&comma;&#46; x https://vendor.example/l3?a=1&amp; y",
+   "want": [
+    "https://vendor.example/l1.csv",
+    "https://vendor.example/l2.csv",
+    "https://vendor.example/l3?a=1&amp"
+   ]
+  },
+  {
+   "name": "a semicolonless name that is not a reference stays in the URL",
+   "html": "https://vendor.example/m1?mode=full&period and https://vendor.example/m2.csv&#46 x",
+   "want": [
+    "https://vendor.example/m1?mode=full&period",
+    "https://vendor.example/m2.csv"
+   ]
+  },
+  {
+   "name": "source line breaks and <br> are spaces",
+   "html": "<p>https://vendor.example/n1.csv\nnext<br>https://vendor.example/n2.csv</p>",
+   "want": [
+    "https://vendor.example/n1.csv",
+    "https://vendor.example/n2.csv"
+   ]
+  },
+  {
+   "name": "a quote opens a value only after =",
+   "html": "<div data=x\">https://vendor.example/o1.csv</div><b title = 'a>b'>https://vendor.example/o2.csv</b>",
+   "want": [
+    "https://vendor.example/o1.csv",
+    "https://vendor.example/o2.csv"
+   ]
+  },
+  {
+   "name": "quotes and = inside an unquoted value are ordinary",
+   "html": "<div data=x=\">https://vendor.example/q1.csv</div><i a=b'c d=\"e>f\">https://vendor.example/q2.csv</i>",
+   "want": [
+    "https://vendor.example/q1.csv",
+    "https://vendor.example/q2.csv"
+   ]
+  },
+  {
+   "name": "= and quotes start an attribute name, not a value, where no name was",
+   "html": "<div =\">https://vendor.example/r1.csv</div><div a b=\"c>d\" e = 'f'>https://vendor.example/r2.csv</div><!x '>https://vendor.example/r3.csv",
+   "want": [
+    "https://vendor.example/r1.csv",
+    "https://vendor.example/r2.csv",
+    "https://vendor.example/r3.csv"
+   ]
+  },
+  {
+   "name": "OpenX scheduled full data report (layout of a real one, names and ids replaced)",
+   "html": "<html><body><p>Hello Example Agency</p><p>Please find details of your scheduled full data report <b>Example_Daily_Domain_Yesterday</b> for <b>EXAMPLE</b> in <b>TimeZone(UTC (+00:00),UTC)</b>. </p><p><b>Time Range: </b>From 11-17-2026 00:00:00 to 11-17-2026 23:59:00 UTC (+00:00)</p><p><b>Include Filters: </b>Deal Name[Values[Example_Deal_A;Example_Deal_B]]</p><p>Please click on the below link to download the report requested by you on Sigview.</p><p>https://storage.googleapis.com/bq-full-download/EXAMPLE/20261118/0123456789abcdef0123456789abcdef/1700000000000/out/Full_Data_Report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12</p><p>The total number of rows in this file is 31. The above link will expire on 25 November, 2026.</p><p>If you no longer want to receive this report, you can either turn it off, or delete it from the Reports > Scheduled Reports menu within your OpenX reports dashboard.</p><p>If this scheduled report is being shared with you by another user, reach out to <b>Example Agency</b> to request removal from this report.</p><p style='margin: 0px auto 4px;'>Regards,</p><p style='margin: 0px auto 4px;'>OpenX Data Services Team</p><img alt='OpenX' width=100px  src=https://logo.example/openx.png></body></html>",
+   "want": [
+    "https://storage.googleapis.com/bq-full-download/EXAMPLE/20261118/0123456789abcdef0123456789abcdef/1700000000000/out/Full_Data_Report.csv.gz?X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Expires=604800&amp;X-Goog-Signature=ab12"
+   ]
+  },
+  {
+   "name": "title and template content is not shown",
+   "html": "<title>https://vendor.example/s1.csv</title><template><p>https://vendor.example/s2.csv</p></template><p>https://vendor.example/s3.csv</p>",
+   "want": [
+    "https://vendor.example/s3.csv"
+   ]
+  },
+  {
+   "name": "a custom element named like a block tag is inline",
+   "html": "<p-x>https://ex</p-x>ample.com/t1.csv <div-y>z</div-y>",
+   "want": [
+    "https://example.com/t1.csv"
+   ]
+  },
+  {
+   "name": "svg text is dropped",
+   "html": "<p>See <svg><text>https://vendor.example/a.csv</text></svg> https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "mathml text is dropped, nested math matched",
+   "html": "<math><math></math>https://vendor.example/a.csv</math> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "nested template matched",
+   "html": "<template><template></template>https://vendor.example/a.csv</template> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "template script hides its closing tag",
+   "html": "<template><script>\"</template>\"</script>https://vendor.example/a.csv</template> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "self-closing svg is empty",
+   "html": "<svg/> https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "unquoted value slash is not self-closing",
+   "html": "<svg a=b/> https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "nested self-closing svg opens no level",
+   "html": "<svg><svg/>https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "svg cdata hides a closing tag",
+   "html": "<svg><![CDATA[</svg>]]>https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "svg left open hides the rest",
+   "html": "<p>x</p><svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an html tag in svg hides the rest (a script after it can swallow the closing tag)",
+   "html": "<svg><br><script>\"</svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "a closing p in math hides the rest",
+   "html": "<math></p></math> https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "svg shapes then text",
+   "html": "<svg><g><path d=\"M0 0\"/></g></svg><p>x https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a template in an svg title (html content) hides the rest",
+   "html": "<svg><title><template></svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an svg title is dropped with the svg",
+   "html": "<svg><title>Logo https://vendor.example/a.csv</title></svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a textarea in a template hides the rest",
+   "html": "<template><textarea></template>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an abrupt comment ends at once",
+   "html": "<!--> https://vendor.example/a.csv <!---> https://vendor.example/b.csv -->",
+   "want": [
+    "https://vendor.example/a.csv",
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a comment ends at --!>",
+   "html": "<!-- x --!> https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "an abrupt comment does not hide an svg",
+   "html": "<!--><svg>-->https://vendor.example/a.csv</svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a stray closing tag in svg hides the rest (it can close the svg from outside)",
+   "html": "<div><svg></div>https://vendor.example/a.csv</svg>",
+   "want": []
+  },
+  {
+   "name": "an element opened in an integration point hides the rest",
+   "html": "<svg><foreignObject><foreignObject><svg></svg></svg></foreignObject>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "svg elements closed in order",
+   "html": "<svg><g><text>x</text></g></svg> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "head content is dropped",
+   "html": "<html><head><title>x</title>https://vendor.example/a.csv</head><body><p>https://vendor.example/b.csv</p></body></html>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a head left open is only a tag",
+   "html": "<head>https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "header is not head",
+   "html": "<header>https://vendor.example/a.csv</header>",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "an svg in a template is skipped whole (its cdata can hide the closing tag)",
+   "html": "<template><svg><![CDATA[</template>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "an end tag without a letter is a comment to its first >",
+   "html": "<p>https://vendor.example/report</3>.csv</p>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a bogus end tag ignores quotes",
+   "html": "<p>https://vendor.example/a</3 b=\">\"/b.csv>c.csv</p>",
+   "want": [
+    "https://vendor.example/a"
+   ]
+  },
+  {
+   "name": "textarea content is literal text",
+   "html": "<p><textarea>https://vendor.example/report<em>.csv</em></textarea> https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/report",
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a comment marker in a textarea is text",
+   "html": "<textarea><!--</textarea>https://vendor.example/a.csv -->",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "xmp is a block of literal text",
+   "html": "<p>https://vendor.example/a<xmp>.csv</xmp></p>",
+   "want": [
+    "https://vendor.example/a"
+   ]
+  },
+  {
+   "name": "plaintext runs to the end",
+   "html": "<plaintext>https://vendor.example/a.csv</plaintext><b>x</b>",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "a reference in raw text is shown as written",
+   "html": "<xmp>https://vendor.example/report.csv&lt;next</xmp>",
+   "want": [
+    "https://vendor.example/report.csv&amp;lt;next"
+   ]
+  },
+  {
+   "name": "a reference in a textarea is decoded",
+   "html": "<textarea>https://vendor.example/report.csv&lt;next</textarea>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "raw text keeps a query's ampersands",
+   "html": "<iframe>https://vendor.example/r.csv?a=1&b=2</iframe>",
+   "want": [
+    "https://vendor.example/r.csv?a=1&amp;b=2"
+   ]
+  },
+  {
+   "name": "a > in a quoted doctype identifier ends the doctype",
+   "html": "<!DOCTYPE html SYSTEM \"x>https://vendor.example/report.csv\"><p>y</p>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  }
+ ]
+}
