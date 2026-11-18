@@ -273,7 +273,7 @@ func tagScan(html string, j int) (int, bool) {
 // _BLOCK_TAGS.
 var blockTags = setOf("address", "article", "aside", "blockquote", "center", "dd", "div", "dl", "dt",
 	"footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "nav", "ol",
-	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
+	"p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul", "listing", "plaintext", "xmp")
 
 // tagName is the lower-case name of the tag at lower[j] ("<" or "</", then a
 // letter, then anything up to a space, "/" or ">"), or "".
@@ -293,16 +293,45 @@ func tagName(lower string, j int) string {
 	return lower[start:k]
 }
 
+// rawTextNames are elements whose content a reader never sees, dropped with
+// it (as internal/htmlsafe drops them when rendering): style and script, the
+// head and its title, inert template content, and SVG and MathML (foreign
+// content). The first four end at their first closing tag (a <head> left
+// open is only a tag, as the sanitizer keeps its text); the others nest
+// (dropEnd). The archiver's _RAW_TEXT.
+var rawTextNames = []string{"style", "script", "title", "head", "template", "svg", "math"}
+
 // rawTextName is the dropped element's name when the tag at lower[j] opens
 // one (its name ends there: "<styles" does not).
 func rawTextName(lower string, j int) string {
-	// Elements whose content a reader never sees, dropped with it (as
-	// internal/htmlsafe drops them when rendering): style and script, the
-	// head and its title, inert template content, and SVG and MathML
-	// (foreign content). The first four end at their first closing tag (a
-	// <head> left open is only a tag, as the sanitizer keeps its text); the
-	// others nest (dropEnd). The archiver's _RAW_TEXT.
-	for _, name := range []string{"style", "script", "title", "head", "template", "svg", "math"} {
+	return openingName(lower, j, rawTextNames)
+}
+
+// literalNames are elements whose content is shown as written, markup
+// included (internal/htmlsafe keeps their raw text, escaped): RCDATA and
+// RAWTEXT elements a reader sees, and plaintext, which runs to the end. The
+// archiver's _LITERAL.
+var literalNames = []string{"textarea", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"}
+
+// literalText is the text of the literal element name whose start tag ends
+// at html[end] (up to its own closing tag, or the rest for plaintext or one
+// left open) and just past that closing tag, or -1 when the rest is its.
+func literalText(html, lower, name string, end int) (string, int) {
+	if name != "plaintext" {
+		if k := closingTag(lower, name, end+1); k >= 0 {
+			if e := tagEnd(html, k); e >= 0 {
+				return html[end+1 : k], e + 1
+			}
+			return html[end+1 : k], -1
+		}
+	}
+	return html[end+1:], -1
+}
+
+// openingName is the one of names whose start tag is at lower[j] (its name
+// ends there: "<styles" does not), or "".
+func openingName(lower string, j int, names []string) string {
+	for _, name := range names {
 		after := j + 1 + len(name)
 		if strings.HasPrefix(lower[j+1:], name) && after < len(lower) && strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
 			return name
@@ -434,11 +463,7 @@ func templateChild(inner string, selfClosing bool) bool {
 // whose start tag ends at html[end]: its first own closing tag (whose name
 // ends there, quote-aware), or -1 when there is none.
 func rawTextEnd(html, lower, name string, end int) int {
-	closing := "</" + name
-	k := indexFrom(lower, closing, end+1)
-	for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
-		k = indexFrom(lower, closing, k+len(closing))
-	}
+	k := closingTag(lower, name, end+1)
 	if k < 0 {
 		return -1
 	}
@@ -446,6 +471,17 @@ func rawTextEnd(html, lower, name string, end int) int {
 		return e + 1
 	}
 	return -1
+}
+
+// closingTag is where the first closing tag of name at or after from starts
+// (its name ends there: "</styles" does not), or -1.
+func closingTag(lower, name string, from int) int {
+	closing := "</" + name
+	k := indexFrom(lower, closing, from)
+	for k >= 0 && k+len(closing) < len(lower) && !strings.ContainsRune(" \t\r\n\f/>", rune(lower[k+len(closing)])) {
+		k = indexFrom(lower, closing, k+len(closing))
+	}
+	return k
 }
 
 // skipMarkup is just past the comment (or, in SVG or MathML, the CDATA
@@ -556,6 +592,18 @@ func stripMarkup(html string) string {
 			out.WriteString("\n")
 		case name == "br":
 			out.WriteString(" ")
+		}
+		if lit := openingName(lower, j, literalNames); lit != "" {
+			text, next := literalText(html, lower, lit, end)
+			emit(text)
+			if next < 0 { // the rest is its text
+				break
+			}
+			if blockTags[lit] {
+				out.WriteString("\n")
+			}
+			i = next
+			continue
 		}
 		name := rawTextName(lower, j)
 		if name == "" || (selfClosing && (name == "svg" || name == "math")) { // <svg/> is empty

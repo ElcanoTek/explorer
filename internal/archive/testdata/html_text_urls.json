@@ -491,6 +491,35 @@
    "want": [
     "https://vendor.example/a"
    ]
+  },
+  {
+   "name": "textarea content is literal text",
+   "html": "<p><textarea>https://vendor.example/report<em>.csv</em></textarea> https://vendor.example/b.csv</p>",
+   "want": [
+    "https://vendor.example/report",
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a comment marker in a textarea is text",
+   "html": "<textarea><!--</textarea>https://vendor.example/a.csv -->",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "xmp is a block of literal text",
+   "html": "<p>https://vendor.example/a<xmp>.csv</xmp></p>",
+   "want": [
+    "https://vendor.example/a"
+   ]
+  },
+  {
+   "name": "plaintext runs to the end",
+   "html": "<plaintext>https://vendor.example/a.csv</plaintext><b>x</b>",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
   }
  ]
 }
