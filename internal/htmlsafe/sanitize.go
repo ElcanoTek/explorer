@@ -182,8 +182,11 @@ func asciiLower(s string) string {
 
 // stripBlocks removes <script|style|head|title|meta|link ...>…</same> blocks
 // in one left-to-right pass, the way the Python regex
-// (?is)<(script|…)[^>]*>.*?</\1> did. A start with no matching close is left
-// for the tree sanitizer. The scan is linear: the next '>' is tracked
+// (?is)<(script|…)[^>]*>.*?</\1> did, except that the name must be whole:
+// <header>, <scripts> or <metadata> is another element, not a block to
+// strip (the regex read <header> as <head> and removed everything up to a
+// later </head>). A start with no matching close is left for the tree
+// sanitizer. The scan is linear: the next '>' is tracked
 // incrementally, and a name known to have no close after some point is
 // never searched again.
 func stripBlocks(s string) string {
@@ -199,7 +202,7 @@ func stripBlocks(s string) string {
 		start := pos + lt
 		name := ""
 		for _, n := range preStripNames {
-			if strings.HasPrefix(lower[start+1:], n) {
+			if wholeNameAt(lower, start+1, n) {
 				name = n
 				break
 			}
@@ -233,6 +236,13 @@ func stripBlocks(s string) string {
 	}
 	out.WriteString(s[emitted:])
 	return out.String()
+}
+
+// wholeNameAt reports whether lower[at:] starts with the tag name n and the
+// name ends there (a space, "/" or ">" follows, as the tokenizer reads it).
+func wholeNameAt(lower string, at int, n string) bool {
+	end := at + len(n)
+	return strings.HasPrefix(lower[at:], n) && end < len(lower) && strings.IndexByte(" \t\n\r\f/>", lower[end]) >= 0
 }
 
 // PreStrip is the text pass Sanitize makes before parsing: the head,

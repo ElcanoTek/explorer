@@ -262,6 +262,24 @@ func TestPrePassIsOneLeftToRightScan(t *testing.T) {
 	}
 }
 
+func TestPrePassStripsOnlyWholeBlockNames(t *testing.T) {
+	// <header>, <scripts> and <metadata> are other elements: their text is
+	// shown, not stripped up to a later </head>, </script> or </meta>.
+	for _, c := range []struct{ in, want string }{
+		{"<header><p>Visible</p></header><head><title>t</title></head>", "Visible"},
+		{"<scripts>Shown</scripts><script>x</script>", "Shown"},
+		{"<metadata>Kept</metadata><meta charset=utf-8></meta>", "Kept"},
+		{"<p>a</p><linkx>Here</linkx></link>", "Here"},
+	} {
+		if got := Sanitize(c.in); !strings.Contains(got, c.want) {
+			t.Fatalf("Sanitize(%q) = %q, want it to contain %q", c.in, got, c.want)
+		}
+	}
+	if got := Sanitize("<head data-x=1><title>t</title>secret</head><p>b</p>"); got != "<p>b</p>" {
+		t.Fatalf("a real head block must still be stripped: got %q", got)
+	}
+}
+
 func a(url string) string { return `<a href="` + url + `" rel="nofollow">` + url + `</a>` }
 
 func TestLinkifyCases(t *testing.T) {
