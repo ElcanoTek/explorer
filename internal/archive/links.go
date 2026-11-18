@@ -278,10 +278,11 @@ func tagName(lower string, j int) string {
 func rawTextName(lower string, j int) string {
 	// Elements whose content a reader never sees, dropped with it (as
 	// internal/htmlsafe drops them when rendering): style and script, the
-	// head's title, inert template content, and SVG and MathML (foreign
-	// content). The first three end at their first closing tag; the others
-	// nest (dropEnd). The archiver's _RAW_TEXT.
-	for _, name := range []string{"style", "script", "title", "template", "svg", "math"} {
+	// head and its title, inert template content, and SVG and MathML
+	// (foreign content). The first four end at their first closing tag (a
+	// <head> left open is only a tag, as the sanitizer keeps its text); the
+	// others nest (dropEnd). The archiver's _RAW_TEXT.
+	for _, name := range []string{"style", "script", "title", "head", "template", "svg", "math"} {
 		after := j + 1 + len(name)
 		if strings.HasPrefix(lower[j+1:], name) && after < len(lower) && strings.ContainsRune(" \t\r\n\f/>", rune(lower[after])) {
 			return name
@@ -345,7 +346,8 @@ func commentEnd(html string, j int) int {
 // name ends there, quote-aware). A template, <svg> or <math> ends at its
 // matching closing tag: a nested element of the same name opens a level (a
 // self-closing <svg/> or <math/> does not), and a comment is skipped, as are
-// a template's own raw-text children and an SVG or MathML CDATA section.
+// a template's own raw-text, SVG and MathML children and an SVG or MathML
+// CDATA section.
 //
 // Where a browser could end the element elsewhere, the rest is hidden here
 // instead (dropped, never invented): in SVG or MathML, an HTML tag such as
@@ -379,8 +381,8 @@ func dropEnd(html, lower, name string, end int) int {
 		if e < 0 {
 			return -1
 		}
-		if inner := rawTextName(lower, j); !d.foreign && (inner == "style" || inner == "script" || inner == "title") {
-			if i = rawTextEnd(html, lower, inner, e); i < 0 {
+		if inner := rawTextName(lower, j); !d.foreign && templateChild(inner, selfClosing) {
+			if i = dropEnd(html, lower, inner, e); i < 0 {
 				return -1
 			}
 			continue
@@ -394,6 +396,18 @@ func dropEnd(html, lower, name string, end int) int {
 		}
 		i = e + 1
 	}
+}
+
+// templateChild reports whether a template skips the element named inner
+// whole: raw text, or SVG or MathML (unless self-closing).
+func templateChild(inner string, selfClosing bool) bool {
+	switch inner {
+	case "style", "script", "title":
+		return true
+	case "svg", "math":
+		return !selfClosing
+	}
+	return false
 }
 
 // rawTextEnd is just past the closing tag of the raw-text element name
@@ -528,7 +542,9 @@ func stripMarkup(html string) string {
 			i = end + 1
 			continue
 		}
-		if i = dropEnd(html, lower, name, end); i < 0 { // left open: the rest is the element's
+		if i = dropEnd(html, lower, name, end); i < 0 && name == "head" {
+			i = end + 1
+		} else if i < 0 { // left open: the rest is the element's
 			break
 		}
 	}

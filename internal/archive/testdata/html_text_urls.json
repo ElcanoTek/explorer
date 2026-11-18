@@ -451,6 +451,32 @@
    "want": [
     "https://vendor.example/b.csv"
    ]
+  },
+  {
+   "name": "head content is dropped",
+   "html": "<html><head><title>x</title>https://vendor.example/a.csv</head><body><p>https://vendor.example/b.csv</p></body></html>",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "a head left open is only a tag",
+   "html": "<head>https://vendor.example/a.csv",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "header is not head",
+   "html": "<header>https://vendor.example/a.csv</header>",
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
+  },
+  {
+   "name": "an svg in a template is skipped whole (its cdata can hide the closing tag)",
+   "html": "<template><svg><![CDATA[</template>https://vendor.example/a.csv",
+   "want": []
   }
  ]
 }

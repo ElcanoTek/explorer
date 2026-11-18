@@ -189,7 +189,7 @@ emails/attachments/manifests/YYYY/MM/DD/<id>.json       per-email outcomes
 cleaned, with `&amp;` left escaped. Explorer extracts links the same way
 (every `text/plain` part's URLs, then every `text/html` part's anchors, then
 URLs written as text in the HTML a reader sees: outside tags, comments and
-hidden content (`<style>`, `<script>`, `<title>`, `<template>`, SVG, MathML), not
+hidden content (`<head>`, `<style>`, `<script>`, `<template>`, SVG, MathML), not
 seen before as written or entity-decoded), so
 the `url` `get_email` reports hashes to the cached copy. `get_download_link`
 resolves a `url` in this order:
