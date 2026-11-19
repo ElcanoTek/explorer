@@ -1021,6 +1021,25 @@
    "name": "an xmp closing a p reopens a formatting element left inside it",
    "html": "<svg><desc><p><b><xmp>x</xmp></desc></svg> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a table start in a table replaces it",
+   "html": "<svg><desc><table><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a row replaces the table",
+   "html": "<svg><desc><table><tr><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a cell nests",
+   "html": "<svg><desc><table><td><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }

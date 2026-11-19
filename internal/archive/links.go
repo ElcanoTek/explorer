@@ -687,6 +687,8 @@ var (
 	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
 	// tableEnds close by table scope: past an open cell, row or caption
 	tableEnds = setOf("table", "tbody", "tfoot", "thead", "tr")
+	// inTable are the current nodes of the parser's in-table modes
+	inTable = setOf("table", "tbody", "tfoot", "thead", "tr")
 	// markerTags put a marker in the list of active formatting elements:
 	// what goes stale inside one is cleared when it closes
 	markerTags = setOf("applet", "caption", "marquee", "object", "td", "th", "template")
@@ -939,6 +941,8 @@ func (f *foreignScan) inBodyStart(t string) (string, bool) {
 		}
 	case tableOnly[t] && f.htmlLast("table", top) <= lastAtOrBelow(f.points, top):
 		return t, false // nor a table part outside a table
+	case t == "table" && f.stack[top].html && inTable[f.stack[top].tag]:
+		f.cut(f.htmlLast("table", top)) // a table in a table (not in a cell) replaces it
 	}
 	return t, true
 }
