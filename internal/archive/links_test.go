@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ElcanoTek/explorer/internal/htmlsafe"
+	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
 
 // testdata/html_text_urls.json is a copy of the archiver's shared cases
@@ -206,5 +207,14 @@ func TestHTMLPiecesFollowTheScanCut(t *testing.T) {
 	got := htmlPieces("ab\ncd\nef"[:4], []string{"ab", "cd", "ef"})
 	if want := []string{"ab", "c"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestARootPartMarkedAsAnAttachmentIsNotTheBody(t *testing.T) {
+	raw := "From: a@example.com\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=r.html\r\n\r\n" +
+		"<p>https://vendor.example/attached.csv</p>\r\n"
+	plain, htmls := allBodies(mailmsg.Parse([]byte(raw)))
+	if plain != "" || len(htmls) != 0 {
+		t.Fatalf("plain %q, htmls %q", plain, htmls)
 	}
 }

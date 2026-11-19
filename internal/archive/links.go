@@ -1372,8 +1372,13 @@ func htmlPieces(html string, htmls []string) []string {
 
 // bodyParts walks the message's own parts: it never descends into an
 // attachment or an attached message, whose text is not this email's body.
+// A root marked as an attachment is not body either, though a multipart
+// one's children are read.
 func bodyParts(p *mailmsg.Part) []*mailmsg.Part {
-	out := []*mailmsg.Part{p}
+	var out []*mailmsg.Part
+	if !strings.Contains(strings.ToLower(p.Header.Get("Content-Disposition")), "attachment") {
+		out = append(out, p)
+	}
 	for _, c := range p.Children {
 		if strings.Contains(strings.ToLower(c.Header.Get("Content-Disposition")), "attachment") || c.ContentType() == "message/rfc822" {
 			continue
