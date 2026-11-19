@@ -511,6 +511,8 @@ type foreignScan struct {
 	stack         []openElement
 	byName        map[elementKey][]int
 	htmls, points []int
+	// HTML special elements (htmlSpecial) and scope walls (htmlWalls)
+	specials, walls []int
 }
 
 func newForeignScan(root string) *foreignScan {
@@ -526,6 +528,12 @@ func (f *foreignScan) push(el openElement) {
 	f.byName[key] = append(f.byName[key], k)
 	if el.html {
 		f.htmls = append(f.htmls, k)
+		if htmlSpecial[el.tag] {
+			f.specials = append(f.specials, k)
+		}
+		if htmlWalls[el.tag] {
+			f.walls = append(f.walls, k)
+		}
 	}
 	if el.intPnt {
 		f.points = append(f.points, k)
@@ -541,6 +549,12 @@ func (f *foreignScan) cut(size int) {
 		f.byName[key] = f.byName[key][:len(f.byName[key])-1]
 		if el.html {
 			f.htmls = f.htmls[:len(f.htmls)-1]
+			if htmlSpecial[el.tag] {
+				f.specials = f.specials[:len(f.specials)-1]
+			}
+			if htmlWalls[el.tag] {
+				f.walls = f.walls[:len(f.walls)-1]
+			}
 		}
 		if el.intPnt {
 			f.points = f.points[:len(f.points)-1]
@@ -557,6 +571,22 @@ func lastAtOrBelow(positions []int, below int) int {
 	}
 	return positions[k]
 }
+
+// htmlSpecial are the HTML parser's special elements: an ordinary end tag
+// ("any other end tag") does not close past one. A special end tag closes
+// past them, but not past a scope wall (htmlWalls). The archiver's
+// _HTML_SPECIAL and _HTML_WALLS.
+var (
+	htmlSpecial = setOf("address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
+		"blockquote", "body", "br", "button", "caption", "center", "col", "colgroup", "dd", "details", "dir",
+		"div", "dl", "dt", "embed", "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+		"h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input",
+		"keygen", "li", "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+		"noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search", "section", "select",
+		"source", "style", "summary", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+		"title", "tr", "track", "ul", "wbr", "xmp")
+	htmlWalls = setOf("applet", "caption", "html", "table", "td", "th", "marquee", "object", "template")
+)
 
 // skipToClose are elements read as HTML whose content is raw text or
 // RCDATA: skipped to their own closing tag. (A template or plaintext inside
@@ -733,16 +763,22 @@ func (f *foreignScan) startTag(t string, htmlMode, selfClosing bool) int {
 }
 
 // htmlRule reads end tag t by the HTML rule from stack[top] down: the
-// nearest open HTML element of that name closes, an integration point first
-// ignores the tag; false when neither (it walks past the root).
+// nearest open HTML element of that name closes, unless a barrier comes
+// first and the tag is ignored: an integration point, and for an ordinary
+// tag any special element, for a special one a scope wall. False when
+// neither (it walks past the root).
 func (f *foreignScan) htmlRule(t string, top int) bool {
 	match := lastAtOrBelow(f.byName[elementKey{t, true}], top)
-	wall := lastAtOrBelow(f.points, top)
-	if match > 0 && match > wall {
+	walls := f.specials
+	if htmlSpecial[t] {
+		walls = f.walls
+	}
+	barrier := max(lastAtOrBelow(f.points, top), lastAtOrBelow(walls, top))
+	if match > 0 && match > barrier {
 		f.cut(match)
 		return true
 	}
-	return wall > 0
+	return barrier > 0
 }
 
 // foreignRule reads end tag t (ending at html[e]) by the foreign rule from

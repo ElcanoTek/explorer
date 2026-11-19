@@ -637,6 +637,18 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "an ordinary end tag does not close past a special element",
+   "html": "<svg><desc><span><div></span></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a special end tag closes past ordinary elements",
+   "html": "<svg><desc><div><span></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
