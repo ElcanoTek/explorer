@@ -362,15 +362,15 @@ var breakoutTags = map[string]bool{
 }
 
 // integrationTags are SVG and MathML elements whose content a browser
-// parses as HTML (integration points; annotation-xml only with certain
-// encodings, taken here as always), and swallowTags the HTML elements
-// that swallow a template's closing tag (dropEnd skips the raw text of
-// style, script and title, and hides the rest at any other). The
-// archiver's _INTEGRATION and _SWALLOW.
+// parses as HTML (integration points), each only in its own namespace
+// (annotation-xml only with certain encodings, taken here as always), and
+// swallowTags the HTML elements that swallow a template's closing tag
+// (dropEnd skips the raw text of style, script and title, and hides the
+// rest at any other). The archiver's _INTEGRATION and _SWALLOW.
 var (
-	integrationTags = map[string]bool{
-		"foreignobject": true, "desc": true, "title": true, "mi": true, "mo": true, "mn": true, "ms": true,
-		"mtext": true, "annotation-xml": true,
+	integrationTags = map[string]map[string]bool{
+		"svg":  setOf("foreignobject", "desc", "title"),
+		"math": setOf("mi", "mo", "mn", "ms", "mtext", "annotation-xml"),
 	}
 	swallowTags = map[string]bool{
 		"template": true, "script": true, "style": true, "title": true, "textarea": true, "xmp": true,
@@ -493,7 +493,7 @@ func closingTag(lower, name string, from int) int {
 // openElement is one element on foreignEnd's stack: SVG/MathML (an
 // integration point when its content is HTML) or HTML.
 type openElement struct {
-	tag          string
+	tag, ns      string // ns: the namespace of a foreign element ("svg" or "math")
 	html, intPnt bool
 }
 
@@ -515,7 +515,7 @@ type foreignScan struct {
 
 func newForeignScan(root string) *foreignScan {
 	f := &foreignScan{byName: map[elementKey][]int{}}
-	f.push(openElement{tag: root})
+	f.push(openElement{tag: root, ns: root})
 	return f
 }
 
@@ -686,11 +686,18 @@ func (f *foreignScan) startTag(t string, htmlMode, selfClosing bool) int {
 	switch {
 	case !htmlMode:
 		if !selfClosing {
-			f.push(openElement{tag: t, intPnt: integrationTags[t]})
+			// a foreign element takes its parent's namespace (svg in a
+			// MathML annotation-xml is SVG)
+			top := f.stack[len(f.stack)-1]
+			ns := top.ns
+			if ns == "math" && top.tag == "annotation-xml" && t == "svg" {
+				ns = "svg"
+			}
+			f.push(openElement{tag: t, ns: ns, intPnt: integrationTags[ns][t]})
 		}
 	case t == "svg" || t == "math":
 		if !selfClosing {
-			f.push(openElement{tag: t})
+			f.push(openElement{tag: t, ns: t})
 		}
 	case swallowTags[t]:
 		return -1

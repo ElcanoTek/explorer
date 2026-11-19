@@ -602,6 +602,20 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a mathml name in svg is no integration point",
+   "html": "<svg><mtext><textarea>x</textarea></mtext></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an svg name in mathml is no integration point",
+   "html": "<math><foreignObject><textarea>x</textarea></foreignObject></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
