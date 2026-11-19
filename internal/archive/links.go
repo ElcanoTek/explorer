@@ -684,6 +684,8 @@ var (
 	headingTags = setOf("h1", "h2", "h3", "h4", "h5", "h6")
 	// tableOnly are the start tags the in-body rule ignores outside a table
 	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
+	// tableEnds close by table scope: past an open cell, row or caption
+	tableEnds = setOf("table", "tbody", "tfoot", "thead", "tr")
 	// markerTags put a marker in the list of active formatting elements:
 	// what goes stale inside one is cleared when it closes
 	markerTags = setOf("applet", "caption", "marquee", "object", "td", "th", "template")
@@ -870,22 +872,10 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 // startTag opens t (its tag html[j:e+1]), read as HTML when htmlMode: 0,
 // or -1 to hide the rest.
 func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e int) int {
-	if htmlMode && t == "form" && f.formSet {
-		return 0 // a second form while the pointer is set is ignored
-	}
-	if htmlMode && (t == "html" || t == "head" || t == "body" || t == "frame") {
-		return 0 // the in-body rule never opens these
-	}
-	if htmlMode && t == "input" { // an input closes an open select (in scope)
-		top := len(f.stack) - 1
-		if m := f.htmlLast("select", top); m > max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
-			f.cut(m)
-		}
-	}
-	if htmlMode && tableOnly[t] {
-		top := len(f.stack) - 1
-		if f.htmlLast("table", top) <= lastAtOrBelow(f.points, top) {
-			return 0 // nor a table part outside a table
+	if htmlMode {
+		var ok bool
+		if t, ok = f.inBodyStart(t); !ok {
+			return 0
 		}
 	}
 	if htmlMode && t != "svg" && t != "math" {
@@ -923,6 +913,29 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	return 0
 }
 
+// inBodyStart applies the in-body start-tag rules that change or drop HTML
+// start tag t before it opens: the tag to open, or false when it is
+// consumed.
+func (f *foreignScan) inBodyStart(t string) (string, bool) {
+	top := len(f.stack) - 1
+	switch {
+	case t == "form" && f.formSet:
+		return t, false // a second form while the pointer is set is ignored
+	case t == "image":
+		return "img", true // the in-body rule reads <image> as <img>
+	case t == "html" || t == "head" || t == "body" || t == "frame":
+		return t, false // the in-body rule never opens these
+	case t == "input" || t == "select": // either closes an open select (in scope)
+		if m := f.htmlLast("select", top); m > max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
+			f.cut(m)
+			return t, t != "select" // and a select start is consumed
+		}
+	case tableOnly[t] && f.htmlLast("table", top) <= lastAtOrBelow(f.points, top):
+		return t, false // nor a table part outside a table
+	}
+	return t, true
+}
+
 // htmlRule reads end tag t by the HTML rule from stack[top] down: the
 // nearest open HTML element of that name closes, unless a barrier comes
 // first and the tag is ignored: an integration point, and for an ordinary
@@ -948,6 +961,12 @@ func (f *foreignScan) htmlRule(t string, top int) bool {
 		walls = f.walls
 	}
 	barrier := max(lastAtOrBelow(f.points, top), lastAtOrBelow(walls, top))
+	if tableEnds[t] { // table scope: past open cells and captions, not past a table (but its own)
+		barrier = max(lastAtOrBelow(f.points, top), f.htmlLast("template", top))
+		if t != "table" {
+			barrier = max(barrier, f.htmlLast("table", top))
+		}
+	}
 	switch t {
 	case "li": // list item scope also stops at a list
 		barrier = max(barrier, f.htmlLast("ul", top), f.htmlLast("ol", top))
@@ -1079,8 +1098,15 @@ func tagAttr(html string, j, end int, name string) (string, bool) {
 // foreignRule reads end tag t (ending at html[e]) by the foreign rule from
 // the top: e+1 when it closes the root, 0 when it closes an element or the
 // HTML rule takes it, -1 when it walks past the root.
+//
+// The walk hands the tag to the HTML rule at the first HTML element, which
+// reads it from the current node (the top), so an integration point on top
+// stops it; one that walks past the root from an integration point is
+// ignored there too (the parser's in-body rules start at that special
+// element), except </template>, whose rule ignores scope.
 func (f *foreignScan) foreignRule(t string, e int) int {
-	match := lastAtOrBelow(f.byName[elementKey{t, false}], len(f.stack)-1)
+	top := len(f.stack) - 1
+	match := lastAtOrBelow(f.byName[elementKey{t, false}], top)
 	html := -1
 	if len(f.htmls) > 0 {
 		html = f.htmls[len(f.htmls)-1]
@@ -1093,9 +1119,11 @@ func (f *foreignScan) foreignRule(t string, e int) int {
 		f.cut(match)
 		return 0
 	case html > 0:
-		if f.htmlRule(t, html) {
+		if f.htmlRule(t, top) {
 			return 0
 		}
+	case f.stack[top].intPnt && t != "template":
+		return 0
 	}
 	return -1
 }

@@ -900,6 +900,86 @@
    "name": "a formatting element stale outside a marker still hides the rest",
    "html": "<svg><desc><div><b></div><object></object>x</desc></svg> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a select start closes an open select and is consumed",
+   "html": "<svg><desc><select><select></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a select start closes an open select with no end tag",
+   "html": "<svg><desc><select><select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes an open cell",
+   "html": "<svg><desc><table><td></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes a cell with a block inside",
+   "html": "<svg><desc><table><td><div></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes an open caption",
+   "html": "<svg><desc><table><caption></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a row end tag closes its cell, leaving the table open",
+   "html": "<svg><desc><table><tr><td></tr></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an end tag reaching html from an integration point on top is ignored there",
+   "html": "<svg><desc><span><svg><desc></span></desc></svg> https://vendor.example/report.csv</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a stray end tag at an integration point is ignored",
+   "html": "<svg><desc></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a stray block end tag at an integration point is ignored",
+   "html": "<svg><desc></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a stray formatting end tag at an integration point is ignored",
+   "html": "<svg><desc></b></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an image start at an integration point is a void img",
+   "html": "<svg><desc><image></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an image in svg stays an svg element",
+   "html": "<svg><image></image></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
