@@ -559,15 +559,543 @@
    ]
   },
   {
-   "name": "a font in svg hides the rest (it breaks out only with some attributes)",
+   "name": "a font without color, face or size stays an svg element",
    "html": "<svg><font>x</font></svg> https://vendor.example/a.csv",
-   "want": []
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
   },
   {
    "name": "text inside svg before a breakout stays dropped",
    "html": "<svg><text>https://vendor.example/a.csv</text><div>https://vendor.example/b.csv</div></svg>",
    "want": [
     "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "html inside a mathml integration point is read as html",
+   "html": "<math><mtext><span>logo</span></mtext></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "html inside an svg foreignobject is read as html",
+   "html": "<svg><foreignObject><div>x</div></foreignObject></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an end tag inside an html element in an integration point is ignored",
+   "html": "<math><mtext><span></math>https://vendor.example/a.csv</span></mtext></math> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "unclosed raw text inside an integration point hides the rest",
+   "html": "<svg><desc><textarea></svg>https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "a breakout end tag is read by the html rule after leaving foreign content",
+   "html": "<svg><foreignObject><p><svg><g></p></foreignObject></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a mathml name in svg is no integration point",
+   "html": "<svg><mtext><textarea>x</textarea></mtext></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an svg name in mathml is no integration point",
+   "html": "<math><foreignObject><textarea>x</textarea></foreignObject></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "closed raw text inside an integration point is skipped to its close",
+   "html": "<svg><desc><textarea>x</svg></textarea></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata at an integration point runs to its close",
+   "html": "<svg><desc><![CDATA[x]]></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata under an html element is a bogus comment to the first >",
+   "html": "<svg><desc><b><![CDATA[x></b></desc></svg>]]> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an ordinary end tag does not close past a special element",
+   "html": "<svg><desc><span><div></span></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a special end tag closes past ordinary elements",
+   "html": "<svg><desc><div><span></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a p start closes an open p at an integration point",
+   "html": "<svg><desc><p><p></p></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "mglyph stays mathml at a mathml text integration point",
+   "html": "<math><mtext><mglyph></mtext></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an li end tag does not close past a list",
+   "html": "<svg><desc><li><ul></li></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "annotation-xml without an html encoding is no integration point",
+   "html": "<math><annotation-xml encoding=\"application/xml\"><div></math></div> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "annotation-xml with an html encoding is an integration point",
+   "html": "<math><annotation-xml encoding=\"text/html\"><div></math></div> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a heading end tag closes any open heading at an integration point",
+   "html": "<svg><desc><h1></h2></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a heading end tag closes an open heading past a div",
+   "html": "<svg><desc><h1><div></h2></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an integration point end tag does not close past an open html child",
+   "html": "<svg><desc><span></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a form end tag removes only the form, leaving an open child open",
+   "html": "<svg><desc><form><span></form></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a form end tag leaves its open child for the child's own end tag",
+   "html": "<svg><desc><form><span></form></span></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a second form start is ignored while the form pointer is set",
+   "html": "<svg><desc><form><form></form></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "param is void at an integration point",
+   "html": "<svg><desc><param></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "keygen is void at an integration point",
+   "html": "<svg><desc><keygen></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "xmp closes an open p before its raw text",
+   "html": "<svg><desc><p><xmp>x</xmp></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a button start closes an open button at an integration point",
+   "html": "<svg><desc><button><button></button></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a button start closes an open button inside an inline element",
+   "html": "<svg><desc><span><button><button></button></span></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata at an svg integration point is a section to ]]>",
+   "html": "<svg><desc><![CDATA[x></desc></svg>]]> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an a start closes an open a at an integration point",
+   "html": "<svg><desc><a><a></a></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an a start closes an open a past an inline element",
+   "html": "<svg><desc><a><span><a></a></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "text after a formatting element closed early hides the rest",
+   "html": "<svg><desc><div><b></div>text</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an anchor closed early reopens at the next text",
+   "html": "<svg><desc><div><a></div>text</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a formatting element closed early with no text after hides nothing",
+   "html": "<svg><desc><div><a></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a formatting end tag closes its element",
+   "html": "<svg><desc><b><i></b></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a body start tag inside an integration point is ignored",
+   "html": "<svg><desc><body></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a head start tag inside an integration point is ignored",
+   "html": "<svg><desc><head></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table closes at its own end tag at an integration point",
+   "html": "<svg><desc><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an object closes at its own end tag at an integration point",
+   "html": "<svg><desc><object></object></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table row start outside a table is ignored",
+   "html": "<svg><desc><tr></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table cell start outside a table is ignored",
+   "html": "<svg><desc><td></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an open table still stops an integration point end tag",
+   "html": "<svg><desc><table><tr></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a font with color breaks out of svg",
+   "html": "<svg><font color=red>Report https://vendor.example/report.csv</font>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a font with a bare size attribute breaks out of svg",
+   "html": "<svg><font SIZE>https://vendor.example/report.csv</font></svg>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a font with another attribute stays an svg element",
+   "html": "<svg><font class=x>https://vendor.example/report.csv</font></svg>",
+   "want": []
+  },
+  {
+   "name": "a font without breakout attributes in an integration point stays foreign",
+   "html": "<svg><desc><svg><font></font></svg>https://vendor.example/report.csv</desc></svg>",
+   "want": []
+  },
+  {
+   "name": "an input closes an open select at an integration point",
+   "html": "<svg><desc><select><input></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an open select stops an integration point end tag",
+   "html": "<svg><desc><select></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an object end tag clears the formatting elements stale inside it",
+   "html": "<svg><desc><object><b></object>x</desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a marquee end tag clears a stale anchor inside it",
+   "html": "<svg><desc><marquee><a></marquee>x</desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a formatting element stale outside a marker still hides the rest",
+   "html": "<svg><desc><div><b></div><object></object>x</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a select start closes an open select and is consumed",
+   "html": "<svg><desc><select><select></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a select start closes an open select with no end tag",
+   "html": "<svg><desc><select><select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes an open cell",
+   "html": "<svg><desc><table><td></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes a cell with a block inside",
+   "html": "<svg><desc><table><td><div></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table end tag closes an open caption",
+   "html": "<svg><desc><table><caption></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a row end tag closes its cell, leaving the table open",
+   "html": "<svg><desc><table><tr><td></tr></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an end tag reaching html from an integration point on top is ignored there",
+   "html": "<svg><desc><span><svg><desc></span></desc></svg> https://vendor.example/report.csv</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a stray end tag at an integration point is ignored",
+   "html": "<svg><desc></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a stray block end tag at an integration point is ignored",
+   "html": "<svg><desc></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a stray formatting end tag at an integration point is ignored",
+   "html": "<svg><desc></b></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an image start at an integration point is a void img",
+   "html": "<svg><desc><image></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an image in svg stays an svg element",
+   "html": "<svg><image></image></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an option start closes an option on top",
+   "html": "<svg><desc><option><option></option></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an optgroup start closes an option on top",
+   "html": "<svg><desc><option><optgroup></optgroup></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an option start does not close past an inline element",
+   "html": "<svg><desc><option><span><option></option></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an end tag stops at an open select",
+   "html": "<svg><desc><div><select></div></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a select end tag closes what is open inside it",
+   "html": "<svg><desc><select><div></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an input does not close a select past a formatting element",
+   "html": "<svg><desc><select><b><input></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an xmp closing a p reopens a formatting element left inside it",
+   "html": "<svg><desc><p><b><xmp>x</xmp></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a table start in a table replaces it",
+   "html": "<svg><desc><table><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a row replaces the table",
+   "html": "<svg><desc><table><tr><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a cell nests",
+   "html": "<svg><desc><table><td><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a br end tag is a br start that reopens a stale formatting element",
+   "html": "<svg><desc><div><b></div></br></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a br end tag at an integration point is a void br",
+   "html": "<svg><desc></br></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a colgroup replaces the table",
+   "html": "<svg><desc><table><colgroup><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a caption nests",
+   "html": "<svg><desc><table><caption><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a table start replaces the open table past a foster-parented element",
+   "html": "<svg><desc><table><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a form in a table closes at once, so a table start replaces the table",
+   "html": "<svg><desc><table><form><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a cell nests past an inline element",
+   "html": "<svg><desc><table><td><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a table start in a row replaces the table past a foster-parented element",
+   "html": "<svg><desc><table><tr><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a frameset start at an integration point is ignored",
+   "html": "<svg><desc><frameset></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
    ]
   }
  ]

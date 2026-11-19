@@ -163,8 +163,9 @@ func (in *Inbox) digestMessage(ctx context.Context, key string, keepBody bool) (
 			d.attachments = append(d.attachments, a.Filename)
 		}
 	}
-	plain, html := allBodies(msg)
-	d.links = downloadLinks(plain, html)
+	plain, htmls := allBodies(msg)
+	html := strings.Join(htmls, "\n")
+	d.links = downloadLinks(plain, htmls...)
 	text := plain
 	if text == "" {
 		text = html

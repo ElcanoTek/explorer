@@ -9,8 +9,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ElcanoTek/explorer/internal/htmlsafe"
+	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
 
 // testdata/html_text_urls.json is a copy of the archiver's shared cases
@@ -178,5 +180,50 @@ func TestABareLinkSpelledWithReferencesIsJudgedDecoded(t *testing.T) {
 	links := downloadLinks("", "<p>Get "+url+"</p>")
 	if len(links) != 1 || links[0].URL != url || links[0].Filename != "data.zip" || links[0].FetchURL != "https://vendor.example/data.zip" {
 		t.Fatalf("%+v", links)
+	}
+}
+
+func TestForeignContentScanningIsLinearOnCraftedMarkup(t *testing.T) {
+	// Many open HTML elements in an integration point, then many unmatched
+	// end tags: each must be read in constant time, not by walking the stack.
+	html := "<svg><desc>" + strings.Repeat("<x>", 60000) + strings.Repeat("</y>", 60000) +
+		"</desc></svg> https://vendor.example/a.csv"
+	start := time.Now()
+	extractHTMLTextURLs(html)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %v", d)
+	}
+}
+
+func TestEachHTMLPartIsReadAsItsOwnDocument(t *testing.T) {
+	// An unclosed <style> in one part does not hide the next part's text.
+	links := bodyURLs("", "<p>Hello</p><style>", "<p>https://vendor.example/report.csv</p>")
+	if len(links) != 1 || links[0].url != "https://vendor.example/report.csv" || !links[0].bare {
+		t.Fatalf("links: %+v", links)
+	}
+}
+
+func TestHTMLPiecesFollowTheScanCut(t *testing.T) {
+	got := htmlPieces("ab\ncd\nef"[:4], []string{"ab", "cd", "ef"})
+	if want := []string{"ab", "c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestARootPartMarkedAsAnAttachmentIsNotTheBody(t *testing.T) {
+	raw := "From: a@example.com\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=r.html\r\n\r\n" +
+		"<p>https://vendor.example/attached.csv</p>\r\n"
+	plain, htmls := allBodies(mailmsg.Parse([]byte(raw)))
+	if plain != "" || len(htmls) != 0 {
+		t.Fatalf("plain %q, htmls %q", plain, htmls)
+	}
+}
+
+func TestAnInlineRootWhoseFilenameSaysAttachmentIsTheBody(t *testing.T) {
+	raw := "From: a@example.com\r\nContent-Type: text/html\r\nContent-Disposition: inline; filename=\"attachment.html\"\r\n\r\n" +
+		"<p>https://vendor.example/report.csv</p>\r\n"
+	_, htmls := allBodies(mailmsg.Parse([]byte(raw)))
+	if len(htmls) != 1 {
+		t.Fatalf("htmls %q", htmls)
 	}
 }

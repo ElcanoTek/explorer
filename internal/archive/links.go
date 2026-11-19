@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -361,15 +362,15 @@ var breakoutTags = map[string]bool{
 }
 
 // integrationTags are SVG and MathML elements whose content a browser
-// parses as HTML (integration points; annotation-xml only with certain
-// encodings, taken here as always), and swallowTags the HTML elements
-// that swallow a template's closing tag (dropEnd skips the raw text of
-// style, script and title, and hides the rest at any other). The
-// archiver's _INTEGRATION and _SWALLOW.
+// parses as HTML (integration points), each only in its own namespace
+// (annotation-xml only with certain encodings, taken here as always), and
+// swallowTags the HTML elements that swallow a template's closing tag
+// (dropEnd skips the raw text of style, script and title, and hides the
+// rest at any other). The archiver's _INTEGRATION and _SWALLOW.
 var (
-	integrationTags = map[string]bool{
-		"foreignobject": true, "desc": true, "title": true, "mi": true, "mo": true, "mn": true, "ms": true,
-		"mtext": true, "annotation-xml": true,
+	integrationTags = map[string]map[string]bool{
+		"svg":  setOf("foreignobject", "desc", "title"),
+		"math": setOf("mi", "mo", "mn", "ms", "mtext", "annotation-xml"),
 	}
 	swallowTags = map[string]bool{
 		"template": true, "script": true, "style": true, "title": true, "textarea": true, "xmp": true,
@@ -399,35 +400,26 @@ func commentEnd(html string, j int) int {
 // dropEnd is where the dropped element name whose start tag ends at
 // html[end] ends (just past its end tag), or -1 when it is left open (the
 // rest is the element's). Raw text ends at its first own closing tag (whose
-// name ends there, quote-aware). A template, <svg> or <math> ends at its
-// matching closing tag: a nested element of the same name opens a level (a
-// self-closing <svg/> or <math/> does not), and a comment is skipped, as are
-// a template's own raw-text, SVG and MathML children and an SVG or MathML
-// CDATA section.
-//
-// An HTML tag such as <span>, <p> or </br> in SVG or MathML (breakoutTags,
-// outside an integration point) ends it there, as in a browser: the scan
-// resumes at that tag, read as HTML. Where a browser could end the element
-// elsewhere, the rest is hidden here instead (dropped, never invented): a
-// <font> (it breaks out only with certain attributes), a closing tag with no
-// open element of its name inside (it can close the SVG from outside), or
-// any tag but <svg> or <math> opened inside an integration point (an SVG
-// <title>, whose content is HTML); in a template, an element that swallows
-// its closing tag (swallowTags) other than the raw text skipped. The
-// archiver's _drop_end.
+// name ends there, quote-aware). A template ends at its matching closing
+// tag: a nested template opens a level, and a comment is skipped, as are its
+// own raw-text, SVG and MathML children; an element that swallows its
+// closing tag (swallowTags) other than that raw text hides the rest. SVG and
+// MathML: foreignEnd. The archiver's _drop_end.
 func dropEnd(html, lower, name string, end int) int {
 	if name != "template" && name != "svg" && name != "math" {
 		return rawTextEnd(html, lower, name, end)
 	}
-	d := &dropLevel{name: name, foreign: name != "template", depth: 1, opened: map[string]int{}}
-	n, i := len(html), end+1
+	if name != "template" {
+		return foreignEnd(html, lower, name, end)
+	}
+	depth, n, i := 1, len(html), end+1
 	for {
 		j := indexFrom(html, "<", i)
 		if j < 0 {
 			return -1
 		}
-		if k, skipped := skipMarkup(html, j, d.foreign); skipped {
-			if i = k; i < 0 {
+		if strings.HasPrefix(html[j:], "<!--") {
+			if i = commentEnd(html, j); i < 0 {
 				return -1
 			}
 			continue
@@ -440,22 +432,22 @@ func dropEnd(html, lower, name string, end int) int {
 		if e < 0 {
 			return -1
 		}
-		if inner := rawTextName(lower, j); !d.foreign && templateChild(inner, selfClosing) {
+		if inner := rawTextName(lower, j); templateChild(inner, selfClosing) {
 			if i = dropEnd(html, lower, inner, e); i < 0 {
 				return -1
 			}
 			continue
 		}
 		tag, closing := tagName(lower, j), strings.HasPrefix(lower[j:], "</")
-		if d.breaksOut(tag, closing) {
-			return j // the browser closes the SVG or MathML here and reads this tag as HTML
-		}
-		ends, hide := d.at(tag, closing, selfClosing)
-		if hide {
+		switch {
+		case tag == "template" && closing:
+			if depth--; depth == 0 {
+				return e + 1
+			}
+		case tag == "template":
+			depth++
+		case !closing && swallowTags[tag]:
 			return -1
-		}
-		if ends {
-			return e + 1
 		}
 		i = e + 1
 	}
@@ -498,77 +490,681 @@ func closingTag(lower, name string, from int) int {
 	return k
 }
 
-// skipMarkup is just past the comment (or, in SVG or MathML, the CDATA
-// section) starting at html[j], or -1 when it is left open; skipped is
-// false when neither starts there.
-func skipMarkup(html string, j int, foreign bool) (next int, skipped bool) {
+// openElement is one element on foreignEnd's stack: SVG/MathML (an
+// integration point when its content is HTML) or HTML.
+type openElement struct {
+	tag, ns      string // ns: the namespace of a foreign element ("svg" or "math")
+	html, intPnt bool
+}
+
+// elementKey names the open elements of one tag in one namespace.
+type elementKey struct {
+	tag  string
+	html bool
+}
+
+// foreignScan is foreignEnd's stack of open elements, with indexes kept as
+// it grows and shrinks (the positions of each tag, of HTML elements and of
+// integration points), so every tag is read in constant time however deep
+// the stack. The archiver's _ForeignStack.
+type foreignScan struct {
+	stack         []openElement
+	byName        map[elementKey][]int
+	htmls, points []int
+	// HTML special elements (htmlSpecial) and scope walls (htmlWalls), and
+	// the specials an li/dd/dt start does not close past
+	specials, walls, listWalls []int
+	// the form element pointer: set once an HTML form opens, until a form
+	// end tag; form is its position while it is open, or -1
+	formSet bool
+	form    int
+	// staleAt: for each formatting element (formattingTags) closed by
+	// something other than its own end tag, the innermost marker element
+	// (markerTags) open below it, or -1. The parser reopens such an element
+	// at the next text or start tag in HTML content until that marker
+	// closes; the scan does not model reopening and hides the rest there
+	// instead. markers are the open marker elements' positions.
+	staleAt, markers []int
+}
+
+func newForeignScan(root string) *foreignScan {
+	f := &foreignScan{byName: map[elementKey][]int{}, form: -1}
+	f.push(openElement{tag: root, ns: root})
+	return f
+}
+
+func (f *foreignScan) push(el openElement) {
+	k := len(f.stack)
+	f.stack = append(f.stack, el)
+	key := elementKey{el.tag, el.html}
+	f.byName[key] = append(f.byName[key], k)
+	if el.html {
+		f.htmls = append(f.htmls, k)
+		if htmlSpecial[el.tag] {
+			f.specials = append(f.specials, k)
+			if !listOpen[el.tag] {
+				f.listWalls = append(f.listWalls, k)
+			}
+		}
+		if htmlWalls[el.tag] {
+			f.walls = append(f.walls, k)
+		}
+		if markerTags[el.tag] {
+			f.markers = append(f.markers, k)
+		}
+	}
+	if el.intPnt {
+		f.points = append(f.points, k)
+	}
+}
+
+// cut closes every element from position size up.
+func (f *foreignScan) cut(size int) {
+	if f.form >= size {
+		f.form = -1
+	}
+	for len(f.stack) > size {
+		p := len(f.stack) - 1
+		el := f.stack[p]
+		if el.html && formattingTags[el.tag] {
+			f.staleAt = append(f.staleAt, lastAtOrBelow(f.markers, p))
+		}
+		if el.html && markerTags[el.tag] { // closing a marker clears what went stale inside it
+			kept := f.staleAt[:0]
+			for _, at := range f.staleAt {
+				if at < p {
+					kept = append(kept, at)
+				}
+			}
+			f.staleAt = kept
+			f.markers = f.markers[:len(f.markers)-1]
+		}
+		f.stack = f.stack[:p]
+		key := elementKey{el.tag, el.html}
+		f.byName[key] = f.byName[key][:len(f.byName[key])-1]
+		if el.html {
+			f.htmls = f.htmls[:len(f.htmls)-1]
+			if htmlSpecial[el.tag] {
+				f.specials = f.specials[:len(f.specials)-1]
+				if !listOpen[el.tag] {
+					f.listWalls = f.listWalls[:len(f.listWalls)-1]
+				}
+			}
+			if htmlWalls[el.tag] {
+				f.walls = f.walls[:len(f.walls)-1]
+			}
+		}
+		if el.intPnt {
+			f.points = f.points[:len(f.points)-1]
+		}
+	}
+}
+
+// remove takes the element at position m off the stack and leaves the ones
+// above it open, as a form end tag does.
+func (f *foreignScan) remove(m int) {
+	above := append([]openElement(nil), f.stack[m+1:]...)
+	stale := append([]int(nil), f.staleAt...)
+	f.cut(m)
+	f.staleAt = stale
+	for _, el := range above {
+		f.push(el)
+	}
+}
+
+// closeFormatting closes the formatting element at position m and what is
+// open above it, as its own end tag or a new <a> does: m itself is no
+// longer active, but a formatting element above it stays active (stale).
+func (f *foreignScan) closeFormatting(m int) {
+	f.cut(m + 1)
+	stale := append([]int(nil), f.staleAt...)
+	f.cut(m)
+	f.staleAt = stale
+}
+
+// formatting reads a start tag a or nobr, or a formatting element's end
+// tag, as the adoption agency does in its simple case: an open element
+// with no special element above it closes (ok, handled). One that is not
+// open is left to the caller (ok, not handled); an open one out of scope
+// or under a special element is not modeled (not ok: hide the rest).
+func (f *foreignScan) formatting(t string, top int) (ok, handled bool) {
+	m := f.htmlLast(t, top)
+	if m <= 0 {
+		return true, false
+	}
+	if m < max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) || lastAtOrBelow(f.specials, top) > m {
+		return false, true
+	}
+	f.closeFormatting(m)
+	return true, true
+}
+
+// reconstructs reports whether text or a start tag here makes the parser
+// reopen a stale formatting element: in HTML content (an HTML element or
+// an integration point on top).
+func (f *foreignScan) reconstructs() bool {
+	top := f.stack[len(f.stack)-1]
+	return len(f.staleAt) > 0 && (top.html || top.intPnt)
+}
+
+// lastAtOrBelow is the last of positions (ascending) at or below below, or
+// -1.
+func lastAtOrBelow(positions []int, below int) int {
+	k := sort.SearchInts(positions, below+1) - 1
+	if k < 0 {
+		return -1
+	}
+	return positions[k]
+}
+
+// htmlSpecial are the HTML parser's special elements: an ordinary end tag
+// ("any other end tag") does not close past one. A special end tag closes
+// past them, but not past a scope wall (htmlWalls). The archiver's
+// _HTML_SPECIAL and _HTML_WALLS.
+var (
+	htmlSpecial = setOf("address", "applet", "area", "article", "aside", "base", "basefont", "bgsound",
+		"blockquote", "body", "br", "button", "caption", "center", "col", "colgroup", "dd", "details", "dir",
+		"div", "dl", "dt", "embed", "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+		"h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr", "html", "iframe", "img", "input",
+		"keygen", "li", "link", "listing", "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+		"noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search", "section", "select",
+		"source", "style", "summary", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+		"title", "tr", "track", "ul", "wbr", "xmp")
+	htmlWalls = setOf("applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+		"select") // the renderer's parser stops end tags at an open select too
+	// listOpen are the specials an li/dd/dt start closes past (or closes)
+	listOpen = setOf("address", "div", "p", "li", "dd", "dt")
+	// closesP are start tags that first close an open p (button scope). The
+	// archiver's _CLOSES_P.
+	closesP = setOf("address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", "div",
+		"dl", "fieldset", "figcaption", "figure", "footer", "header", "hgroup", "main", "menu", "nav", "ol",
+		"p", "search", "section", "summary", "ul", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "listing",
+		"form", "li", "dd", "dt", "table", "hr", "xmp")
+	// impliedEnds close before a form end tag removes the form
+	impliedEnds = setOf("dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc")
+	headingTags = setOf("h1", "h2", "h3", "h4", "h5", "h6")
+	// tableOnly are the start tags the in-body rule ignores outside a table
+	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
+	// tableEnds close by table scope: past an open cell, row or caption
+	tableEnds = setOf("table", "tbody", "tfoot", "thead", "tr")
+	// inTable are the current nodes under which a table start replaces the
+	// open table (the parser's in-table modes; not a caption or a cell,
+	// where it nests)
+	inTable = setOf("table", "tbody", "tfoot", "thead", "tr", "colgroup")
+	// markerTags put a marker in the list of active formatting elements:
+	// what goes stale inside one is cleared when it closes
+	markerTags = setOf("applet", "caption", "marquee", "object", "td", "th", "template")
+	// formattingTags are the parser's formatting elements: closed by
+	// something other than their own end tag, they stay active and reopen
+	formattingTags = setOf("a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong",
+		"tt", "u")
+	mathTextPoints = setOf("mi", "mo", "mn", "ms", "mtext")
+)
+
+// skipToClose are elements read as HTML whose content is raw text or
+// RCDATA: skipped to their own closing tag. (A template or plaintext inside
+// an integration point still hides the rest.) The archiver's
+// _SKIP_TO_CLOSE.
+var skipToClose = setOf("script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes", "noscript")
+
+// htmlVoid are HTML void elements: never open, so never on a stack of open
+// elements. The archiver's _HTML_VOID.
+var htmlVoid = setOf("area", "base", "basefont", "bgsound", "br", "col", "embed", "hr", "img", "input",
+	"keygen", "link", "meta", "param", "source", "track", "wbr")
+
+// foreignEnd is where the SVG or MathML element name whose start tag ends
+// at html[end] ends, or a position to resume at, or -1 to hide the rest, by
+// a small stack of open elements (foreignScan), each foreign (an
+// integration point when its content is HTML: integrationTags) or HTML
+// (opened inside an integration point).
+//
+// Start tags: where the current element is HTML or an integration point, a
+// tag is HTML (svg and math open foreign elements; raw text or RCDATA is
+// skipped to its own closing tag, skipToClose; a template or plaintext
+// hides the rest); elsewhere a
+// breakout tag (breakoutTags) closes the foreign elements up to the nearest
+// HTML element or integration point and is read there as HTML, and with
+// none inside, ends name: the scan resumes at the tag (a <font>, a breakout
+// only with certain attributes, hides the rest instead). End tags: from a
+// foreign current element, the nearest open element of that name closes,
+// and an HTML element on the way hands the tag to the HTML rule; from an
+// HTML one, the nearest open HTML element of that name closes and an
+// integration point on the way ignores the tag; </p> and </br> are
+// breakouts like start tags, then read by the HTML rule. A walk past name
+// (it could close something outside) hides the rest. Comments are skipped,
+// and "<![CDATA[" too (skip). The content is the foreign element's either
+// way, dropped. The archiver's _foreign_end.
+func foreignEnd(html, lower, name string, end int) int {
+	f := newForeignScan(name)
+	n, i := len(html), end+1
+	for {
+		j := indexFrom(html, "<", i)
+		if j < 0 {
+			return -1
+		}
+		if j > i && f.reconstructs() { // text reopens a stale formatting element
+			return -1
+		}
+		if next, skipped := f.skip(html, j); skipped {
+			if i = next; i < 0 {
+				return -1
+			}
+			continue
+		}
+		if j+1 >= n || !isTagStart(html[j+1]) {
+			if f.reconstructs() { // a "<" that is text
+				return -1
+			}
+			i = j + 1
+			continue
+		}
+		e, selfClosing := tagScan(html, j)
+		if e < 0 {
+			return -1
+		}
+		i = e + 1
+		t := tagName(lower, j)
+		if t == "" { // "<!x>", "<?x>": a bogus comment
+			continue
+		}
+		closing := strings.HasPrefix(lower[j:], "</")
+		if top := f.stack[len(f.stack)-1]; (top.html || top.intPnt) && !closing && skipToClose[t] {
+			// raw text or RCDATA read as HTML: its content runs to its own
+			// closing tag (none: the rest); an xmp first closes an open p
+			if len(f.staleAt) > 0 {
+				return -1
+			}
+			f.impliedClose(t)
+			if len(f.staleAt) > 0 { // an xmp closing a p reopens what that left stale
+				return -1
+			}
+			k := closingTag(lower, t, i)
+			if k < 0 {
+				return -1
+			}
+			ke := tagEnd(html, k)
+			if ke < 0 {
+				return -1
+			}
+			i = ke + 1
+			continue
+		}
+		if r := f.tag(html, t, closing, selfClosing, j, e); r != 0 {
+			return r
+		}
+	}
+}
+
+// skip is just past the comment or "<![CDATA[" starting at html[j] (a CDATA
+// section in a foreign element, a bogus comment under an HTML one), or -1
+// when it is left open; skipped is false when neither starts there.
+func (f *foreignScan) skip(html string, j int) (int, bool) {
 	if strings.HasPrefix(html[j:], "<!--") {
 		return commentEnd(html, j), true
 	}
-	if foreign && strings.HasPrefix(html[j:], "<![CDATA[") {
-		if k := indexFrom(html, "]]>", j+9); k >= 0 {
-			return k + 3, true
+	if !strings.HasPrefix(html[j:], "<![CDATA[") {
+		return 0, false
+	}
+	// in a foreign element (an integration point included) a CDATA section,
+	// to "]]>"; under an HTML element a bogus comment, to the first ">"
+	if f.stack[len(f.stack)-1].html {
+		if k := indexFrom(html, ">", j+9); k >= 0 {
+			return k + 1, true
 		}
 		return -1, true
 	}
-	return 0, false
-}
-
-// dropLevel is a template, <svg> or <math> element being dropped (dropEnd).
-type dropLevel struct {
-	name               string
-	foreign            bool
-	depth, integration int
-	opened             map[string]int // elements open inside a foreign one, by name
-}
-
-// breaksOut reports whether tag ends this SVG or MathML element in a
-// browser, which then reads the tag as HTML: a breakout start tag, or </p>
-// or </br>, outside an integration point; <font> excepted (see dropEnd).
-func (d *dropLevel) breaksOut(tag string, closing bool) bool {
-	if !d.foreign || d.integration > 0 || tag == "font" {
-		return false
+	if k := indexFrom(html, "]]>", j+9); k >= 0 {
+		return k + 3, true
 	}
-	if closing {
-		return tag == "p" || tag == "br"
-	}
-	return breakoutTags[tag]
+	return -1, true
 }
 
-// at reads a tag inside the element: whether the element ends with it, or
-// whether the rest is hidden (see dropEnd).
-func (d *dropLevel) at(tag string, closing, selfClosing bool) (ends, hide bool) {
-	switch {
-	case tag == d.name:
-		if closing {
-			d.depth--
-			return d.depth == 0, false
+// inside is the nearest HTML element or integration point above the root,
+// or 0 when there is none.
+func (f *foreignScan) inside() int {
+	k := 0
+	if len(f.htmls) > 0 {
+		k = f.htmls[len(f.htmls)-1]
+	}
+	if len(f.points) > 0 && f.points[len(f.points)-1] > k {
+		k = f.points[len(f.points)-1]
+	}
+	return k
+}
+
+// tag reads tag t at html[j] (ending at html[e]): 0 to go on, e+1 when the
+// element ends, j to resume there, or -1 to hide the rest.
+func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) int {
+	top := f.stack[len(f.stack)-1]
+	htmlMode := top.html || top.intPnt
+	breakout := !htmlMode && ((closing && (t == "p" || t == "br")) || (!closing && breakoutTags[t]))
+	if breakout && t == "font" && !closing {
+		// a font breaks out only with a color, face or size attribute
+		_, color := tagAttr(html, j, e, "color")
+		_, face := tagAttr(html, j, e, "face")
+		_, size := tagAttr(html, j, e, "size")
+		breakout = color || face || size
+	}
+	if breakout {
+		k := f.inside()
+		if k == 0 {
+			return j // name ends here, as in a browser
 		}
-		if !d.foreign || !selfClosing {
-			d.depth++
+		f.cut(k + 1) // back to the nearest HTML element or integration point, read there as HTML
+		htmlMode = true
+		top = f.stack[len(f.stack)-1]
+	}
+	if closing && t == "br" && htmlMode {
+		closing = false // the in-body rule reads </br> as <br>
+	}
+	if !closing {
+		if top.intPnt && top.ns == "math" && mathTextPoints[top.tag] && (t == "mglyph" || t == "malignmark") {
+			htmlMode = false // these stay MathML at a MathML text integration point
 		}
-	case d.foreign && tag != "" && closing:
-		if tag == "p" || tag == "br" || d.opened[tag] == 0 {
-			return false, true
+		if htmlMode && len(f.staleAt) > 0 { // a start tag in HTML content reopens a stale formatting element
+			return -1
 		}
-		d.opened[tag]--
-		if integrationTags[tag] {
-			d.integration--
-		}
-	case d.foreign && tag != "":
-		if breakoutTags[tag] || (d.integration > 0 && tag != "svg" && tag != "math") {
-			return false, true
-		}
-		if !selfClosing {
-			d.opened[tag]++
-			if integrationTags[tag] {
-				d.integration++
+		if htmlMode && (t == "a" || t == "nobr") { // an open one closes first
+			if ok, _ := f.formatting(t, len(f.stack)-1); !ok {
+				return -1
 			}
 		}
-	case !d.foreign && !closing && swallowTags[tag]:
-		return false, true
+		return f.startTag(html, t, htmlMode, selfClosing, j, e)
 	}
-	return false, false
+	if top.html || breakout {
+		if !f.htmlRule(t, len(f.stack)-1) {
+			return -1
+		}
+		return 0
+	}
+	return f.foreignRule(t, e)
+}
+
+// startTag opens t (its tag html[j:e+1]), read as HTML when htmlMode: 0,
+// or -1 to hide the rest.
+func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e int) int {
+	if htmlMode {
+		var ok bool
+		if t, ok = f.inBodyStart(t); !ok {
+			return 0
+		}
+	}
+	if htmlMode && t != "svg" && t != "math" {
+		f.impliedClose(t)
+		if len(f.staleAt) > 0 { // closing a p or button can leave a formatting element to reopen
+			return -1
+		}
+	}
+	switch {
+	case !htmlMode:
+		if !selfClosing {
+			// a foreign element takes its parent's namespace (svg in a
+			// MathML annotation-xml is SVG)
+			top := f.stack[len(f.stack)-1]
+			ns := top.ns
+			if ns == "math" && top.tag == "annotation-xml" && t == "svg" {
+				ns = "svg"
+			}
+			ip := integrationTags[ns][t]
+			if ip && t == "annotation-xml" { // an HTML integration point only for an HTML encoding
+				enc := strings.ToLower(strings.TrimSpace(stdhtml.UnescapeString(attrValue(html, j, e, "encoding"))))
+				ip = enc == "text/html" || enc == "application/xhtml+xml"
+			}
+			f.push(openElement{tag: t, ns: ns, intPnt: ip})
+		}
+	case t == "svg" || t == "math":
+		if !selfClosing {
+			f.push(openElement{tag: t, ns: t})
+		}
+	case swallowTags[t]:
+		return -1
+	case !htmlVoid[t]:
+		if t == "form" {
+			f.formSet, f.form = true, len(f.stack)
+		}
+		f.push(openElement{tag: t, html: true})
+	}
+	return 0
+}
+
+// inTableMode reports whether the parser is in one of its in-table modes at
+// stack[top]: the innermost table part above the nearest integration point
+// is a table, section, row or colgroup (not a caption or a cell). Elements
+// foster-parented above it do not change the mode.
+func (f *foreignScan) inTableMode(top int) bool {
+	floor := lastAtOrBelow(f.points, top)
+	for k := top; k > floor; k-- {
+		if el := f.stack[k]; el.html && (inTable[el.tag] || el.tag == "td" || el.tag == "th" || el.tag == "caption") {
+			return inTable[el.tag]
+		}
+	}
+	return false
+}
+
+// inBodyStart applies the in-body start-tag rules that change or drop HTML
+// start tag t before it opens: the tag to open, or false when it is
+// consumed.
+func (f *foreignScan) inBodyStart(t string) (string, bool) {
+	top := len(f.stack) - 1
+	switch {
+	case t == "form" && f.formSet:
+		return t, false // a second form while the pointer is set is ignored
+	case t == "form" && f.inTableMode(top):
+		f.formSet = true
+		return t, false // a form in a table sets the pointer but closes at once
+	case t == "image":
+		return "img", true // the in-body rule reads <image> as <img>
+	case t == "html" || t == "head" || t == "body" || t == "frame" || t == "frameset":
+		return t, false // the in-body rule never opens these (frameset-ok is off once SVG or MathML opened)
+	case t == "input" || t == "select": // either closes an open select (in scope)
+		if m := f.htmlLast("select", top); m > lastAtOrBelow(f.points, top) && m >= lastAtOrBelow(f.walls, top) {
+			f.cut(m)
+			return t, t != "select" // and a select start is consumed
+		}
+	case tableOnly[t] && f.htmlLast("table", top) <= lastAtOrBelow(f.points, top):
+		return t, false // nor a table part outside a table
+	case t == "table" && f.inTableMode(top):
+		f.cut(f.htmlLast("table", top)) // a table in a table (not in a caption or a cell) replaces it
+	}
+	return t, true
+}
+
+// htmlRule reads end tag t by the HTML rule from stack[top] down: the
+// nearest open HTML element of that name closes, unless a barrier comes
+// first and the tag is ignored: an integration point, and for an ordinary
+// tag any special element, for a special one a scope wall; a heading's end
+// tag closes any open heading. False when neither (it walks past the root).
+func (f *foreignScan) htmlRule(t string, top int) bool {
+	if t == "form" {
+		return f.formEnd(top)
+	}
+	if formattingTags[t] {
+		if ok, handled := f.formatting(t, top); handled {
+			return ok
+		}
+	}
+	match := f.htmlLast(t, top)
+	if headingTags[t] {
+		for h := range headingTags {
+			match = max(match, f.htmlLast(h, top))
+		}
+	}
+	walls := f.specials
+	if htmlSpecial[t] {
+		walls = f.walls
+	}
+	barrier := max(lastAtOrBelow(f.points, top), lastAtOrBelow(walls, top))
+	if tableEnds[t] { // table scope: past open cells and captions, not past a table (but its own)
+		barrier = max(lastAtOrBelow(f.points, top), f.htmlLast("template", top))
+		if t != "table" {
+			barrier = max(barrier, f.htmlLast("table", top))
+		}
+	}
+	switch t {
+	case "li": // list item scope also stops at a list
+		barrier = max(barrier, f.htmlLast("ul", top), f.htmlLast("ol", top))
+	case "p": // button scope also stops at a button
+		barrier = max(barrier, f.htmlLast("button", top))
+	}
+	if match > 0 && match >= barrier { // a wall closes at its own end tag
+		f.cut(match)
+		return true
+	}
+	return barrier > 0
+}
+
+// formEnd reads a form end tag: the pointer clears, and the form it named,
+// when open and in scope, comes off the stack after the implied end tags;
+// the elements above it stay open. Otherwise the tag is ignored.
+func (f *foreignScan) formEnd(top int) bool {
+	m := f.form
+	f.formSet, f.form = false, -1
+	if m < 0 || m > top || m <= max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
+		return true
+	}
+	for last := len(f.stack) - 1; last > m && f.stack[last].html && impliedEnds[f.stack[last].tag]; last-- {
+		f.cut(last)
+	}
+	f.remove(m)
+	return true
+}
+
+func (f *foreignScan) htmlLast(t string, top int) int {
+	return lastAtOrBelow(f.byName[elementKey{t, true}], top)
+}
+
+// impliedClose closes, before an HTML start tag t, what the parser closes
+// first: an li the nearest open li, a dd or dt the nearest dd or dt
+// (neither past a special element other than address, div and p, nor past
+// an integration point), a heading the heading it is in, a block start
+// an open p (button scope), a button an open button, and an option or
+// optgroup an option on top. The archiver's
+// _ForeignStack.implied_close.
+func (f *foreignScan) impliedClose(t string) {
+	top := len(f.stack) - 1
+	points := lastAtOrBelow(f.points, top)
+	match, barrier := -1, -1
+	switch t {
+	case "li":
+		match = f.htmlLast("li", top)
+		barrier = max(lastAtOrBelow(f.listWalls, top), f.htmlLast("dd", top), f.htmlLast("dt", top), points)
+	case "dd", "dt":
+		match = max(f.htmlLast("dd", top), f.htmlLast("dt", top))
+		barrier = max(lastAtOrBelow(f.listWalls, top), f.htmlLast("li", top), points)
+	case "button": // a button closes an open button (default scope)
+		match = f.htmlLast("button", top)
+		barrier = max(lastAtOrBelow(f.walls, top), points)
+	}
+	if match > 0 && match > barrier {
+		f.cut(match)
+	}
+	if headingTags[t] {
+		if last := f.stack[len(f.stack)-1]; last.html && headingTags[last.tag] {
+			f.cut(len(f.stack) - 1)
+		}
+	}
+	if t == "option" || t == "optgroup" { // either closes an option on top
+		if last := f.stack[len(f.stack)-1]; last.html && last.tag == "option" {
+			f.cut(len(f.stack) - 1)
+		}
+	}
+	if closesP[t] {
+		top = len(f.stack) - 1
+		match = f.htmlLast("p", top)
+		barrier = max(lastAtOrBelow(f.walls, top), f.htmlLast("button", top), lastAtOrBelow(f.points, top))
+		if match > 0 && match > barrier {
+			f.cut(match)
+		}
+	}
+}
+
+// attrValue is the value of attribute name of the start tag html[j:end+1],
+// read as the tokenizer reads it (the first of a repeated name; "" when
+// absent). The archiver's _tag_attrs.
+func attrValue(html string, j, end int, name string) string {
+	v, _ := tagAttr(html, j, end, name)
+	return v
+}
+
+// tagAttr is attribute name of the start tag html[j:end+1] and whether it
+// is there, read as attrValue reads it.
+func tagAttr(html string, j, end int, name string) (string, bool) {
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+	k := j + 1
+	for k < end && !space(html[k]) && html[k] != '/' { // the tag name
+		k++
+	}
+	for k < end {
+		if space(html[k]) || html[k] == '/' {
+			k++
+			continue
+		}
+		start := k
+		k++
+		for k < end && !space(html[k]) && html[k] != '/' && html[k] != '=' {
+			k++
+		}
+		attr, value := asciiLower(html[start:k]), ""
+		for k < end && space(html[k]) {
+			k++
+		}
+		if k < end && html[k] == '=' {
+			k++
+			for k < end && space(html[k]) {
+				k++
+			}
+			if k < end && (html[k] == '"' || html[k] == '\'') {
+				q := indexFrom(html, string(html[k]), k+1)
+				if q < 0 || q > end {
+					return "", false
+				}
+				value, k = html[k+1:q], q+1
+			} else {
+				s := k
+				for k < end && !space(html[k]) {
+					k++
+				}
+				value = html[s:k]
+			}
+		}
+		if attr == name {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+// foreignRule reads end tag t (ending at html[e]) by the foreign rule from
+// the top: e+1 when it closes the root, 0 when it closes an element or the
+// HTML rule takes it, -1 when it walks past the root.
+//
+// The walk hands the tag to the HTML rule at the first HTML element, which
+// reads it from the current node (the top), so an integration point on top
+// stops it; one that walks past the root from an integration point is
+// ignored there too (the parser's in-body rules start at that special
+// element), except </template>, whose rule ignores scope.
+func (f *foreignScan) foreignRule(t string, e int) int {
+	top := len(f.stack) - 1
+	match := lastAtOrBelow(f.byName[elementKey{t, false}], top)
+	html := -1
+	if len(f.htmls) > 0 {
+		html = f.htmls[len(f.htmls)-1]
+	}
+	switch {
+	case match >= 0 && match > html:
+		if match == 0 {
+			return e + 1
+		}
+		f.cut(match)
+		return 0
+	case html > 0:
+		if f.htmlRule(t, top) {
+			return 0
+		}
+	case f.stack[top].intPnt && t != "template":
+		return 0
+	}
+	return -1
 }
 
 // stripMarkup returns html's text as a reader sees it, in one left-to-right
@@ -803,10 +1399,10 @@ func extractHTMLLinks(html string) []bodyLink {
 	return out
 }
 
-// allBodies joins every non-attachment text/plain part and every
+// allBodies joins every non-attachment text/plain part and lists every
 // text/html part, as the archiver does.
-func allBodies(msg *mailmsg.Part) (plain, html string) {
-	var plains, htmls []string
+func allBodies(msg *mailmsg.Part) (plain string, htmls []string) {
+	var plains []string
 	for _, part := range bodyParts(msg) {
 		if part.MainType() == "multipart" {
 			continue
@@ -822,15 +1418,44 @@ func allBodies(msg *mailmsg.Part) (plain, html string) {
 			htmls = append(htmls, mailmsg.DecodeBytes(payload, part.Charset()))
 		}
 	}
-	return strings.Join(plains, "\n"), strings.Join(htmls, "\n")
+	return strings.Join(plains, "\n"), htmls
+}
+
+// htmlPieces splits html, the scan's cut of htmls joined by "\n", back into
+// its parts, so each is read as its own document: an unclosed <style> in
+// one part does not hide the next. The archiver's _html_pieces.
+func htmlPieces(html string, htmls []string) []string {
+	var out []string
+	start := 0
+	for _, part := range htmls {
+		if start >= len(html) {
+			break
+		}
+		out = append(out, html[start:min(start+len(part), len(html))])
+		start += len(part) + 1
+	}
+	return out
+}
+
+// isAttachment reports whether part's Content-Disposition type (before any
+// parameter) is attachment: inline; filename="attachment.html" is not. The
+// archiver's _body_parts.
+func isAttachment(part *mailmsg.Part) bool {
+	disposition, _, _ := strings.Cut(part.Header.Get("Content-Disposition"), ";")
+	return strings.EqualFold(strings.TrimSpace(disposition), "attachment")
 }
 
 // bodyParts walks the message's own parts: it never descends into an
 // attachment or an attached message, whose text is not this email's body.
+// A root marked as an attachment is not body either, though a multipart
+// one's children are read.
 func bodyParts(p *mailmsg.Part) []*mailmsg.Part {
-	out := []*mailmsg.Part{p}
+	var out []*mailmsg.Part
+	if !isAttachment(p) {
+		out = append(out, p)
+	}
 	for _, c := range p.Children {
-		if strings.Contains(strings.ToLower(c.Header.Get("Content-Disposition")), "attachment") || c.ContentType() == "message/rfc822" {
+		if isAttachment(c) || c.ContentType() == "message/rfc822" {
 			continue
 		}
 		out = append(out, bodyParts(c)...)
@@ -1040,7 +1665,7 @@ func dedupeKey(u string) string {
 // bodyURLs lists a body's distinct links in the archiver's order:
 // plain-text URLs, then HTML anchors (whose text wins), then bare URLs in the
 // HTML's text not seen before as written or entity-decoded.
-func bodyURLs(plain, html string) []bodyLink {
+func bodyURLs(plain string, htmls ...string) []bodyLink {
 	var out []bodyLink
 	index := map[string]int{}
 	add := func(l bodyLink) {
@@ -1059,7 +1684,7 @@ func bodyURLs(plain, html string) []bodyLink {
 	for _, u := range plainURLs {
 		add(bodyLink{url: u})
 	}
-	html = truncateToRunes(html, maxScanRunes)
+	html := truncateToRunes(strings.Join(htmls, "\n"), maxScanRunes)
 	for _, l := range extractHTMLLinks(html) {
 		add(l)
 	}
@@ -1076,22 +1701,25 @@ func bodyURLs(plain, html string) []bodyLink {
 	// (blocks, then Outlook conditional regions; the archiver also reads
 	// those regions, so it may archive more; a URL listed here is extracted
 	// as it does). The pass runs on the cut body, so a long removed block
-	// cannot bring text past the archiver's cut into the scan.
-	for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(html)) {
-		decoded := dedupeKey(u)
-		if _, ok := index[u]; ok || seen[decoded] {
-			continue
+	// cannot bring text past the archiver's cut into the scan, and on each
+	// HTML part by itself, as each is its own document.
+	for _, piece := range htmlPieces(html, htmls) {
+		for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(piece)) {
+			decoded := dedupeKey(u)
+			if _, ok := index[u]; ok || seen[decoded] {
+				continue
+			}
+			seen[decoded] = true
+			add(bodyLink{url: u, bare: true})
 		}
-		seen[decoded] = true
-		add(bodyLink{url: u, bare: true})
 	}
 	return out
 }
 
 // downloadLinks lists the distinct likely-payload links of a body.
-func downloadLinks(plain, html string) []DownloadLink {
+func downloadLinks(plain string, htmls ...string) []DownloadLink {
 	var out []DownloadLink
-	for _, l := range bodyURLs(plain, html) {
+	for _, l := range bodyURLs(plain, htmls...) {
 		cleaned, filename, likely, tracker := classifyURL(l.url)
 		if l.bare {
 			// A URL found only as text in HTML is judged on the request it makes

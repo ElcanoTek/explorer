@@ -142,7 +142,8 @@ func (in *Inbox) ReadAgentEmail(ctx context.Context, key string) (*AgentEmail, e
 	}
 	msg := mailmsg.Parse(raw)
 	h := in.headersOf(msg.Header)
-	plain, html := allBodies(msg)
+	plain, htmls := allBodies(msg)
+	html := strings.Join(htmls, "\n")
 	text := plain
 	if text == "" {
 		text = html
@@ -167,7 +168,7 @@ func (in *Inbox) ReadAgentEmail(ctx context.Context, key string) (*AgentEmail, e
 			byURL[l.URL] = l
 		}
 	}
-	for _, l := range downloadLinks(plain, html) {
+	for _, l := range downloadLinks(plain, htmls...) {
 		el := EmailLink{DownloadLink: l}
 		el.Cache, el.HasCache = byURL[l.URL]
 		e.Links = append(e.Links, el)
