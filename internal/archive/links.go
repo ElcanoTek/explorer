@@ -666,6 +666,8 @@ var (
 	// impliedEnds close before a form end tag removes the form
 	impliedEnds = setOf("dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc")
 	headingTags = setOf("h1", "h2", "h3", "h4", "h5", "h6")
+	// tableOnly are the start tags the in-body rule ignores outside a table
+	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
 	// formattingTags are the parser's formatting elements: closed by
 	// something other than their own end tag, they stay active and reopen
 	formattingTags = setOf("a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong",
@@ -848,8 +850,14 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	if htmlMode && t == "form" && f.formSet {
 		return 0 // a second form while the pointer is set is ignored
 	}
-	if htmlMode && (t == "html" || t == "head" || t == "body") {
+	if htmlMode && (t == "html" || t == "head" || t == "body" || t == "frame") {
 		return 0 // the in-body rule never opens these
+	}
+	if htmlMode && tableOnly[t] {
+		top := len(f.stack) - 1
+		if f.htmlLast("table", top) <= lastAtOrBelow(f.points, top) {
+			return 0 // nor a table part outside a table
+		}
 	}
 	if htmlMode && t != "svg" && t != "math" {
 		f.impliedClose(t)
@@ -917,7 +925,7 @@ func (f *foreignScan) htmlRule(t string, top int) bool {
 	case "p": // button scope also stops at a button
 		barrier = max(barrier, f.htmlLast("button", top))
 	}
-	if match > 0 && match > barrier {
+	if match > 0 && match >= barrier { // a wall closes at its own end tag
 		f.cut(match)
 		return true
 	}

@@ -810,6 +810,39 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a table closes at its own end tag at an integration point",
+   "html": "<svg><desc><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an object closes at its own end tag at an integration point",
+   "html": "<svg><desc><object></object></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table row start outside a table is ignored",
+   "html": "<svg><desc><tr></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table cell start outside a table is ignored",
+   "html": "<svg><desc><td></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an open table still stops an integration point end tag",
+   "html": "<svg><desc><table><tr></desc></svg> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }
