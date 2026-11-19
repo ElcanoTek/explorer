@@ -1437,17 +1437,25 @@ func htmlPieces(html string, htmls []string) []string {
 	return out
 }
 
+// isAttachment reports whether part's Content-Disposition type (before any
+// parameter) is attachment: inline; filename="attachment.html" is not. The
+// archiver's _body_parts.
+func isAttachment(part *mailmsg.Part) bool {
+	disposition, _, _ := strings.Cut(part.Header.Get("Content-Disposition"), ";")
+	return strings.EqualFold(strings.TrimSpace(disposition), "attachment")
+}
+
 // bodyParts walks the message's own parts: it never descends into an
 // attachment or an attached message, whose text is not this email's body.
 // A root marked as an attachment is not body either, though a multipart
 // one's children are read.
 func bodyParts(p *mailmsg.Part) []*mailmsg.Part {
 	var out []*mailmsg.Part
-	if !strings.Contains(strings.ToLower(p.Header.Get("Content-Disposition")), "attachment") {
+	if !isAttachment(p) {
 		out = append(out, p)
 	}
 	for _, c := range p.Children {
-		if strings.Contains(strings.ToLower(c.Header.Get("Content-Disposition")), "attachment") || c.ContentType() == "message/rfc822" {
+		if isAttachment(c) || c.ContentType() == "message/rfc822" {
 			continue
 		}
 		out = append(out, bodyParts(c)...)

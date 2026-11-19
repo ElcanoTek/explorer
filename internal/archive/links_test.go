@@ -218,3 +218,12 @@ func TestARootPartMarkedAsAnAttachmentIsNotTheBody(t *testing.T) {
 		t.Fatalf("plain %q, htmls %q", plain, htmls)
 	}
 }
+
+func TestAnInlineRootWhoseFilenameSaysAttachmentIsTheBody(t *testing.T) {
+	raw := "From: a@example.com\r\nContent-Type: text/html\r\nContent-Disposition: inline; filename=\"attachment.html\"\r\n\r\n" +
+		"<p>https://vendor.example/report.csv</p>\r\n"
+	_, htmls := allBodies(mailmsg.Parse([]byte(raw)))
+	if len(htmls) != 1 {
+		t.Fatalf("htmls %q", htmls)
+	}
+}
