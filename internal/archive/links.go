@@ -399,35 +399,26 @@ func commentEnd(html string, j int) int {
 // dropEnd is where the dropped element name whose start tag ends at
 // html[end] ends (just past its end tag), or -1 when it is left open (the
 // rest is the element's). Raw text ends at its first own closing tag (whose
-// name ends there, quote-aware). A template, <svg> or <math> ends at its
-// matching closing tag: a nested element of the same name opens a level (a
-// self-closing <svg/> or <math/> does not), and a comment is skipped, as are
-// a template's own raw-text, SVG and MathML children and an SVG or MathML
-// CDATA section.
-//
-// An HTML tag such as <span>, <p> or </br> in SVG or MathML (breakoutTags,
-// outside an integration point) ends it there, as in a browser: the scan
-// resumes at that tag, read as HTML. Where a browser could end the element
-// elsewhere, the rest is hidden here instead (dropped, never invented): a
-// <font> (it breaks out only with certain attributes), a closing tag with no
-// open element of its name inside (it can close the SVG from outside), or
-// any tag but <svg> or <math> opened inside an integration point (an SVG
-// <title>, whose content is HTML); in a template, an element that swallows
-// its closing tag (swallowTags) other than the raw text skipped. The
-// archiver's _drop_end.
+// name ends there, quote-aware). A template ends at its matching closing
+// tag: a nested template opens a level, and a comment is skipped, as are its
+// own raw-text, SVG and MathML children; an element that swallows its
+// closing tag (swallowTags) other than that raw text hides the rest. SVG and
+// MathML: foreignEnd. The archiver's _drop_end.
 func dropEnd(html, lower, name string, end int) int {
 	if name != "template" && name != "svg" && name != "math" {
 		return rawTextEnd(html, lower, name, end)
 	}
-	d := &dropLevel{name: name, foreign: name != "template", depth: 1, opened: map[string]int{}}
-	n, i := len(html), end+1
+	if name != "template" {
+		return foreignEnd(html, lower, name, end)
+	}
+	depth, n, i := 1, len(html), end+1
 	for {
 		j := indexFrom(html, "<", i)
 		if j < 0 {
 			return -1
 		}
-		if k, skipped := skipMarkup(html, j, d.foreign); skipped {
-			if i = k; i < 0 {
+		if strings.HasPrefix(html[j:], "<!--") {
+			if i = commentEnd(html, j); i < 0 {
 				return -1
 			}
 			continue
@@ -440,22 +431,22 @@ func dropEnd(html, lower, name string, end int) int {
 		if e < 0 {
 			return -1
 		}
-		if inner := rawTextName(lower, j); !d.foreign && templateChild(inner, selfClosing) {
+		if inner := rawTextName(lower, j); templateChild(inner, selfClosing) {
 			if i = dropEnd(html, lower, inner, e); i < 0 {
 				return -1
 			}
 			continue
 		}
 		tag, closing := tagName(lower, j), strings.HasPrefix(lower[j:], "</")
-		if d.breaksOut(tag, closing) {
-			return j // the browser closes the SVG or MathML here and reads this tag as HTML
-		}
-		ends, hide := d.at(tag, closing, selfClosing)
-		if hide {
+		switch {
+		case tag == "template" && closing:
+			if depth--; depth == 0 {
+				return e + 1
+			}
+		case tag == "template":
+			depth++
+		case !closing && swallowTags[tag]:
 			return -1
-		}
-		if ends {
-			return e + 1
 		}
 		i = e + 1
 	}
@@ -498,77 +489,189 @@ func closingTag(lower, name string, from int) int {
 	return k
 }
 
-// skipMarkup is just past the comment (or, in SVG or MathML, the CDATA
-// section) starting at html[j], or -1 when it is left open; skipped is
-// false when neither starts there.
-func skipMarkup(html string, j int, foreign bool) (next int, skipped bool) {
+// htmlVoid are HTML void elements: never open, so never on a stack of open
+// elements. The archiver's _HTML_VOID.
+var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+	"track", "wbr")
+
+// openElement is one element on foreignEnd's stack: SVG/MathML (an
+// integration point when its content is HTML) or HTML.
+type openElement struct {
+	tag          string
+	html, intPnt bool
+}
+
+// foreignScan is the state of foreignEnd.
+type foreignScan struct{ stack []openElement }
+
+// foreignEnd is where the SVG or MathML element name whose start tag ends
+// at html[end] ends, or a position to resume at, or -1 to hide the rest, by
+// a small stack of open elements, each foreign (an integration point when
+// its content is HTML: integrationTags) or HTML (opened inside an
+// integration point).
+//
+// Start tags: where the current element is HTML or an integration point, a
+// tag is HTML (svg and math open foreign elements; an element that switches
+// the tokenizer, raw text or a template, hides the rest); elsewhere a
+// breakout tag (breakoutTags) closes the foreign elements up to the nearest
+// HTML element or integration point and is read there, and with none
+// inside, ends name: the scan resumes at the tag, read as HTML (a <font>, a
+// breakout only with certain attributes, hides the rest instead). End tags:
+// from a foreign current element, the nearest open element of that name
+// closes, and an HTML element on the way hands the tag to the HTML rule;
+// from an HTML one, the nearest open HTML element of that name closes and
+// an integration point on the way ignores the tag. A walk past name (it
+// could close something outside) hides the rest, as does a CDATA section
+// where HTML reads it as a bogus comment. Comments are skipped; the content
+// is the foreign element's either way, dropped. The archiver's _foreign_end.
+func foreignEnd(html, lower, name string, end int) int {
+	f := &foreignScan{stack: []openElement{{tag: name}}}
+	n, i := len(html), end+1
+	for {
+		j := indexFrom(html, "<", i)
+		if j < 0 {
+			return -1
+		}
+		if next, skipped := f.skip(html, j); skipped {
+			if i = next; i < 0 {
+				return -1
+			}
+			continue
+		}
+		if j+1 >= n || !isTagStart(html[j+1]) {
+			i = j + 1
+			continue
+		}
+		e, selfClosing := tagScan(html, j)
+		if e < 0 {
+			return -1
+		}
+		i = e + 1
+		t := tagName(lower, j)
+		if t == "" { // "<!x>", "<?x>": a bogus comment
+			continue
+		}
+		var r int
+		if strings.HasPrefix(lower[j:], "</") {
+			r = f.endTag(t, j, e)
+		} else {
+			r = f.startTag(t, j, selfClosing)
+		}
+		if r != 0 {
+			return r
+		}
+	}
+}
+
+// skip is just past the comment, or the CDATA section where the current
+// element is foreign and not an integration point, starting at html[j]
+// (-1 when it is left open or a CDATA section is read where HTML would read
+// a bogus comment); skipped is false when neither starts there.
+func (f *foreignScan) skip(html string, j int) (int, bool) {
 	if strings.HasPrefix(html[j:], "<!--") {
 		return commentEnd(html, j), true
 	}
-	if foreign && strings.HasPrefix(html[j:], "<![CDATA[") {
-		if k := indexFrom(html, "]]>", j+9); k >= 0 {
-			return k + 3, true
-		}
+	if !strings.HasPrefix(html[j:], "<![CDATA[") {
+		return 0, false
+	}
+	if top := f.stack[len(f.stack)-1]; top.html || top.intPnt {
 		return -1, true
 	}
-	return 0, false
-}
-
-// dropLevel is a template, <svg> or <math> element being dropped (dropEnd).
-type dropLevel struct {
-	name               string
-	foreign            bool
-	depth, integration int
-	opened             map[string]int // elements open inside a foreign one, by name
-}
-
-// breaksOut reports whether tag ends this SVG or MathML element in a
-// browser, which then reads the tag as HTML: a breakout start tag, or </p>
-// or </br>, outside an integration point; <font> excepted (see dropEnd).
-func (d *dropLevel) breaksOut(tag string, closing bool) bool {
-	if !d.foreign || d.integration > 0 || tag == "font" {
-		return false
+	if k := indexFrom(html, "]]>", j+9); k >= 0 {
+		return k + 3, true
 	}
-	if closing {
-		return tag == "p" || tag == "br"
-	}
-	return breakoutTags[tag]
+	return -1, true
 }
 
-// at reads a tag inside the element: whether the element ends with it, or
-// whether the rest is hidden (see dropEnd).
-func (d *dropLevel) at(tag string, closing, selfClosing bool) (ends, hide bool) {
-	switch {
-	case tag == d.name:
-		if closing {
-			d.depth--
-			return d.depth == 0, false
+// inside is the index of the nearest HTML element or integration point
+// above the root, or 0 when there is none.
+func (f *foreignScan) inside() int {
+	for k := len(f.stack) - 1; k > 0; k-- {
+		if f.stack[k].html || f.stack[k].intPnt {
+			return k
 		}
-		if !d.foreign || !selfClosing {
-			d.depth++
-		}
-	case d.foreign && tag != "" && closing:
-		if tag == "p" || tag == "br" || d.opened[tag] == 0 {
-			return false, true
-		}
-		d.opened[tag]--
-		if integrationTags[tag] {
-			d.integration--
-		}
-	case d.foreign && tag != "":
-		if breakoutTags[tag] || (d.integration > 0 && tag != "svg" && tag != "math") {
-			return false, true
-		}
-		if !selfClosing {
-			d.opened[tag]++
-			if integrationTags[tag] {
-				d.integration++
+	}
+	return 0
+}
+
+// startTag reads start tag t at html[j]: 0 to go on, j to resume there
+// (the element ended), or -1 to hide the rest.
+func (f *foreignScan) startTag(t string, j int, selfClosing bool) int {
+	top := f.stack[len(f.stack)-1]
+	htmlMode := top.html || top.intPnt
+	if !htmlMode && breakoutTags[t] {
+		k := f.inside()
+		if k == 0 {
+			if t == "font" {
+				return -1
 			}
+			return j
 		}
-	case !d.foreign && !closing && swallowTags[tag]:
-		return false, true
+		f.stack = f.stack[:k+1]
+		htmlMode = true
 	}
-	return false, false
+	switch {
+	case !htmlMode:
+		if !selfClosing {
+			f.stack = append(f.stack, openElement{tag: t, intPnt: integrationTags[t]})
+		}
+	case t == "svg" || t == "math":
+		if !selfClosing {
+			f.stack = append(f.stack, openElement{tag: t})
+		}
+	case swallowTags[t]:
+		return -1
+	case !htmlVoid[t]:
+		f.stack = append(f.stack, openElement{tag: t, html: true})
+	}
+	return 0
+}
+
+// endTag reads end tag t at html[j] (ending at html[e]): 0 to go on, e+1
+// when the element ends, j to resume there, or -1 to hide the rest.
+func (f *foreignScan) endTag(t string, j, e int) int {
+	top := f.stack[len(f.stack)-1]
+	if top.html {
+		return f.htmlRule(t, len(f.stack)-1)
+	}
+	if (t == "p" || t == "br") && !top.intPnt { // a breakout end tag
+		k := f.inside()
+		if k == 0 {
+			return j
+		}
+		f.stack = f.stack[:k+1]
+		return 0
+	}
+	for k := len(f.stack) - 1; k >= 0; k-- {
+		el := f.stack[k]
+		if !el.html && el.tag == t {
+			if k == 0 {
+				return e + 1
+			}
+			f.stack = f.stack[:k]
+			return 0
+		}
+		if el.html {
+			return f.htmlRule(t, k)
+		}
+	}
+	return -1 // nothing of that name inside: it could close something outside
+}
+
+// htmlRule reads end tag t by the HTML rule, walking down from stack[k]: 0
+// when it closes an element or is ignored, -1 when it walks past the root.
+func (f *foreignScan) htmlRule(t string, k int) int {
+	for ; k > 0; k-- {
+		el := f.stack[k]
+		if el.html && el.tag == t {
+			f.stack = f.stack[:k]
+			return 0
+		}
+		if el.intPnt {
+			return 0 // a special element: the tag is ignored
+		}
+	}
+	return -1
 }
 
 // stripMarkup returns html's text as a reader sees it, in one left-to-right

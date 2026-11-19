@@ -569,6 +569,32 @@
    "want": [
     "https://vendor.example/b.csv"
    ]
+  },
+  {
+   "name": "html inside a mathml integration point is read as html",
+   "html": "<math><mtext><span>logo</span></mtext></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "html inside an svg foreignobject is read as html",
+   "html": "<svg><foreignObject><div>x</div></foreignObject></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an end tag inside an html element in an integration point is ignored",
+   "html": "<math><mtext><span></math>https://vendor.example/a.csv</span></mtext></math> https://vendor.example/b.csv",
+   "want": [
+    "https://vendor.example/b.csv"
+   ]
+  },
+  {
+   "name": "raw text inside an integration point hides the rest",
+   "html": "<svg><desc><textarea></svg>https://vendor.example/a.csv",
+   "want": []
   }
  ]
 }
