@@ -348,9 +348,9 @@ func openingName(lower string, j int, names []string) string {
 }
 
 // breakoutTags end SVG or MathML content in a browser (the parser's
-// "breakout" list; <font> only with certain attributes, taken here as
-// always). What follows is hard to place, so dropEnd hides it. The
-// archiver's _BREAKOUT.
+// "breakout" list): dropEnd resumes at the tag, read as HTML. <font> breaks
+// out only with a color, face or size attribute, so it hides the rest
+// instead. The archiver's _BREAKOUT.
 var breakoutTags = map[string]bool{
 	"b": true, "big": true, "blockquote": true, "body": true, "br": true, "center": true, "code": true,
 	"dd": true, "div": true, "dl": true, "dt": true, "em": true, "embed": true, "font": true, "h1": true,
@@ -405,13 +405,16 @@ func commentEnd(html string, j int) int {
 // a template's own raw-text, SVG and MathML children and an SVG or MathML
 // CDATA section.
 //
-// Where a browser could end the element elsewhere, the rest is hidden here
-// instead (dropped, never invented): in SVG or MathML, an HTML tag such as
-// <p> or <br> (breakoutTags), a closing tag with no open element of its name
-// inside (it can close the SVG from outside), or any tag but <svg> or <math>
-// opened inside an integration point (an SVG <title>, whose content is
-// HTML); in a template, an element that swallows its closing tag
-// (swallowTags) other than the raw text skipped. The archiver's _drop_end.
+// An HTML tag such as <span>, <p> or </br> in SVG or MathML (breakoutTags,
+// outside an integration point) ends it there, as in a browser: the scan
+// resumes at that tag, read as HTML. Where a browser could end the element
+// elsewhere, the rest is hidden here instead (dropped, never invented): a
+// <font> (it breaks out only with certain attributes), a closing tag with no
+// open element of its name inside (it can close the SVG from outside), or
+// any tag but <svg> or <math> opened inside an integration point (an SVG
+// <title>, whose content is HTML); in a template, an element that swallows
+// its closing tag (swallowTags) other than the raw text skipped. The
+// archiver's _drop_end.
 func dropEnd(html, lower, name string, end int) int {
 	if name != "template" && name != "svg" && name != "math" {
 		return rawTextEnd(html, lower, name, end)
@@ -443,7 +446,11 @@ func dropEnd(html, lower, name string, end int) int {
 			}
 			continue
 		}
-		ends, hide := d.at(tagName(lower, j), strings.HasPrefix(lower[j:], "</"), selfClosing)
+		tag, closing := tagName(lower, j), strings.HasPrefix(lower[j:], "</")
+		if d.breaksOut(tag, closing) {
+			return j // the browser closes the SVG or MathML here and reads this tag as HTML
+		}
+		ends, hide := d.at(tag, closing, selfClosing)
 		if hide {
 			return -1
 		}
@@ -513,6 +520,19 @@ type dropLevel struct {
 	foreign            bool
 	depth, integration int
 	opened             map[string]int // elements open inside a foreign one, by name
+}
+
+// breaksOut reports whether tag ends this SVG or MathML element in a
+// browser, which then reads the tag as HTML: a breakout start tag, or </p>
+// or </br>, outside an integration point; <font> excepted (see dropEnd).
+func (d *dropLevel) breaksOut(tag string, closing bool) bool {
+	if !d.foreign || d.integration > 0 || tag == "font" {
+		return false
+	}
+	if closing {
+		return tag == "p" || tag == "br"
+	}
+	return breakoutTags[tag]
 }
 
 // at reads a tag inside the element: whether the element ends with it, or
