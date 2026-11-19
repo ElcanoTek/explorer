@@ -739,6 +739,25 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a button start closes an open button at an integration point",
+   "html": "<svg><desc><button><button></button></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a button start closes an open button inside an inline element",
+   "html": "<svg><desc><span><button><button></button></span></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata at an svg integration point is a section to ]]>",
+   "html": "<svg><desc><![CDATA[x></desc></svg>]]> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }

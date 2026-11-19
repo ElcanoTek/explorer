@@ -873,8 +873,9 @@ func (f *foreignScan) htmlLast(t string, top int) int {
 // impliedClose closes, before an HTML start tag t, what the parser closes
 // first: an li the nearest open li, a dd or dt the nearest dd or dt
 // (neither past a special element other than address, div and p, nor past
-// an integration point), a heading the heading it is in, and a block start
-// an open p (button scope). The archiver's _ForeignStack.implied_close.
+// an integration point), a heading the heading it is in, a block start
+// an open p (button scope), and a button an open button. The archiver's
+// _ForeignStack.implied_close.
 func (f *foreignScan) impliedClose(t string) {
 	top := len(f.stack) - 1
 	points := lastAtOrBelow(f.points, top)
@@ -886,6 +887,9 @@ func (f *foreignScan) impliedClose(t string) {
 	case "dd", "dt":
 		match = max(f.htmlLast("dd", top), f.htmlLast("dt", top))
 		barrier = max(lastAtOrBelow(f.listWalls, top), f.htmlLast("li", top), points)
+	case "button": // a button closes an open button (default scope)
+		match = f.htmlLast("button", top)
+		barrier = max(lastAtOrBelow(f.walls, top), points)
 	}
 	if match > 0 && match > barrier {
 		f.cut(match)
