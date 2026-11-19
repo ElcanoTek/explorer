@@ -385,9 +385,11 @@
    "want": []
   },
   {
-   "name": "a closing p in math hides the rest",
+   "name": "a closing p in math ends it, as in a browser",
    "html": "<math></p></math> https://vendor.example/a.csv",
-   "want": []
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
   },
   {
    "name": "svg shapes then text",
@@ -547,6 +549,25 @@
    "html": "<!DOCTYPE html SYSTEM \"x>https://vendor.example/report.csv\"><p>y</p>",
    "want": [
     "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an html tag in svg ends it and the rest is read",
+   "html": "<svg><span>logo</span></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a font in svg hides the rest (it breaks out only with some attributes)",
+   "html": "<svg><font>x</font></svg> https://vendor.example/a.csv",
+   "want": []
+  },
+  {
+   "name": "text inside svg before a breakout stays dropped",
+   "html": "<svg><text>https://vendor.example/a.csv</text><div>https://vendor.example/b.csv</div></svg>",
+   "want": [
+    "https://vendor.example/b.csv"
    ]
   }
  ]
