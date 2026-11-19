@@ -511,8 +511,9 @@ type foreignScan struct {
 	stack         []openElement
 	byName        map[elementKey][]int
 	htmls, points []int
-	// HTML special elements (htmlSpecial) and scope walls (htmlWalls)
-	specials, walls []int
+	// HTML special elements (htmlSpecial) and scope walls (htmlWalls), and
+	// the specials an li/dd/dt start does not close past
+	specials, walls, listWalls []int
 }
 
 func newForeignScan(root string) *foreignScan {
@@ -530,6 +531,9 @@ func (f *foreignScan) push(el openElement) {
 		f.htmls = append(f.htmls, k)
 		if htmlSpecial[el.tag] {
 			f.specials = append(f.specials, k)
+			if !listOpen[el.tag] {
+				f.listWalls = append(f.listWalls, k)
+			}
 		}
 		if htmlWalls[el.tag] {
 			f.walls = append(f.walls, k)
@@ -551,6 +555,9 @@ func (f *foreignScan) cut(size int) {
 			f.htmls = f.htmls[:len(f.htmls)-1]
 			if htmlSpecial[el.tag] {
 				f.specials = f.specials[:len(f.specials)-1]
+				if !listOpen[el.tag] {
+					f.listWalls = f.listWalls[:len(f.listWalls)-1]
+				}
 			}
 			if htmlWalls[el.tag] {
 				f.walls = f.walls[:len(f.walls)-1]
@@ -586,6 +593,16 @@ var (
 		"source", "style", "summary", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
 		"title", "tr", "track", "ul", "wbr", "xmp")
 	htmlWalls = setOf("applet", "caption", "html", "table", "td", "th", "marquee", "object", "template")
+	// listOpen are the specials an li/dd/dt start closes past (or closes)
+	listOpen = setOf("address", "div", "p", "li", "dd", "dt")
+	// closesP are start tags that first close an open p (button scope). The
+	// archiver's _CLOSES_P.
+	closesP = setOf("address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", "div",
+		"dl", "fieldset", "figcaption", "figure", "footer", "header", "hgroup", "main", "menu", "nav", "ol",
+		"p", "search", "section", "summary", "ul", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "listing",
+		"form", "li", "dd", "dt", "table", "hr")
+	headingTags    = setOf("h1", "h2", "h3", "h4", "h5", "h6")
+	mathTextPoints = setOf("mi", "mo", "mn", "ms", "mtext")
 )
 
 // skipToClose are elements read as HTML whose content is raw text or
@@ -663,7 +680,7 @@ func foreignEnd(html, lower, name string, end int) int {
 			i = ke + 1
 			continue
 		}
-		if r := f.tag(t, closing, selfClosing, j, e); r != 0 {
+		if r := f.tag(html, t, closing, selfClosing, j, e); r != 0 {
 			return r
 		}
 	}
@@ -708,7 +725,7 @@ func (f *foreignScan) inside() int {
 
 // tag reads tag t at html[j] (ending at html[e]): 0 to go on, e+1 when the
 // element ends, j to resume there, or -1 to hide the rest.
-func (f *foreignScan) tag(t string, closing, selfClosing bool, j, e int) int {
+func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) int {
 	top := f.stack[len(f.stack)-1]
 	htmlMode := top.html || top.intPnt
 	breakout := !htmlMode && ((closing && (t == "p" || t == "br")) || (!closing && breakoutTags[t]))
@@ -725,7 +742,10 @@ func (f *foreignScan) tag(t string, closing, selfClosing bool, j, e int) int {
 		top = f.stack[len(f.stack)-1]
 	}
 	if !closing {
-		return f.startTag(t, htmlMode, selfClosing)
+		if top.intPnt && top.ns == "math" && mathTextPoints[top.tag] && (t == "mglyph" || t == "malignmark") {
+			htmlMode = false // these stay MathML at a MathML text integration point
+		}
+		return f.startTag(html, t, htmlMode, selfClosing, j, e)
 	}
 	if top.html || breakout {
 		if !f.htmlRule(t, len(f.stack)-1) {
@@ -736,8 +756,12 @@ func (f *foreignScan) tag(t string, closing, selfClosing bool, j, e int) int {
 	return f.foreignRule(t, e)
 }
 
-// startTag opens t, read as HTML when htmlMode: 0, or -1 to hide the rest.
-func (f *foreignScan) startTag(t string, htmlMode, selfClosing bool) int {
+// startTag opens t (its tag html[j:e+1]), read as HTML when htmlMode: 0,
+// or -1 to hide the rest.
+func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e int) int {
+	if htmlMode && t != "svg" && t != "math" {
+		f.impliedClose(t)
+	}
 	switch {
 	case !htmlMode:
 		if !selfClosing {
@@ -748,7 +772,12 @@ func (f *foreignScan) startTag(t string, htmlMode, selfClosing bool) int {
 			if ns == "math" && top.tag == "annotation-xml" && t == "svg" {
 				ns = "svg"
 			}
-			f.push(openElement{tag: t, ns: ns, intPnt: integrationTags[ns][t]})
+			ip := integrationTags[ns][t]
+			if ip && t == "annotation-xml" { // an HTML integration point only for an HTML encoding
+				enc := strings.ToLower(strings.TrimSpace(stdhtml.UnescapeString(attrValue(html, j, e, "encoding"))))
+				ip = enc == "text/html" || enc == "application/xhtml+xml"
+			}
+			f.push(openElement{tag: t, ns: ns, intPnt: ip})
 		}
 	case t == "svg" || t == "math":
 		if !selfClosing {
@@ -774,11 +803,105 @@ func (f *foreignScan) htmlRule(t string, top int) bool {
 		walls = f.walls
 	}
 	barrier := max(lastAtOrBelow(f.points, top), lastAtOrBelow(walls, top))
+	switch t {
+	case "li": // list item scope also stops at a list
+		barrier = max(barrier, f.htmlLast("ul", top), f.htmlLast("ol", top))
+	case "p": // button scope also stops at a button
+		barrier = max(barrier, f.htmlLast("button", top))
+	}
 	if match > 0 && match > barrier {
 		f.cut(match)
 		return true
 	}
 	return barrier > 0
+}
+
+func (f *foreignScan) htmlLast(t string, top int) int {
+	return lastAtOrBelow(f.byName[elementKey{t, true}], top)
+}
+
+// impliedClose closes, before an HTML start tag t, what the parser closes
+// first: an li the nearest open li, a dd or dt the nearest dd or dt
+// (neither past a special element other than address, div and p, nor past
+// an integration point), a heading the heading it is in, and a block start
+// an open p (button scope). The archiver's _ForeignStack.implied_close.
+func (f *foreignScan) impliedClose(t string) {
+	top := len(f.stack) - 1
+	points := lastAtOrBelow(f.points, top)
+	match, barrier := -1, -1
+	switch t {
+	case "li":
+		match = f.htmlLast("li", top)
+		barrier = max(lastAtOrBelow(f.listWalls, top), f.htmlLast("dd", top), f.htmlLast("dt", top), points)
+	case "dd", "dt":
+		match = max(f.htmlLast("dd", top), f.htmlLast("dt", top))
+		barrier = max(lastAtOrBelow(f.listWalls, top), f.htmlLast("li", top), points)
+	}
+	if match > 0 && match > barrier {
+		f.cut(match)
+	}
+	if headingTags[t] {
+		if last := f.stack[len(f.stack)-1]; last.html && headingTags[last.tag] {
+			f.cut(len(f.stack) - 1)
+		}
+	}
+	if closesP[t] {
+		top = len(f.stack) - 1
+		match = f.htmlLast("p", top)
+		barrier = max(lastAtOrBelow(f.walls, top), f.htmlLast("button", top), lastAtOrBelow(f.points, top))
+		if match > 0 && match > barrier {
+			f.cut(match)
+		}
+	}
+}
+
+// attrValue is the value of attribute name of the start tag html[j:end+1],
+// read as the tokenizer reads it (the first of a repeated name; "" when
+// absent). The archiver's _tag_attrs.
+func attrValue(html string, j, end int, name string) string {
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+	k := j + 1
+	for k < end && !space(html[k]) && html[k] != '/' { // the tag name
+		k++
+	}
+	for k < end {
+		if space(html[k]) || html[k] == '/' {
+			k++
+			continue
+		}
+		start := k
+		k++
+		for k < end && !space(html[k]) && html[k] != '/' && html[k] != '=' {
+			k++
+		}
+		attr, value := asciiLower(html[start:k]), ""
+		for k < end && space(html[k]) {
+			k++
+		}
+		if k < end && html[k] == '=' {
+			k++
+			for k < end && space(html[k]) {
+				k++
+			}
+			if k < end && (html[k] == '"' || html[k] == '\'') {
+				q := indexFrom(html, string(html[k]), k+1)
+				if q < 0 || q > end {
+					return ""
+				}
+				value, k = html[k+1:q], q+1
+			} else {
+				s := k
+				for k < end && !space(html[k]) {
+					k++
+				}
+				value = html[s:k]
+			}
+		}
+		if attr == name {
+			return value
+		}
+	}
+	return ""
 }
 
 // foreignRule reads end tag t (ending at html[e]) by the foreign rule from

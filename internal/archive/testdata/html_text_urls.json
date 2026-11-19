@@ -649,6 +649,37 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a p start closes an open p at an integration point",
+   "html": "<svg><desc><p><p></p></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "mglyph stays mathml at a mathml text integration point",
+   "html": "<math><mtext><mglyph></mtext></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an li end tag does not close past a list",
+   "html": "<svg><desc><li><ul></li></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "annotation-xml without an html encoding is no integration point",
+   "html": "<math><annotation-xml encoding=\"application/xml\"><div></math></div> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "annotation-xml with an html encoding is an integration point",
+   "html": "<math><annotation-xml encoding=\"text/html\"><div></math></div> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }
