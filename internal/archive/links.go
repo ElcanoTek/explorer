@@ -558,6 +558,12 @@ func lastAtOrBelow(positions []int, below int) int {
 	return positions[k]
 }
 
+// skipToClose are elements read as HTML whose content is raw text or
+// RCDATA: skipped to their own closing tag. (A template or plaintext inside
+// an integration point still hides the rest.) The archiver's
+// _SKIP_TO_CLOSE.
+var skipToClose = setOf("script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes", "noscript")
+
 // htmlVoid are HTML void elements: never open, so never on a stack of open
 // elements. The archiver's _HTML_VOID.
 var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
@@ -570,8 +576,9 @@ var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input",
 // (opened inside an integration point).
 //
 // Start tags: where the current element is HTML or an integration point, a
-// tag is HTML (svg and math open foreign elements; an element that switches
-// the tokenizer, raw text or a template, hides the rest); elsewhere a
+// tag is HTML (svg and math open foreign elements; raw text or RCDATA is
+// skipped to its own closing tag, skipToClose; a template or plaintext
+// hides the rest); elsewhere a
 // breakout tag (breakoutTags) closes the foreign elements up to the nearest
 // HTML element or integration point and is read there as HTML, and with
 // none inside, ends name: the scan resumes at the tag (a <font>, a breakout
@@ -581,10 +588,9 @@ var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input",
 // HTML one, the nearest open HTML element of that name closes and an
 // integration point on the way ignores the tag; </p> and </br> are
 // breakouts like start tags, then read by the HTML rule. A walk past name
-// (it could close something outside) hides the rest, as does a CDATA
-// section where HTML reads it as a bogus comment. Comments are skipped;
-// the content is the foreign element's either way, dropped. The archiver's
-// _foreign_end.
+// (it could close something outside) hides the rest. Comments are skipped,
+// and "<![CDATA[" too (skip). The content is the foreign element's either
+// way, dropped. The archiver's _foreign_end.
 func foreignEnd(html, lower, name string, end int) int {
 	f := newForeignScan(name)
 	n, i := len(html), end+1
@@ -612,16 +618,30 @@ func foreignEnd(html, lower, name string, end int) int {
 		if t == "" { // "<!x>", "<?x>": a bogus comment
 			continue
 		}
-		if r := f.tag(t, strings.HasPrefix(lower[j:], "</"), selfClosing, j, e); r != 0 {
+		closing := strings.HasPrefix(lower[j:], "</")
+		if top := f.stack[len(f.stack)-1]; (top.html || top.intPnt) && !closing && skipToClose[t] {
+			// raw text or RCDATA read as HTML: its content runs to its own
+			// closing tag (none: the rest)
+			k := closingTag(lower, t, i)
+			if k < 0 {
+				return -1
+			}
+			ke := tagEnd(html, k)
+			if ke < 0 {
+				return -1
+			}
+			i = ke + 1
+			continue
+		}
+		if r := f.tag(t, closing, selfClosing, j, e); r != 0 {
 			return r
 		}
 	}
 }
 
-// skip is just past the comment, or the CDATA section where the current
-// element is foreign and not an integration point, starting at html[j]
-// (-1 when it is left open or a CDATA section is read where HTML would read
-// a bogus comment); skipped is false when neither starts there.
+// skip is just past the comment or "<![CDATA[" starting at html[j] (a CDATA
+// section in a foreign element, a bogus comment under an HTML one), or -1
+// when it is left open; skipped is false when neither starts there.
 func (f *foreignScan) skip(html string, j int) (int, bool) {
 	if strings.HasPrefix(html[j:], "<!--") {
 		return commentEnd(html, j), true
@@ -629,7 +649,12 @@ func (f *foreignScan) skip(html string, j int) (int, bool) {
 	if !strings.HasPrefix(html[j:], "<![CDATA[") {
 		return 0, false
 	}
-	if top := f.stack[len(f.stack)-1]; top.html || top.intPnt {
+	// in a foreign element (an integration point included) a CDATA section,
+	// to "]]>"; under an HTML element a bogus comment, to the first ">"
+	if f.stack[len(f.stack)-1].html {
+		if k := indexFrom(html, ">", j+9); k >= 0 {
+			return k + 1, true
+		}
 		return -1, true
 	}
 	if k := indexFrom(html, "]]>", j+9); k >= 0 {

@@ -592,7 +592,7 @@
    ]
   },
   {
-   "name": "raw text inside an integration point hides the rest",
+   "name": "unclosed raw text inside an integration point hides the rest",
    "html": "<svg><desc><textarea></svg>https://vendor.example/a.csv",
    "want": []
   },
@@ -613,6 +613,27 @@
   {
    "name": "an svg name in mathml is no integration point",
    "html": "<math><foreignObject><textarea>x</textarea></foreignObject></math> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "closed raw text inside an integration point is skipped to its close",
+   "html": "<svg><desc><textarea>x</svg></textarea></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata at an integration point runs to its close",
+   "html": "<svg><desc><![CDATA[x]]></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "cdata under an html element is a bogus comment to the first >",
+   "html": "<svg><desc><b><![CDATA[x></b></desc></svg>]]> https://vendor.example/report.csv",
    "want": [
     "https://vendor.example/report.csv"
    ]
