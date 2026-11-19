@@ -852,6 +852,9 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 		htmlMode = true
 		top = f.stack[len(f.stack)-1]
 	}
+	if closing && t == "br" && htmlMode {
+		closing = false // the in-body rule reads </br> as <br>
+	}
 	if !closing {
 		if top.intPnt && top.ns == "math" && mathTextPoints[top.tag] && (t == "mglyph" || t == "malignmark") {
 			htmlMode = false // these stay MathML at a MathML text integration point

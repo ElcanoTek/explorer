@@ -1040,6 +1040,18 @@
    "name": "a table start in a cell nests",
    "html": "<svg><desc><table><td><table></table></desc></svg> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a br end tag is a br start that reopens a stale formatting element",
+   "html": "<svg><desc><div><b></div></br></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a br end tag at an integration point is a void br",
+   "html": "<svg><desc></br></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
