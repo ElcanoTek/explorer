@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -489,11 +490,6 @@ func closingTag(lower, name string, from int) int {
 	return k
 }
 
-// htmlVoid are HTML void elements: never open, so never on a stack of open
-// elements. The archiver's _HTML_VOID.
-var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
-	"track", "wbr")
-
 // openElement is one element on foreignEnd's stack: SVG/MathML (an
 // integration point when its content is HTML) or HTML.
 type openElement struct {
@@ -501,31 +497,96 @@ type openElement struct {
 	html, intPnt bool
 }
 
-// foreignScan is the state of foreignEnd.
-type foreignScan struct{ stack []openElement }
+// elementKey names the open elements of one tag in one namespace.
+type elementKey struct {
+	tag  string
+	html bool
+}
+
+// foreignScan is foreignEnd's stack of open elements, with indexes kept as
+// it grows and shrinks (the positions of each tag, of HTML elements and of
+// integration points), so every tag is read in constant time however deep
+// the stack. The archiver's _ForeignStack.
+type foreignScan struct {
+	stack         []openElement
+	byName        map[elementKey][]int
+	htmls, points []int
+}
+
+func newForeignScan(root string) *foreignScan {
+	f := &foreignScan{byName: map[elementKey][]int{}}
+	f.push(openElement{tag: root})
+	return f
+}
+
+func (f *foreignScan) push(el openElement) {
+	k := len(f.stack)
+	f.stack = append(f.stack, el)
+	key := elementKey{el.tag, el.html}
+	f.byName[key] = append(f.byName[key], k)
+	if el.html {
+		f.htmls = append(f.htmls, k)
+	}
+	if el.intPnt {
+		f.points = append(f.points, k)
+	}
+}
+
+// cut closes every element from position size up.
+func (f *foreignScan) cut(size int) {
+	for len(f.stack) > size {
+		el := f.stack[len(f.stack)-1]
+		f.stack = f.stack[:len(f.stack)-1]
+		key := elementKey{el.tag, el.html}
+		f.byName[key] = f.byName[key][:len(f.byName[key])-1]
+		if el.html {
+			f.htmls = f.htmls[:len(f.htmls)-1]
+		}
+		if el.intPnt {
+			f.points = f.points[:len(f.points)-1]
+		}
+	}
+}
+
+// lastAtOrBelow is the last of positions (ascending) at or below below, or
+// -1.
+func lastAtOrBelow(positions []int, below int) int {
+	k := sort.SearchInts(positions, below+1) - 1
+	if k < 0 {
+		return -1
+	}
+	return positions[k]
+}
+
+// htmlVoid are HTML void elements: never open, so never on a stack of open
+// elements. The archiver's _HTML_VOID.
+var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+	"track", "wbr")
 
 // foreignEnd is where the SVG or MathML element name whose start tag ends
 // at html[end] ends, or a position to resume at, or -1 to hide the rest, by
-// a small stack of open elements, each foreign (an integration point when
-// its content is HTML: integrationTags) or HTML (opened inside an
-// integration point).
+// a small stack of open elements (foreignScan), each foreign (an
+// integration point when its content is HTML: integrationTags) or HTML
+// (opened inside an integration point).
 //
 // Start tags: where the current element is HTML or an integration point, a
 // tag is HTML (svg and math open foreign elements; an element that switches
 // the tokenizer, raw text or a template, hides the rest); elsewhere a
 // breakout tag (breakoutTags) closes the foreign elements up to the nearest
-// HTML element or integration point and is read there, and with none
-// inside, ends name: the scan resumes at the tag, read as HTML (a <font>, a
-// breakout only with certain attributes, hides the rest instead). End tags:
-// from a foreign current element, the nearest open element of that name
-// closes, and an HTML element on the way hands the tag to the HTML rule;
-// from an HTML one, the nearest open HTML element of that name closes and
-// an integration point on the way ignores the tag. A walk past name (it
-// could close something outside) hides the rest, as does a CDATA section
-// where HTML reads it as a bogus comment. Comments are skipped; the content
-// is the foreign element's either way, dropped. The archiver's _foreign_end.
+// HTML element or integration point and is read there as HTML, and with
+// none inside, ends name: the scan resumes at the tag (a <font>, a breakout
+// only with certain attributes, hides the rest instead). End tags: from a
+// foreign current element, the nearest open element of that name closes,
+// and an HTML element on the way hands the tag to the HTML rule; from an
+// HTML one, the nearest open HTML element of that name closes and an
+// integration point on the way ignores the tag; </p> and </br> are
+// breakouts like start tags, then read by the HTML rule. A walk past name
+// (it could close something outside) hides the rest, as does a CDATA
+// section where HTML reads it as a bogus comment. Comments are skipped;
+// the content is the foreign element's either way, dropped. The archiver's
+// _foreign_end.
 func foreignEnd(html, lower, name string, end int) int {
-	f := &foreignScan{stack: []openElement{{tag: name}}}
+	f := newForeignScan(name)
 	n, i := len(html), end+1
 	for {
 		j := indexFrom(html, "<", i)
@@ -551,13 +612,7 @@ func foreignEnd(html, lower, name string, end int) int {
 		if t == "" { // "<!x>", "<?x>": a bogus comment
 			continue
 		}
-		var r int
-		if strings.HasPrefix(lower[j:], "</") {
-			r = f.endTag(t, j, e)
-		} else {
-			r = f.startTag(t, j, selfClosing)
-		}
-		if r != 0 {
+		if r := f.tag(t, strings.HasPrefix(lower[j:], "</"), selfClosing, j, e); r != 0 {
 			return r
 		}
 	}
@@ -583,92 +638,100 @@ func (f *foreignScan) skip(html string, j int) (int, bool) {
 	return -1, true
 }
 
-// inside is the index of the nearest HTML element or integration point
-// above the root, or 0 when there is none.
+// inside is the nearest HTML element or integration point above the root,
+// or 0 when there is none.
 func (f *foreignScan) inside() int {
-	for k := len(f.stack) - 1; k > 0; k-- {
-		if f.stack[k].html || f.stack[k].intPnt {
-			return k
-		}
+	k := 0
+	if len(f.htmls) > 0 {
+		k = f.htmls[len(f.htmls)-1]
 	}
-	return 0
+	if len(f.points) > 0 && f.points[len(f.points)-1] > k {
+		k = f.points[len(f.points)-1]
+	}
+	return k
 }
 
-// startTag reads start tag t at html[j]: 0 to go on, j to resume there
-// (the element ended), or -1 to hide the rest.
-func (f *foreignScan) startTag(t string, j int, selfClosing bool) int {
+// tag reads tag t at html[j] (ending at html[e]): 0 to go on, e+1 when the
+// element ends, j to resume there, or -1 to hide the rest.
+func (f *foreignScan) tag(t string, closing, selfClosing bool, j, e int) int {
 	top := f.stack[len(f.stack)-1]
 	htmlMode := top.html || top.intPnt
-	if !htmlMode && breakoutTags[t] {
+	breakout := !htmlMode && ((closing && (t == "p" || t == "br")) || (!closing && breakoutTags[t]))
+	if breakout {
 		k := f.inside()
 		if k == 0 {
-			if t == "font" {
+			if t == "font" && !closing {
 				return -1
 			}
-			return j
+			return j // name ends here, as in a browser
 		}
-		f.stack = f.stack[:k+1]
+		f.cut(k + 1) // back to the nearest HTML element or integration point, read there as HTML
 		htmlMode = true
+		top = f.stack[len(f.stack)-1]
 	}
+	if !closing {
+		return f.startTag(t, htmlMode, selfClosing)
+	}
+	if top.html || breakout {
+		if !f.htmlRule(t, len(f.stack)-1) {
+			return -1
+		}
+		return 0
+	}
+	return f.foreignRule(t, e)
+}
+
+// startTag opens t, read as HTML when htmlMode: 0, or -1 to hide the rest.
+func (f *foreignScan) startTag(t string, htmlMode, selfClosing bool) int {
 	switch {
 	case !htmlMode:
 		if !selfClosing {
-			f.stack = append(f.stack, openElement{tag: t, intPnt: integrationTags[t]})
+			f.push(openElement{tag: t, intPnt: integrationTags[t]})
 		}
 	case t == "svg" || t == "math":
 		if !selfClosing {
-			f.stack = append(f.stack, openElement{tag: t})
+			f.push(openElement{tag: t})
 		}
 	case swallowTags[t]:
 		return -1
 	case !htmlVoid[t]:
-		f.stack = append(f.stack, openElement{tag: t, html: true})
+		f.push(openElement{tag: t, html: true})
 	}
 	return 0
 }
 
-// endTag reads end tag t at html[j] (ending at html[e]): 0 to go on, e+1
-// when the element ends, j to resume there, or -1 to hide the rest.
-func (f *foreignScan) endTag(t string, j, e int) int {
-	top := f.stack[len(f.stack)-1]
-	if top.html {
-		return f.htmlRule(t, len(f.stack)-1)
+// htmlRule reads end tag t by the HTML rule from stack[top] down: the
+// nearest open HTML element of that name closes, an integration point first
+// ignores the tag; false when neither (it walks past the root).
+func (f *foreignScan) htmlRule(t string, top int) bool {
+	match := lastAtOrBelow(f.byName[elementKey{t, true}], top)
+	wall := lastAtOrBelow(f.points, top)
+	if match > 0 && match > wall {
+		f.cut(match)
+		return true
 	}
-	if (t == "p" || t == "br") && !top.intPnt { // a breakout end tag
-		k := f.inside()
-		if k == 0 {
-			return j
-		}
-		f.stack = f.stack[:k+1]
-		return 0
-	}
-	for k := len(f.stack) - 1; k >= 0; k-- {
-		el := f.stack[k]
-		if !el.html && el.tag == t {
-			if k == 0 {
-				return e + 1
-			}
-			f.stack = f.stack[:k]
-			return 0
-		}
-		if el.html {
-			return f.htmlRule(t, k)
-		}
-	}
-	return -1 // nothing of that name inside: it could close something outside
+	return wall > 0
 }
 
-// htmlRule reads end tag t by the HTML rule, walking down from stack[k]: 0
-// when it closes an element or is ignored, -1 when it walks past the root.
-func (f *foreignScan) htmlRule(t string, k int) int {
-	for ; k > 0; k-- {
-		el := f.stack[k]
-		if el.html && el.tag == t {
-			f.stack = f.stack[:k]
-			return 0
+// foreignRule reads end tag t (ending at html[e]) by the foreign rule from
+// the top: e+1 when it closes the root, 0 when it closes an element or the
+// HTML rule takes it, -1 when it walks past the root.
+func (f *foreignScan) foreignRule(t string, e int) int {
+	match := lastAtOrBelow(f.byName[elementKey{t, false}], len(f.stack)-1)
+	html := -1
+	if len(f.htmls) > 0 {
+		html = f.htmls[len(f.htmls)-1]
+	}
+	switch {
+	case match >= 0 && match > html:
+		if match == 0 {
+			return e + 1
 		}
-		if el.intPnt {
-			return 0 // a special element: the tag is ignored
+		f.cut(match)
+		return 0
+	case html > 0:
+		if f.htmlRule(t, html) {
+			return 0
 		}
 	}
 	return -1

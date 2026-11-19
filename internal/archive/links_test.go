@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ElcanoTek/explorer/internal/htmlsafe"
 )
@@ -178,5 +179,17 @@ func TestABareLinkSpelledWithReferencesIsJudgedDecoded(t *testing.T) {
 	links := downloadLinks("", "<p>Get "+url+"</p>")
 	if len(links) != 1 || links[0].URL != url || links[0].Filename != "data.zip" || links[0].FetchURL != "https://vendor.example/data.zip" {
 		t.Fatalf("%+v", links)
+	}
+}
+
+func TestForeignContentScanningIsLinearOnCraftedMarkup(t *testing.T) {
+	// Many open HTML elements in an integration point, then many unmatched
+	// end tags: each must be read in constant time, not by walking the stack.
+	html := "<svg><desc>" + strings.Repeat("<x>", 60000) + strings.Repeat("</y>", 60000) +
+		"</desc></svg> https://vendor.example/a.csv"
+	start := time.Now()
+	extractHTMLTextURLs(html)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %v", d)
 	}
 }

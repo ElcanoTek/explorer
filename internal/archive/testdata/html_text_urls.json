@@ -595,6 +595,13 @@
    "name": "raw text inside an integration point hides the rest",
    "html": "<svg><desc><textarea></svg>https://vendor.example/a.csv",
    "want": []
+  },
+  {
+   "name": "a breakout end tag is read by the html rule after leaving foreign content",
+   "html": "<svg><foreignObject><p><svg><g></p></foreignObject></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
