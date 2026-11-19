@@ -518,11 +518,13 @@ type foreignScan struct {
 	// end tag; form is its position while it is open, or -1
 	formSet bool
 	form    int
-	// stale: a formatting element (formattingTags) was closed by something
-	// other than its own end tag, so the parser reopens it at the next text
-	// or start tag in HTML content; the scan does not model that and hides
-	// the rest there instead
-	stale bool
+	// staleAt: for each formatting element (formattingTags) closed by
+	// something other than its own end tag, the innermost marker element
+	// (markerTags) open below it, or -1. The parser reopens such an element
+	// at the next text or start tag in HTML content until that marker
+	// closes; the scan does not model reopening and hides the rest there
+	// instead. markers are the open marker elements' positions.
+	staleAt, markers []int
 }
 
 func newForeignScan(root string) *foreignScan {
@@ -547,6 +549,9 @@ func (f *foreignScan) push(el openElement) {
 		if htmlWalls[el.tag] {
 			f.walls = append(f.walls, k)
 		}
+		if markerTags[el.tag] {
+			f.markers = append(f.markers, k)
+		}
 	}
 	if el.intPnt {
 		f.points = append(f.points, k)
@@ -559,11 +564,22 @@ func (f *foreignScan) cut(size int) {
 		f.form = -1
 	}
 	for len(f.stack) > size {
-		el := f.stack[len(f.stack)-1]
+		p := len(f.stack) - 1
+		el := f.stack[p]
 		if el.html && formattingTags[el.tag] {
-			f.stale = true
+			f.staleAt = append(f.staleAt, lastAtOrBelow(f.markers, p))
 		}
-		f.stack = f.stack[:len(f.stack)-1]
+		if el.html && markerTags[el.tag] { // closing a marker clears what went stale inside it
+			kept := f.staleAt[:0]
+			for _, at := range f.staleAt {
+				if at < p {
+					kept = append(kept, at)
+				}
+			}
+			f.staleAt = kept
+			f.markers = f.markers[:len(f.markers)-1]
+		}
+		f.stack = f.stack[:p]
 		key := elementKey{el.tag, el.html}
 		f.byName[key] = f.byName[key][:len(f.byName[key])-1]
 		if el.html {
@@ -588,9 +604,9 @@ func (f *foreignScan) cut(size int) {
 // above it open, as a form end tag does.
 func (f *foreignScan) remove(m int) {
 	above := append([]openElement(nil), f.stack[m+1:]...)
-	stale := f.stale
+	stale := append([]int(nil), f.staleAt...)
 	f.cut(m)
-	f.stale = stale
+	f.staleAt = stale
 	for _, el := range above {
 		f.push(el)
 	}
@@ -601,9 +617,9 @@ func (f *foreignScan) remove(m int) {
 // longer active, but a formatting element above it stays active (stale).
 func (f *foreignScan) closeFormatting(m int) {
 	f.cut(m + 1)
-	stale := f.stale
+	stale := append([]int(nil), f.staleAt...)
 	f.cut(m)
-	f.stale = stale
+	f.staleAt = stale
 }
 
 // formatting reads a start tag a or nobr, or a formatting element's end
@@ -628,7 +644,7 @@ func (f *foreignScan) formatting(t string, top int) (ok, handled bool) {
 // an integration point on top).
 func (f *foreignScan) reconstructs() bool {
 	top := f.stack[len(f.stack)-1]
-	return f.stale && (top.html || top.intPnt)
+	return len(f.staleAt) > 0 && (top.html || top.intPnt)
 }
 
 // lastAtOrBelow is the last of positions (ascending) at or below below, or
@@ -668,6 +684,9 @@ var (
 	headingTags = setOf("h1", "h2", "h3", "h4", "h5", "h6")
 	// tableOnly are the start tags the in-body rule ignores outside a table
 	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
+	// markerTags put a marker in the list of active formatting elements:
+	// what goes stale inside one is cleared when it closes
+	markerTags = setOf("applet", "caption", "marquee", "object", "td", "th", "template")
 	// formattingTags are the parser's formatting elements: closed by
 	// something other than their own end tag, they stay active and reopen
 	formattingTags = setOf("a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong",
@@ -745,7 +764,7 @@ func foreignEnd(html, lower, name string, end int) int {
 		if top := f.stack[len(f.stack)-1]; (top.html || top.intPnt) && !closing && skipToClose[t] {
 			// raw text or RCDATA read as HTML: its content runs to its own
 			// closing tag (none: the rest); an xmp first closes an open p
-			if f.stale {
+			if len(f.staleAt) > 0 {
 				return -1
 			}
 			f.impliedClose(t)
@@ -809,12 +828,16 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 	top := f.stack[len(f.stack)-1]
 	htmlMode := top.html || top.intPnt
 	breakout := !htmlMode && ((closing && (t == "p" || t == "br")) || (!closing && breakoutTags[t]))
+	if breakout && t == "font" && !closing {
+		// a font breaks out only with a color, face or size attribute
+		_, color := tagAttr(html, j, e, "color")
+		_, face := tagAttr(html, j, e, "face")
+		_, size := tagAttr(html, j, e, "size")
+		breakout = color || face || size
+	}
 	if breakout {
 		k := f.inside()
 		if k == 0 {
-			if t == "font" && !closing {
-				return -1
-			}
 			return j // name ends here, as in a browser
 		}
 		f.cut(k + 1) // back to the nearest HTML element or integration point, read there as HTML
@@ -825,7 +848,7 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 		if top.intPnt && top.ns == "math" && mathTextPoints[top.tag] && (t == "mglyph" || t == "malignmark") {
 			htmlMode = false // these stay MathML at a MathML text integration point
 		}
-		if htmlMode && f.stale { // a start tag in HTML content reopens a stale formatting element
+		if htmlMode && len(f.staleAt) > 0 { // a start tag in HTML content reopens a stale formatting element
 			return -1
 		}
 		if htmlMode && (t == "a" || t == "nobr") { // an open one closes first
@@ -852,6 +875,12 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	}
 	if htmlMode && (t == "html" || t == "head" || t == "body" || t == "frame") {
 		return 0 // the in-body rule never opens these
+	}
+	if htmlMode && t == "input" { // an input closes an open select (in scope)
+		top := len(f.stack) - 1
+		if m := f.htmlLast("select", top); m > max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
+			f.cut(m)
+		}
 	}
 	if htmlMode && tableOnly[t] {
 		top := len(f.stack) - 1
@@ -995,6 +1024,13 @@ func (f *foreignScan) impliedClose(t string) {
 // read as the tokenizer reads it (the first of a repeated name; "" when
 // absent). The archiver's _tag_attrs.
 func attrValue(html string, j, end int, name string) string {
+	v, _ := tagAttr(html, j, end, name)
+	return v
+}
+
+// tagAttr is attribute name of the start tag html[j:end+1] and whether it
+// is there, read as attrValue reads it.
+func tagAttr(html string, j, end int, name string) (string, bool) {
 	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
 	k := j + 1
 	for k < end && !space(html[k]) && html[k] != '/' { // the tag name
@@ -1022,7 +1058,7 @@ func attrValue(html string, j, end int, name string) string {
 			if k < end && (html[k] == '"' || html[k] == '\'') {
 				q := indexFrom(html, string(html[k]), k+1)
 				if q < 0 || q > end {
-					return ""
+					return "", false
 				}
 				value, k = html[k+1:q], q+1
 			} else {
@@ -1034,10 +1070,10 @@ func attrValue(html string, j, end int, name string) string {
 			}
 		}
 		if attr == name {
-			return value
+			return value, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // foreignRule reads end tag t (ending at html[e]) by the foreign rule from

@@ -559,9 +559,11 @@
    ]
   },
   {
-   "name": "a font in svg hides the rest (it breaks out only with some attributes)",
+   "name": "a font without color, face or size stays an svg element",
    "html": "<svg><font>x</font></svg> https://vendor.example/a.csv",
-   "want": []
+   "want": [
+    "https://vendor.example/a.csv"
+   ]
   },
   {
    "name": "text inside svg before a breakout stays dropped",
@@ -842,6 +844,61 @@
   {
    "name": "an open table still stops an integration point end tag",
    "html": "<svg><desc><table><tr></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a font with color breaks out of svg",
+   "html": "<svg><font color=red>Report https://vendor.example/report.csv</font>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a font with a bare size attribute breaks out of svg",
+   "html": "<svg><font SIZE>https://vendor.example/report.csv</font></svg>",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a font with another attribute stays an svg element",
+   "html": "<svg><font class=x>https://vendor.example/report.csv</font></svg>",
+   "want": []
+  },
+  {
+   "name": "a font without breakout attributes in an integration point stays foreign",
+   "html": "<svg><desc><svg><font></font></svg>https://vendor.example/report.csv</desc></svg>",
+   "want": []
+  },
+  {
+   "name": "an input closes an open select at an integration point",
+   "html": "<svg><desc><select><input></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an open select stops an integration point end tag",
+   "html": "<svg><desc><select></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an object end tag clears the formatting elements stale inside it",
+   "html": "<svg><desc><object><b></object>x</desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a marquee end tag clears a stale anchor inside it",
+   "html": "<svg><desc><marquee><a></marquee>x</desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a formatting element stale outside a marker still hides the rest",
+   "html": "<svg><desc><div><b></div><object></object>x</desc></svg> https://vendor.example/report.csv",
    "want": []
   }
  ]
