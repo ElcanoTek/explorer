@@ -680,6 +680,25 @@
    "name": "annotation-xml with an html encoding is an integration point",
    "html": "<math><annotation-xml encoding=\"text/html\"><div></math></div> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a heading end tag closes any open heading at an integration point",
+   "html": "<svg><desc><h1></h2></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a heading end tag closes an open heading past a div",
+   "html": "<svg><desc><h1><div></h2></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an integration point end tag does not close past an open html child",
+   "html": "<svg><desc><span></desc></svg> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }

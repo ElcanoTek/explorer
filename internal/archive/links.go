@@ -794,10 +794,15 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 // htmlRule reads end tag t by the HTML rule from stack[top] down: the
 // nearest open HTML element of that name closes, unless a barrier comes
 // first and the tag is ignored: an integration point, and for an ordinary
-// tag any special element, for a special one a scope wall. False when
-// neither (it walks past the root).
+// tag any special element, for a special one a scope wall; a heading's end
+// tag closes any open heading. False when neither (it walks past the root).
 func (f *foreignScan) htmlRule(t string, top int) bool {
-	match := lastAtOrBelow(f.byName[elementKey{t, true}], top)
+	match := f.htmlLast(t, top)
+	if headingTags[t] {
+		for h := range headingTags {
+			match = max(match, f.htmlLast(h, top))
+		}
+	}
 	walls := f.specials
 	if htmlSpecial[t] {
 		walls = f.walls
