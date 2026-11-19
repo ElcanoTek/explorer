@@ -1090,6 +1090,13 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a frameset start at an integration point is ignored",
+   "html": "<svg><desc><frameset></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }

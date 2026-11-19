@@ -954,8 +954,8 @@ func (f *foreignScan) inBodyStart(t string) (string, bool) {
 		return t, false // a form in a table sets the pointer but closes at once
 	case t == "image":
 		return "img", true // the in-body rule reads <image> as <img>
-	case t == "html" || t == "head" || t == "body" || t == "frame":
-		return t, false // the in-body rule never opens these
+	case t == "html" || t == "head" || t == "body" || t == "frame" || t == "frameset":
+		return t, false // the in-body rule never opens these (frameset-ok is off once SVG or MathML opened)
 	case t == "input" || t == "select": // either closes an open select (in scope)
 		if m := f.htmlLast("select", top); m > lastAtOrBelow(f.points, top) && m >= lastAtOrBelow(f.walls, top) {
 			f.cut(m)
