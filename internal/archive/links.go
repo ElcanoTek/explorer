@@ -927,6 +927,20 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	return 0
 }
 
+// inTableMode reports whether the parser is in one of its in-table modes at
+// stack[top]: the innermost table part above the nearest integration point
+// is a table, section, row or colgroup (not a caption or a cell). Elements
+// foster-parented above it do not change the mode.
+func (f *foreignScan) inTableMode(top int) bool {
+	floor := lastAtOrBelow(f.points, top)
+	for k := top; k > floor; k-- {
+		if el := f.stack[k]; el.html && (inTable[el.tag] || el.tag == "td" || el.tag == "th" || el.tag == "caption") {
+			return inTable[el.tag]
+		}
+	}
+	return false
+}
+
 // inBodyStart applies the in-body start-tag rules that change or drop HTML
 // start tag t before it opens: the tag to open, or false when it is
 // consumed.
@@ -935,6 +949,9 @@ func (f *foreignScan) inBodyStart(t string) (string, bool) {
 	switch {
 	case t == "form" && f.formSet:
 		return t, false // a second form while the pointer is set is ignored
+	case t == "form" && f.inTableMode(top):
+		f.formSet = true
+		return t, false // a form in a table sets the pointer but closes at once
 	case t == "image":
 		return "img", true // the in-body rule reads <image> as <img>
 	case t == "html" || t == "head" || t == "body" || t == "frame":
@@ -946,8 +963,8 @@ func (f *foreignScan) inBodyStart(t string) (string, bool) {
 		}
 	case tableOnly[t] && f.htmlLast("table", top) <= lastAtOrBelow(f.points, top):
 		return t, false // nor a table part outside a table
-	case t == "table" && f.stack[top].html && inTable[f.stack[top].tag]:
-		f.cut(f.htmlLast("table", top)) // a table in a table (not in a cell) replaces it
+	case t == "table" && f.inTableMode(top):
+		f.cut(f.htmlLast("table", top)) // a table in a table (not in a caption or a cell) replaces it
 	}
 	return t, true
 }

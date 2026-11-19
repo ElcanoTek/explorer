@@ -1064,6 +1064,32 @@
    "name": "a table start in a caption nests",
    "html": "<svg><desc><table><caption><table></table></desc></svg> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a table start replaces the open table past a foster-parented element",
+   "html": "<svg><desc><table><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a form in a table closes at once, so a table start replaces the table",
+   "html": "<svg><desc><table><form><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a cell nests past an inline element",
+   "html": "<svg><desc><table><td><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a table start in a row replaces the table past a foster-parented element",
+   "html": "<svg><desc><table><tr><span><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
