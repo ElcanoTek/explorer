@@ -1052,6 +1052,18 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "a table start in a colgroup replaces the table",
+   "html": "<svg><desc><table><colgroup><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a table start in a caption nests",
+   "html": "<svg><desc><table><caption><table></table></desc></svg> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }

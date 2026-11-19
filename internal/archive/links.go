@@ -687,8 +687,10 @@ var (
 	tableOnly = setOf("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")
 	// tableEnds close by table scope: past an open cell, row or caption
 	tableEnds = setOf("table", "tbody", "tfoot", "thead", "tr")
-	// inTable are the current nodes of the parser's in-table modes
-	inTable = setOf("table", "tbody", "tfoot", "thead", "tr")
+	// inTable are the current nodes under which a table start replaces the
+	// open table (the parser's in-table modes; not a caption or a cell,
+	// where it nests)
+	inTable = setOf("table", "tbody", "tfoot", "thead", "tr", "colgroup")
 	// markerTags put a marker in the list of active formatting elements:
 	// what goes stale inside one is cleared when it closes
 	markerTags = setOf("applet", "caption", "marquee", "object", "td", "th", "template")
