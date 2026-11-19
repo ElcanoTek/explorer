@@ -193,3 +193,18 @@ func TestForeignContentScanningIsLinearOnCraftedMarkup(t *testing.T) {
 		t.Fatalf("took %v", d)
 	}
 }
+
+func TestEachHTMLPartIsReadAsItsOwnDocument(t *testing.T) {
+	// An unclosed <style> in one part does not hide the next part's text.
+	links := bodyURLs("", "<p>Hello</p><style>", "<p>https://vendor.example/report.csv</p>")
+	if len(links) != 1 || links[0].url != "https://vendor.example/report.csv" || !links[0].bare {
+		t.Fatalf("links: %+v", links)
+	}
+}
+
+func TestHTMLPiecesFollowTheScanCut(t *testing.T) {
+	got := htmlPieces("ab\ncd\nef"[:4], []string{"ab", "cd", "ef"})
+	if want := []string{"ab", "c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

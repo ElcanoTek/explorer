@@ -758,6 +758,58 @@
    "name": "cdata at an svg integration point is a section to ]]>",
    "html": "<svg><desc><![CDATA[x></desc></svg>]]> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "an a start closes an open a at an integration point",
+   "html": "<svg><desc><a><a></a></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an a start closes an open a past an inline element",
+   "html": "<svg><desc><a><span><a></a></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "text after a formatting element closed early hides the rest",
+   "html": "<svg><desc><div><b></div>text</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an anchor closed early reopens at the next text",
+   "html": "<svg><desc><div><a></div>text</desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a formatting element closed early with no text after hides nothing",
+   "html": "<svg><desc><div><a></div></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a formatting end tag closes its element",
+   "html": "<svg><desc><b><i></b></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a body start tag inside an integration point is ignored",
+   "html": "<svg><desc><body></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a head start tag inside an integration point is ignored",
+   "html": "<svg><desc><head></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }

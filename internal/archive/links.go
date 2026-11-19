@@ -518,6 +518,11 @@ type foreignScan struct {
 	// end tag; form is its position while it is open, or -1
 	formSet bool
 	form    int
+	// stale: a formatting element (formattingTags) was closed by something
+	// other than its own end tag, so the parser reopens it at the next text
+	// or start tag in HTML content; the scan does not model that and hides
+	// the rest there instead
+	stale bool
 }
 
 func newForeignScan(root string) *foreignScan {
@@ -555,6 +560,9 @@ func (f *foreignScan) cut(size int) {
 	}
 	for len(f.stack) > size {
 		el := f.stack[len(f.stack)-1]
+		if el.html && formattingTags[el.tag] {
+			f.stale = true
+		}
 		f.stack = f.stack[:len(f.stack)-1]
 		key := elementKey{el.tag, el.html}
 		f.byName[key] = f.byName[key][:len(f.byName[key])-1]
@@ -580,10 +588,47 @@ func (f *foreignScan) cut(size int) {
 // above it open, as a form end tag does.
 func (f *foreignScan) remove(m int) {
 	above := append([]openElement(nil), f.stack[m+1:]...)
+	stale := f.stale
 	f.cut(m)
+	f.stale = stale
 	for _, el := range above {
 		f.push(el)
 	}
+}
+
+// closeFormatting closes the formatting element at position m and what is
+// open above it, as its own end tag or a new <a> does: m itself is no
+// longer active, but a formatting element above it stays active (stale).
+func (f *foreignScan) closeFormatting(m int) {
+	f.cut(m + 1)
+	stale := f.stale
+	f.cut(m)
+	f.stale = stale
+}
+
+// formatting reads a start tag a or nobr, or a formatting element's end
+// tag, as the adoption agency does in its simple case: an open element
+// with no special element above it closes (ok, handled). One that is not
+// open is left to the caller (ok, not handled); an open one out of scope
+// or under a special element is not modeled (not ok: hide the rest).
+func (f *foreignScan) formatting(t string, top int) (ok, handled bool) {
+	m := f.htmlLast(t, top)
+	if m <= 0 {
+		return true, false
+	}
+	if m < max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) || lastAtOrBelow(f.specials, top) > m {
+		return false, true
+	}
+	f.closeFormatting(m)
+	return true, true
+}
+
+// reconstructs reports whether text or a start tag here makes the parser
+// reopen a stale formatting element: in HTML content (an HTML element or
+// an integration point on top).
+func (f *foreignScan) reconstructs() bool {
+	top := f.stack[len(f.stack)-1]
+	return f.stale && (top.html || top.intPnt)
 }
 
 // lastAtOrBelow is the last of positions (ascending) at or below below, or
@@ -619,8 +664,12 @@ var (
 		"p", "search", "section", "summary", "ul", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "listing",
 		"form", "li", "dd", "dt", "table", "hr", "xmp")
 	// impliedEnds close before a form end tag removes the form
-	impliedEnds    = setOf("dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc")
-	headingTags    = setOf("h1", "h2", "h3", "h4", "h5", "h6")
+	impliedEnds = setOf("dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc")
+	headingTags = setOf("h1", "h2", "h3", "h4", "h5", "h6")
+	// formattingTags are the parser's formatting elements: closed by
+	// something other than their own end tag, they stay active and reopen
+	formattingTags = setOf("a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong",
+		"tt", "u")
 	mathTextPoints = setOf("mi", "mo", "mn", "ms", "mtext")
 )
 
@@ -665,6 +714,9 @@ func foreignEnd(html, lower, name string, end int) int {
 		if j < 0 {
 			return -1
 		}
+		if j > i && f.reconstructs() { // text reopens a stale formatting element
+			return -1
+		}
 		if next, skipped := f.skip(html, j); skipped {
 			if i = next; i < 0 {
 				return -1
@@ -672,6 +724,9 @@ func foreignEnd(html, lower, name string, end int) int {
 			continue
 		}
 		if j+1 >= n || !isTagStart(html[j+1]) {
+			if f.reconstructs() { // a "<" that is text
+				return -1
+			}
 			i = j + 1
 			continue
 		}
@@ -688,6 +743,9 @@ func foreignEnd(html, lower, name string, end int) int {
 		if top := f.stack[len(f.stack)-1]; (top.html || top.intPnt) && !closing && skipToClose[t] {
 			// raw text or RCDATA read as HTML: its content runs to its own
 			// closing tag (none: the rest); an xmp first closes an open p
+			if f.stale {
+				return -1
+			}
 			f.impliedClose(t)
 			k := closingTag(lower, t, i)
 			if k < 0 {
@@ -765,6 +823,14 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 		if top.intPnt && top.ns == "math" && mathTextPoints[top.tag] && (t == "mglyph" || t == "malignmark") {
 			htmlMode = false // these stay MathML at a MathML text integration point
 		}
+		if htmlMode && f.stale { // a start tag in HTML content reopens a stale formatting element
+			return -1
+		}
+		if htmlMode && (t == "a" || t == "nobr") { // an open one closes first
+			if ok, _ := f.formatting(t, len(f.stack)-1); !ok {
+				return -1
+			}
+		}
 		return f.startTag(html, t, htmlMode, selfClosing, j, e)
 	}
 	if top.html || breakout {
@@ -781,6 +847,9 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e int) int {
 	if htmlMode && t == "form" && f.formSet {
 		return 0 // a second form while the pointer is set is ignored
+	}
+	if htmlMode && (t == "html" || t == "head" || t == "body") {
+		return 0 // the in-body rule never opens these
 	}
 	if htmlMode && t != "svg" && t != "math" {
 		f.impliedClose(t)
@@ -825,6 +894,11 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 func (f *foreignScan) htmlRule(t string, top int) bool {
 	if t == "form" {
 		return f.formEnd(top)
+	}
+	if formattingTags[t] {
+		if ok, handled := f.formatting(t, top); handled {
+			return ok
+		}
 	}
 	match := f.htmlLast(t, top)
 	if headingTags[t] {
@@ -1214,10 +1288,10 @@ func extractHTMLLinks(html string) []bodyLink {
 	return out
 }
 
-// allBodies joins every non-attachment text/plain part and every
+// allBodies joins every non-attachment text/plain part and lists every
 // text/html part, as the archiver does.
-func allBodies(msg *mailmsg.Part) (plain, html string) {
-	var plains, htmls []string
+func allBodies(msg *mailmsg.Part) (plain string, htmls []string) {
+	var plains []string
 	for _, part := range bodyParts(msg) {
 		if part.MainType() == "multipart" {
 			continue
@@ -1233,7 +1307,23 @@ func allBodies(msg *mailmsg.Part) (plain, html string) {
 			htmls = append(htmls, mailmsg.DecodeBytes(payload, part.Charset()))
 		}
 	}
-	return strings.Join(plains, "\n"), strings.Join(htmls, "\n")
+	return strings.Join(plains, "\n"), htmls
+}
+
+// htmlPieces splits html, the scan's cut of htmls joined by "\n", back into
+// its parts, so each is read as its own document: an unclosed <style> in
+// one part does not hide the next. The archiver's _html_pieces.
+func htmlPieces(html string, htmls []string) []string {
+	var out []string
+	start := 0
+	for _, part := range htmls {
+		if start >= len(html) {
+			break
+		}
+		out = append(out, html[start:min(start+len(part), len(html))])
+		start += len(part) + 1
+	}
+	return out
 }
 
 // bodyParts walks the message's own parts: it never descends into an
@@ -1451,7 +1541,7 @@ func dedupeKey(u string) string {
 // bodyURLs lists a body's distinct links in the archiver's order:
 // plain-text URLs, then HTML anchors (whose text wins), then bare URLs in the
 // HTML's text not seen before as written or entity-decoded.
-func bodyURLs(plain, html string) []bodyLink {
+func bodyURLs(plain string, htmls ...string) []bodyLink {
 	var out []bodyLink
 	index := map[string]int{}
 	add := func(l bodyLink) {
@@ -1470,7 +1560,7 @@ func bodyURLs(plain, html string) []bodyLink {
 	for _, u := range plainURLs {
 		add(bodyLink{url: u})
 	}
-	html = truncateToRunes(html, maxScanRunes)
+	html := truncateToRunes(strings.Join(htmls, "\n"), maxScanRunes)
 	for _, l := range extractHTMLLinks(html) {
 		add(l)
 	}
@@ -1487,22 +1577,25 @@ func bodyURLs(plain, html string) []bodyLink {
 	// (blocks, then Outlook conditional regions; the archiver also reads
 	// those regions, so it may archive more; a URL listed here is extracted
 	// as it does). The pass runs on the cut body, so a long removed block
-	// cannot bring text past the archiver's cut into the scan.
-	for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(html)) {
-		decoded := dedupeKey(u)
-		if _, ok := index[u]; ok || seen[decoded] {
-			continue
+	// cannot bring text past the archiver's cut into the scan, and on each
+	// HTML part by itself, as each is its own document.
+	for _, piece := range htmlPieces(html, htmls) {
+		for _, u := range extractHTMLTextURLs(htmlsafe.PreStrip(piece)) {
+			decoded := dedupeKey(u)
+			if _, ok := index[u]; ok || seen[decoded] {
+				continue
+			}
+			seen[decoded] = true
+			add(bodyLink{url: u, bare: true})
 		}
-		seen[decoded] = true
-		add(bodyLink{url: u, bare: true})
 	}
 	return out
 }
 
 // downloadLinks lists the distinct likely-payload links of a body.
-func downloadLinks(plain, html string) []DownloadLink {
+func downloadLinks(plain string, htmls ...string) []DownloadLink {
 	var out []DownloadLink
-	for _, l := range bodyURLs(plain, html) {
+	for _, l := range bodyURLs(plain, htmls...) {
 		cleaned, filename, likely, tracker := classifyURL(l.url)
 		if l.bare {
 			// A URL found only as text in HTML is judged on the request it makes
