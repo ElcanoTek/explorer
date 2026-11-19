@@ -980,6 +980,47 @@
    "want": [
     "https://vendor.example/report.csv"
    ]
+  },
+  {
+   "name": "an option start closes an option on top",
+   "html": "<svg><desc><option><option></option></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an optgroup start closes an option on top",
+   "html": "<svg><desc><option><optgroup></optgroup></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an option start does not close past an inline element",
+   "html": "<svg><desc><option><span><option></option></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an end tag stops at an open select",
+   "html": "<svg><desc><div><select></div></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a select end tag closes what is open inside it",
+   "html": "<svg><desc><select><div></select></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "an input does not close a select past a formatting element",
+   "html": "<svg><desc><select><b><input></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "an xmp closing a p reopens a formatting element left inside it",
+   "html": "<svg><desc><p><b><xmp>x</xmp></desc></svg> https://vendor.example/report.csv",
+   "want": []
   }
  ]
 }

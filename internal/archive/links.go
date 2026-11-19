@@ -670,7 +670,8 @@ var (
 		"noscript", "object", "ol", "p", "param", "plaintext", "pre", "script", "search", "section", "select",
 		"source", "style", "summary", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
 		"title", "tr", "track", "ul", "wbr", "xmp")
-	htmlWalls = setOf("applet", "caption", "html", "table", "td", "th", "marquee", "object", "template")
+	htmlWalls = setOf("applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+		"select") // the renderer's parser stops end tags at an open select too
 	// listOpen are the specials an li/dd/dt start closes past (or closes)
 	listOpen = setOf("address", "div", "p", "li", "dd", "dt")
 	// closesP are start tags that first close an open p (button scope). The
@@ -770,6 +771,9 @@ func foreignEnd(html, lower, name string, end int) int {
 				return -1
 			}
 			f.impliedClose(t)
+			if len(f.staleAt) > 0 { // an xmp closing a p reopens what that left stale
+				return -1
+			}
 			k := closingTag(lower, t, i)
 			if k < 0 {
 				return -1
@@ -880,6 +884,9 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	}
 	if htmlMode && t != "svg" && t != "math" {
 		f.impliedClose(t)
+		if len(f.staleAt) > 0 { // closing a p or button can leave a formatting element to reopen
+			return -1
+		}
 	}
 	switch {
 	case !htmlMode:
@@ -926,7 +933,7 @@ func (f *foreignScan) inBodyStart(t string) (string, bool) {
 	case t == "html" || t == "head" || t == "body" || t == "frame":
 		return t, false // the in-body rule never opens these
 	case t == "input" || t == "select": // either closes an open select (in scope)
-		if m := f.htmlLast("select", top); m > max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
+		if m := f.htmlLast("select", top); m > lastAtOrBelow(f.points, top) && m >= lastAtOrBelow(f.walls, top) {
 			f.cut(m)
 			return t, t != "select" // and a select start is consumed
 		}
@@ -1004,7 +1011,8 @@ func (f *foreignScan) htmlLast(t string, top int) int {
 // first: an li the nearest open li, a dd or dt the nearest dd or dt
 // (neither past a special element other than address, div and p, nor past
 // an integration point), a heading the heading it is in, a block start
-// an open p (button scope), and a button an open button. The archiver's
+// an open p (button scope), a button an open button, and an option or
+// optgroup an option on top. The archiver's
 // _ForeignStack.implied_close.
 func (f *foreignScan) impliedClose(t string) {
 	top := len(f.stack) - 1
@@ -1026,6 +1034,11 @@ func (f *foreignScan) impliedClose(t string) {
 	}
 	if headingTags[t] {
 		if last := f.stack[len(f.stack)-1]; last.html && headingTags[last.tag] {
+			f.cut(len(f.stack) - 1)
+		}
+	}
+	if t == "option" || t == "optgroup" { // either closes an option on top
+		if last := f.stack[len(f.stack)-1]; last.html && last.tag == "option" {
 			f.cut(len(f.stack) - 1)
 		}
 	}
