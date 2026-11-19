@@ -514,10 +514,14 @@ type foreignScan struct {
 	// HTML special elements (htmlSpecial) and scope walls (htmlWalls), and
 	// the specials an li/dd/dt start does not close past
 	specials, walls, listWalls []int
+	// the form element pointer: set once an HTML form opens, until a form
+	// end tag; form is its position while it is open, or -1
+	formSet bool
+	form    int
 }
 
 func newForeignScan(root string) *foreignScan {
-	f := &foreignScan{byName: map[elementKey][]int{}}
+	f := &foreignScan{byName: map[elementKey][]int{}, form: -1}
 	f.push(openElement{tag: root, ns: root})
 	return f
 }
@@ -546,6 +550,9 @@ func (f *foreignScan) push(el openElement) {
 
 // cut closes every element from position size up.
 func (f *foreignScan) cut(size int) {
+	if f.form >= size {
+		f.form = -1
+	}
 	for len(f.stack) > size {
 		el := f.stack[len(f.stack)-1]
 		f.stack = f.stack[:len(f.stack)-1]
@@ -566,6 +573,16 @@ func (f *foreignScan) cut(size int) {
 		if el.intPnt {
 			f.points = f.points[:len(f.points)-1]
 		}
+	}
+}
+
+// remove takes the element at position m off the stack and leaves the ones
+// above it open, as a form end tag does.
+func (f *foreignScan) remove(m int) {
+	above := append([]openElement(nil), f.stack[m+1:]...)
+	f.cut(m)
+	for _, el := range above {
+		f.push(el)
 	}
 }
 
@@ -600,7 +617,9 @@ var (
 	closesP = setOf("address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", "div",
 		"dl", "fieldset", "figcaption", "figure", "footer", "header", "hgroup", "main", "menu", "nav", "ol",
 		"p", "search", "section", "summary", "ul", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "listing",
-		"form", "li", "dd", "dt", "table", "hr")
+		"form", "li", "dd", "dt", "table", "hr", "xmp")
+	// impliedEnds close before a form end tag removes the form
+	impliedEnds    = setOf("dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc")
 	headingTags    = setOf("h1", "h2", "h3", "h4", "h5", "h6")
 	mathTextPoints = setOf("mi", "mo", "mn", "ms", "mtext")
 )
@@ -613,8 +632,8 @@ var skipToClose = setOf("script", "style", "title", "textarea", "xmp", "iframe",
 
 // htmlVoid are HTML void elements: never open, so never on a stack of open
 // elements. The archiver's _HTML_VOID.
-var htmlVoid = setOf("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
-	"track", "wbr")
+var htmlVoid = setOf("area", "base", "basefont", "bgsound", "br", "col", "embed", "hr", "img", "input",
+	"keygen", "link", "meta", "param", "source", "track", "wbr")
 
 // foreignEnd is where the SVG or MathML element name whose start tag ends
 // at html[end] ends, or a position to resume at, or -1 to hide the rest, by
@@ -668,7 +687,8 @@ func foreignEnd(html, lower, name string, end int) int {
 		closing := strings.HasPrefix(lower[j:], "</")
 		if top := f.stack[len(f.stack)-1]; (top.html || top.intPnt) && !closing && skipToClose[t] {
 			// raw text or RCDATA read as HTML: its content runs to its own
-			// closing tag (none: the rest)
+			// closing tag (none: the rest); an xmp first closes an open p
+			f.impliedClose(t)
 			k := closingTag(lower, t, i)
 			if k < 0 {
 				return -1
@@ -759,6 +779,9 @@ func (f *foreignScan) tag(html, t string, closing, selfClosing bool, j, e int) i
 // startTag opens t (its tag html[j:e+1]), read as HTML when htmlMode: 0,
 // or -1 to hide the rest.
 func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e int) int {
+	if htmlMode && t == "form" && f.formSet {
+		return 0 // a second form while the pointer is set is ignored
+	}
 	if htmlMode && t != "svg" && t != "math" {
 		f.impliedClose(t)
 	}
@@ -786,6 +809,9 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 	case swallowTags[t]:
 		return -1
 	case !htmlVoid[t]:
+		if t == "form" {
+			f.formSet, f.form = true, len(f.stack)
+		}
 		f.push(openElement{tag: t, html: true})
 	}
 	return 0
@@ -797,6 +823,9 @@ func (f *foreignScan) startTag(html, t string, htmlMode, selfClosing bool, j, e 
 // tag any special element, for a special one a scope wall; a heading's end
 // tag closes any open heading. False when neither (it walks past the root).
 func (f *foreignScan) htmlRule(t string, top int) bool {
+	if t == "form" {
+		return f.formEnd(top)
+	}
 	match := f.htmlLast(t, top)
 	if headingTags[t] {
 		for h := range headingTags {
@@ -819,6 +848,22 @@ func (f *foreignScan) htmlRule(t string, top int) bool {
 		return true
 	}
 	return barrier > 0
+}
+
+// formEnd reads a form end tag: the pointer clears, and the form it named,
+// when open and in scope, comes off the stack after the implied end tags;
+// the elements above it stay open. Otherwise the tag is ignored.
+func (f *foreignScan) formEnd(top int) bool {
+	m := f.form
+	f.formSet, f.form = false, -1
+	if m < 0 || m > top || m <= max(lastAtOrBelow(f.points, top), lastAtOrBelow(f.walls, top)) {
+		return true
+	}
+	for last := len(f.stack) - 1; last > m && f.stack[last].html && impliedEnds[f.stack[last].tag]; last-- {
+		f.cut(last)
+	}
+	f.remove(m)
+	return true
 }
 
 func (f *foreignScan) htmlLast(t string, top int) int {

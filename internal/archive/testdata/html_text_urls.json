@@ -699,6 +699,46 @@
    "name": "an integration point end tag does not close past an open html child",
    "html": "<svg><desc><span></desc></svg> https://vendor.example/report.csv",
    "want": []
+  },
+  {
+   "name": "a form end tag removes only the form, leaving an open child open",
+   "html": "<svg><desc><form><span></form></desc></svg> https://vendor.example/report.csv",
+   "want": []
+  },
+  {
+   "name": "a form end tag leaves its open child for the child's own end tag",
+   "html": "<svg><desc><form><span></form></span></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "a second form start is ignored while the form pointer is set",
+   "html": "<svg><desc><form><form></form></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "param is void at an integration point",
+   "html": "<svg><desc><param></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "keygen is void at an integration point",
+   "html": "<svg><desc><keygen></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
+  },
+  {
+   "name": "xmp closes an open p before its raw text",
+   "html": "<svg><desc><p><xmp>x</xmp></desc></svg> https://vendor.example/report.csv",
+   "want": [
+    "https://vendor.example/report.csv"
+   ]
   }
  ]
 }
