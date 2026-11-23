@@ -104,6 +104,12 @@ func BuildSearchPrefixes(prefix, dateFormat string, maxDays int, from, to time.T
 type window struct{ start, end time.Time }
 
 func (in *Inbox) windowsAndPrefixes(ranges []DateRange) ([]window, []string) {
+	return windowsAndPrefixes(in.s.Prefix, in.s.DatePrefixFormat, in.s.MaxDatePrefixDays, ranges)
+}
+
+// windowsAndPrefixes turns ranges into instant windows and the deduplicated
+// day prefixes (BuildSearchPrefixes) of the layout prefix + dateFormat.
+func windowsAndPrefixes(prefix, dateFormat string, maxDays int, ranges []DateRange) ([]window, []string) {
 	windows := make([]window, 0, len(ranges))
 	var prefixes []string
 	seen := map[string]bool{}
@@ -114,7 +120,7 @@ func (in *Inbox) windowsAndPrefixes(ranges []DateRange) ([]window, []string) {
 		}
 		last := end.Add(24*time.Hour - time.Microsecond)
 		windows = append(windows, window{start, last})
-		for _, p := range BuildSearchPrefixes(in.s.Prefix, in.s.DatePrefixFormat, in.s.MaxDatePrefixDays, start, last) {
+		for _, p := range BuildSearchPrefixes(prefix, dateFormat, maxDays, start, last) {
 			if !seen[p] {
 				seen[p] = true
 				prefixes = append(prefixes, p)

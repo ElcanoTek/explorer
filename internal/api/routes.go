@@ -52,6 +52,11 @@ var Operations = []Operation{
 			"require_payload", "sender_contains", "subject_contains", "subject_keywords"},
 		Run: (*API).FindLatestReport,
 	},
+	{
+		Name: "search_outbox", Scope: apitoken.ScopeSearch,
+		Args: []string{"date_from", "date_to", "max_results", "recipient_contains", "sent_by", "subject_contains"},
+		Run:  (*API).SearchOutbox,
+	},
 	{Name: "get_email", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).GetEmail},
 	{Name: "extract_download_links", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ExtractDownloadLinks},
 	{Name: "list_archived_attachments", Scope: apitoken.ScopeRead, Args: []string{"s3_key"}, Run: (*API).ListArchivedAttachments},

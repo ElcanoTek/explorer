@@ -176,6 +176,8 @@ type emailPage struct {
 	Email    *archive.Email
 	Sender   sender
 	BodyHTML template.HTML
+	// FromOutbox: a sent email, so "back" goes to the Outbox.
+	FromOutbox bool
 }
 
 func (s *Server) notFound(w http.ResponseWriter, r *http.Request, message string) {
@@ -199,7 +201,8 @@ func (s *Server) handleEmail(w http.ResponseWriter, r *http.Request) {
 	// BodyPreviewHTML is the sanitizer's output (internal/htmlsafe): the
 	// allow-list there is the boundary that makes it safe to emit unescaped.
 	page := emailPage{Email: email, Sender: parseSender(email.From),
-		BodyHTML: template.HTML(email.BodyPreviewHTML)} //nolint:gosec // G203: sanitized by htmlsafe.RenderHTMLPreview.
+		BodyHTML:   template.HTML(email.BodyPreviewHTML), //nolint:gosec // G203: sanitized by htmlsafe.RenderHTMLPreview.
+		FromOutbox: s.outbox != nil && strings.HasPrefix(key, s.outbox.Prefix())}
 	s.render(w, r, http.StatusOK, "email_detail", page)
 }
 

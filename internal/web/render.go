@@ -25,7 +25,7 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 // pages are parsed once at startup: base.html plus one page template each.
-var pageNames = []string{"inbox", "email_detail", "auth_error", "signed_out"}
+var pageNames = []string{"inbox", "outbox", "email_detail", "auth_error", "signed_out"}
 
 type kv struct{ Key, Value string }
 

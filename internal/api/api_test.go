@@ -103,7 +103,8 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := New(Deps{Inbox: archive.New(store, s), Settings: s, Tokens: tokens, Now: func() time.Time { return now }})
+	a := New(Deps{Inbox: archive.New(store, s), Outbox: archive.NewOutbox(store, s), Settings: s, Tokens: tokens,
+		Now: func() time.Time { return now }})
 	return &harness{t: t, store: store, api: a, tokens: tokens, raw: raw}
 }
 

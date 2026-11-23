@@ -1,5 +1,8 @@
 {{define "header_intro"}}{{- "" -}}{{end}}
 {{define "topbar_actions"}}
+{{- if .Page.OutboxEnabled}}
+<a href="/outbox" class="btn btn-ghost">Outbox</a>
+{{- end}}
 <form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action" type="submit" data-tooltip="Sign out" aria-label="Sign out" aria-describedby="sign-out-tooltip">

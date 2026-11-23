@@ -10,6 +10,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -53,6 +54,11 @@ type Settings struct {
 	// EMAIL_S3_ARCHIVE_PREFIX: where the link-archive lambda writes payloads
 	// and manifests under the email prefix; never returned as mail.
 	ArchivePrefix string
+	// EMAIL_S3_OUTBOX_PREFIX: the client Outbox, where Fleet's sender copies
+	// every email it sends as <day>/<id>.eml plus a <day>/<id>.json record
+	// (example-config mcp/outbox.py). Beside the inbox prefix, never under
+	// it, so inbox search never lists sent mail. Empty turns the Outbox off.
+	OutboxPrefix string
 	// EXPLORER_API_MAX_SECONDS bounds one API or MCP call (a
 	// find_latest_report walks several days within it).
 	APIMaxSeconds int
@@ -144,6 +150,7 @@ func FromEnv(env map[string]string) (Settings, error) {
 		SenderAuth:    strings.ToLower(strings.TrimSpace(get("EMAIL_SENDER_AUTH", "required"))),
 		AuthservID:    strings.ToLower(strings.TrimSpace(get("EMAIL_AUTHSERV_ID", "amazonses.com"))),
 		ArchivePrefix: get("EMAIL_S3_ARCHIVE_PREFIX", "emails/attachments/"),
+		OutboxPrefix:  strings.TrimSpace(get("EMAIL_S3_OUTBOX_PREFIX", "outbox/")),
 		APIMaxSeconds: num("EXPLORER_API_MAX_SECONDS", "240"),
 		APITokenDB:    get("EXPLORER_API_TOKEN_DB", "/var/lib/explorer/api_tokens.db"),
 
@@ -179,6 +186,24 @@ func FromEnv(env map[string]string) (Settings, error) {
 	if s.AuthservID == "" {
 		s.AuthservID = "amazonses.com"
 	}
+	if _, set := env["EMAIL_S3_OUTBOX_PREFIX"]; !set && len(s.AllowedKeyRoots()) == 0 {
+		// The inbox is the whole bucket (both inbox prefixes empty, as an
+		// install may predate the Outbox): no room beside it, so the default
+		// Outbox stays off rather than refusing to start.
+		s.OutboxPrefix = ""
+	}
+	if s.OutboxPrefix != "" {
+		inbox := s.AllowedKeyRoots()
+		switch {
+		case !strings.HasSuffix(s.OutboxPrefix, "/"):
+			errs = append(errs, fmt.Sprintf("EMAIL_S3_OUTBOX_PREFIX must end with / (got %q)", s.OutboxPrefix))
+		case len(inbox) == 0 || slices.ContainsFunc(inbox, func(r string) bool {
+			return strings.HasPrefix(r, s.OutboxPrefix) || strings.HasPrefix(s.OutboxPrefix, r)
+		}):
+			errs = append(errs, fmt.Sprintf("EMAIL_S3_OUTBOX_PREFIX %q must not overlap the inbox prefixes %v "+
+				"(set it empty to turn the Outbox off)", s.OutboxPrefix, inbox))
+		}
+	}
 	if s.APIMaxSeconds <= 0 {
 		errs = append(errs, "EXPLORER_API_MAX_SECONDS must be positive")
 	}
@@ -213,6 +238,25 @@ func (s Settings) SigningKeys() []string {
 		keys = append(keys, s.AuthSigningPubkey)
 	}
 	return append(keys, s.AuthSigningPreviousPubkeys...)
+}
+
+// AllowedEmailKey reports whether key may be opened as a message: under an
+// inbox root (AllowedKeyRoots) or a sent .eml under the Outbox. The caller
+// still keeps the link cache out.
+func (s Settings) AllowedEmailKey(key string) bool {
+	if s.OutboxPrefix != "" && strings.HasPrefix(key, s.OutboxPrefix) {
+		return strings.HasSuffix(key, ".eml")
+	}
+	roots := s.AllowedKeyRoots()
+	if len(roots) == 0 {
+		return true
+	}
+	for _, root := range roots {
+		if strings.HasPrefix(key, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowedKeyRoots are the S3 key prefixes Explorer may read: the archive
