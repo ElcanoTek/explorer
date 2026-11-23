@@ -45,16 +45,7 @@ func (a *API) allowedEmailKey(key string) bool {
 	if a.settings.ArchivePrefix != "" && strings.HasPrefix(key, a.settings.ArchivePrefix) {
 		return false
 	}
-	roots := a.settings.AllowedKeyRoots()
-	if len(roots) == 0 {
-		return true
-	}
-	for _, root := range roots {
-		if strings.HasPrefix(key, root) {
-			return true
-		}
-	}
-	return false
+	return a.settings.AllowedEmailKey(key)
 }
 
 func (a *API) readError(op string, err error) error {

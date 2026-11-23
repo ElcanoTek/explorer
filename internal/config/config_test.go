@@ -63,3 +63,45 @@ func TestEmptyDateFormatLeavesOnlyThePrefix(t *testing.T) {
 		t.Fatalf("roots %v", s.AllowedKeyRoots())
 	}
 }
+
+func TestOutboxPrefix(t *testing.T) {
+	base := map[string]string{"EMAIL_S3_BUCKET": "b"}
+	with := func(v string) map[string]string {
+		env := map[string]string{"EMAIL_S3_OUTBOX_PREFIX": v}
+		for k, val := range base {
+			env[k] = val
+		}
+		return env
+	}
+	s, err := FromEnv(base)
+	if err != nil || s.OutboxPrefix != "outbox/" {
+		t.Fatalf("default: %q %v", s.OutboxPrefix, err)
+	}
+	if s, err := FromEnv(with("")); err != nil || s.OutboxPrefix != "" {
+		t.Fatalf("off: %q %v", s.OutboxPrefix, err)
+	}
+	whole := map[string]string{"EMAIL_S3_BUCKET": "b", "EMAIL_S3_PREFIX": "", "EMAIL_S3_DATE_PREFIX_FORMAT": ""}
+	if s, err := FromEnv(whole); err != nil || s.OutboxPrefix != "" {
+		t.Fatalf("a whole-bucket inbox keeps the default Outbox off: %q %v", s.OutboxPrefix, err)
+	}
+	whole["EMAIL_S3_OUTBOX_PREFIX"] = "outbox/"
+	if _, err := FromEnv(whole); err == nil {
+		t.Fatal("an Outbox asked for inside a whole-bucket inbox must be refused")
+	}
+	for _, bad := range []string{"outbox", "emails/outbox/", "emails/", "e"} {
+		if _, err := FromEnv(with(bad)); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	for key, want := range map[string]bool{
+		"emails/2026/06/01/x":      true,
+		"outbox/2026/06/01/x.eml":  true,
+		"outbox/2026/06/01/x.json": false,
+		"outbox/x":                 false,
+		"other/x":                  false,
+	} {
+		if got := s.AllowedEmailKey(key); got != want {
+			t.Errorf("%q = %v", key, got)
+		}
+	}
+}

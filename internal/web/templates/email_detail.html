@@ -1,7 +1,11 @@
 {{define "header_title"}}Email Details{{end}}
 {{define "header_intro"}}Review message metadata, attachments, and body content with the shared Explorer visual system.{{end}}
 {{define "topbar_actions"}}
+{{- if .Page.FromOutbox}}
+<a href="/outbox" class="btn btn-ghost">Back to Outbox</a>
+{{- else}}
 <a href="/" class="btn btn-ghost">Back to Inbox</a>
+{{- end}}
 {{- end}}
 {{define "content"}}{{with .Page}}
 <section class="card message-thread">

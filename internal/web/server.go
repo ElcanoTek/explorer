@@ -33,17 +33,17 @@ import (
 
 // Server holds everything a request needs. Build one with New.
 type Server struct {
-	settings     config.Settings
-	inbox        *archive.Inbox
-	auth         provider
-	sessions     sessionCodec
-	jobs         *jobStore
-	pages        map[string]*template.Template
-	allowedRoots []string
-	tokens       *apitoken.Store
-	api          *api.API
-	now          func() time.Time
-	handler      http.Handler
+	settings config.Settings
+	inbox    *archive.Inbox
+	outbox   *archive.Outbox // nil when the Outbox is off
+	auth     provider
+	sessions sessionCodec
+	jobs     *jobStore
+	pages    map[string]*template.Template
+	tokens   *apitoken.Store
+	api      *api.API
+	now      func() time.Time
+	handler  http.Handler
 }
 
 // Options are the seams tests and the CLI use; zero values mean production.
@@ -85,18 +85,18 @@ func New(ctx context.Context, s config.Settings, opts Options) (*Server, error) 
 	if tokens == nil {
 		tokens = apitoken.NewStore(s.APITokenDB)
 	}
-	inbox := archive.New(store, s)
+	inbox, outbox := archive.New(store, s), archive.NewOutbox(store, s)
 	srv := &Server{
-		settings:     s,
-		inbox:        inbox,
-		tokens:       tokens,
-		api:          api.New(api.Deps{Inbox: inbox, Settings: s, Tokens: tokens, Now: now}),
-		auth:         prov,
-		sessions:     sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
-		jobs:         newJobStore(now),
-		pages:        pages,
-		allowedRoots: s.AllowedKeyRoots(),
-		now:          now,
+		settings: s,
+		inbox:    inbox,
+		outbox:   outbox,
+		tokens:   tokens,
+		api:      api.New(api.Deps{Inbox: inbox, Outbox: outbox, Settings: s, Tokens: tokens, Now: now}),
+		auth:     prov,
+		sessions: sessionCodec{key: []byte(s.SessionSecret), secure: s.UICookieSecure, now: now},
+		jobs:     newJobStore(now),
+		pages:    pages,
+		now:      now,
 	}
 	srv.handler = srv.routes()
 	return srv, nil
@@ -122,6 +122,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /email", s.handleEmail)
 	mux.HandleFunc("GET /attachment", s.handleAttachment)
 	mux.HandleFunc("GET /{$}", s.handleInbox)
+	mux.HandleFunc("GET /outbox", s.handleOutbox)
 	// Programmatic surfaces (Fleet's agents): scoped bearer tokens, never the
 	// browser session, so the sign-in and session middleware skip them (see
 	// isAPIPath) and they authenticate every request themselves.
@@ -438,15 +439,7 @@ func (s *Server) isAllowedS3Key(key string) bool {
 			return false
 		}
 	}
-	if len(s.allowedRoots) == 0 {
-		return true
-	}
-	for _, root := range s.allowedRoots {
-		if strings.HasPrefix(key, root) {
-			return true
-		}
-	}
-	return false
+	return s.settings.AllowedEmailKey(key)
 }
 
 // safeLocalPath returns raw when it is a same-origin absolute path, else def.

@@ -67,6 +67,7 @@ Tools (all `readOnlyHint: true`; names, schemas and descriptions are in
 | `search_emails` | search | `date_from`, `date_to` | Targeted search: `subject_contains`, `subject_keywords` (any), `sender_contains`, `recipient_contains`, `has_payload`, `max_results` (default 25, max 500), `include_body_preview`. Newest first. |
 | `search_emails_fuzzy` | search | `keywords` or `query`, `date_from` | Keyword search over `search_fields` (`subject`, `sender`, `body`; default subject and sender), `match_all`, `max_results` (default 50; `limit` is accepted as another name). `query` is free text whose words (split on spaces and commas) become the keywords. Ranked by `match_score`, then newest. `date_to` defaults to now. A window over the limit is refused with the `date_from` that fits. |
 | `find_latest_report` | search | — | Walks back day by day from `on_or_before` (default today, UTC) for `lookback_days` (default 14, max 60) until `max_candidates` (default 1, max 25) matches. `require_payload` defaults to true. |
+| `search_outbox` | search | `date_from`, `date_to` | The client Outbox (below): `recipient_contains` (to, cc or bcc), `subject_contains`, `sent_by`, `max_results` (default 50, max 500). Newest first, each with the `.eml` `s3_key` for `get_email`, `sent_at`, `to`, `cc`, `bcc`, `sent_by`, `task_id` and `attachments`. `code: outbox_off` when the Outbox is turned off. |
 | `get_email` | read | `s3_key` | Headers, `sender_authenticated`, attachments (`filename`, `content_type`, `size_bytes`), `body_text` (first 6,000 characters), `download_links` with each link's `cache` state, and `link_cache` (the email's manifest summary). |
 | `extract_download_links` | read | `s3_key` | Just the `download_links` and `link_cache`. |
 | `list_archived_attachments` | read | `s3_key` | The link archiver's manifest for the email, as written (`status: not_found` when there is none). |
@@ -252,6 +253,25 @@ Only a message that cannot be read as mail is skipped and counted in
 setup notification) or one over Explorer's download cap. Objects under
 `EMAIL_S3_ARCHIVE_PREFIX` (the link-archive lambda's payloads and manifests)
 are never returned as mail.
+
+## Outbox
+
+Fleet's outbound sender (example-config `mcp/outbox.py`) copies every email it
+sends to `EMAIL_S3_OUTBOX_PREFIX` (default `outbox/`) as
+`<prefix>YYYY/MM/DD/<ses-message-id>.eml` plus a `.json` record beside it
+(recipients including Bcc, subject, attachments, `sent_by`, `task_id`).
+`search_outbox` and the web UI's Outbox page read only the records; a sent
+message opens with `get_email` (or `/email`) by its `.eml` key, and a `.json`
+key is never served as mail. A record is used only when its `eml_key` is the
+`.eml` beside it.
+
+The prefix sits beside the inbox prefix, never under it, so inbox search never
+lists sent mail; Explorer refuses to start when the two overlap. There is no
+sender-authentication check on the Outbox: only the sender's IAM user can
+write there, so the prefix is the proof of origin. Explorer's IAM user needs
+`s3:ListBucket` on `outbox/` and `s3:GetObject` on `outbox/*`
+(production-support's explorer policy template grants both). Set
+`EMAIL_S3_OUTBOX_PREFIX=""` to turn the Outbox off.
 
 ## What this does not do
 

@@ -85,6 +85,7 @@ func invalidArg(format string, args ...any) *Error {
 // concurrent use.
 type API struct {
 	inbox    *archive.Inbox
+	outbox   *archive.Outbox
 	settings config.Settings
 	tokens   *apitoken.Store
 	log      *slog.Logger
@@ -93,7 +94,9 @@ type API struct {
 
 // Deps are what the API needs from the running service.
 type Deps struct {
-	Inbox    *archive.Inbox
+	Inbox *archive.Inbox
+	// Outbox is nil when the Outbox is off (search_outbox says so).
+	Outbox   *archive.Outbox
 	Settings config.Settings
 	Tokens   *apitoken.Store
 	// Logger defaults to slog.Default().
@@ -104,7 +107,7 @@ type Deps struct {
 
 // New returns the API over deps.
 func New(d Deps) *API {
-	a := &API{inbox: d.Inbox, settings: d.Settings, tokens: d.Tokens, log: d.Logger, now: d.Now}
+	a := &API{inbox: d.Inbox, outbox: d.Outbox, settings: d.Settings, tokens: d.Tokens, log: d.Logger, now: d.Now}
 	if a.log == nil {
 		a.log = slog.Default()
 	}

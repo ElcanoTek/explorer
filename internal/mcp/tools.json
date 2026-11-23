@@ -1,5 +1,5 @@
 {
-  "instructions": "Elcano Explorer is this deployment's email archive (the raw SES mail in S3): it finds report emails, reads them and hands out their files. Workflow: find_latest_report for \"the most recent report from vendor X\", search_emails for a specific day or window, search_emails_fuzzy when you only have keywords; then get_email with the s3_key, and get_download_link for an attachment or a body link, whose download_url you fetch with the download_url tool. Report links expire about 48 hours after delivery, but the archive caches them on arrival, so get_download_link serves the cached copy whenever one exists. Identify vendors by sender DOMAIN (\"vendor.example\") or full address, never a display name. Searches return only mail whose sender the receiving server authenticated; read search_warnings before concluding a report is missing. A status: error result means the call did not complete; it is not an empty inbox.",
+  "instructions": "Elcano Explorer is this deployment's email archive (the raw SES mail in S3): it finds report emails, reads them and hands out their files. Workflow: find_latest_report for \"the most recent report from vendor X\", search_emails for a specific day or window, search_emails_fuzzy when you only have keywords; then get_email with the s3_key, and get_download_link for an attachment or a body link, whose download_url you fetch with the download_url tool. Report links expire about 48 hours after delivery, but the archive caches them on arrival, so get_download_link serves the cached copy whenever one exists. Identify vendors by sender DOMAIN (\"vendor.example\") or full address, never a display name. Searches return only mail whose sender the receiving server authenticated; read search_warnings before concluding a report is missing. The Outbox holds every email this deployment's Fleet sent (Victoria's reports and replies, never sign-in mail): search_outbox finds them by recipient, subject, sender person or date, and get_email reads one by its s3_key. A status: error result means the call did not complete; it is not an empty inbox.",
   "serverInfo": {
     "name": "explorer",
     "title": "Elcano Explorer",
@@ -210,6 +210,56 @@
       }
     },
     {
+      "name": "search_outbox",
+      "scope": "email:search",
+      "title": "Search sent email (the Outbox)",
+      "description": "Find email this deployment's Fleet SENT (the client Outbox): every send_email copy, newest first, visible to everyone in the organization. Use it to answer \"did we send X the report?\", \"what did Victoria send last week?\" or \"what did Dana send?\". Each result has s3_key (pass it to get_email to read the message), sent_at, subject, from, to, cc, bcc, sent_by (the signed-in person whose chat sent it; empty for a scheduled task), task_id (the scheduled task that sent it, if any) and attachments.\n\nBoth date_from and date_to are required, up to the deployment's day limit. Notes a person sent privately to themselves are not in the Outbox. A failed search returns an error (status: error), never an empty success.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date_from",
+          "date_to"
+        ],
+        "properties": {
+          "recipient_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of any recipient address (to, cc or bcc)."
+          },
+          "subject_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring of the subject."
+          },
+          "sent_by": {
+            "type": "string",
+            "description": "Case-insensitive substring of the signed-in person who sent it (their email address)."
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Only email sent on or after this date: ISO date (\"2026-01-20\") or datetime (UTC when no offset)."
+          },
+          "date_to": {
+            "type": "string",
+            "description": "Only email sent on or before this date (inclusive): ISO date (\"2026-01-20\") or datetime."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 50,
+            "description": "Maximum results (default 50)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Search sent email (the Outbox)",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "get_email",
       "scope": "email:read",
       "title": "Read an email",
@@ -223,7 +273,7 @@
         "properties": {
           "s3_key": {
             "type": "string",
-            "description": "The email's s3_key, from search_emails, search_emails_fuzzy or find_latest_report."
+            "description": "The email's s3_key, from search_emails, search_emails_fuzzy, find_latest_report or search_outbox."
           }
         }
       },

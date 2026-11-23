@@ -28,6 +28,7 @@ type rowView struct {
 type inboxPage struct {
 	Mode              string
 	CSRFToken         string
+	OutboxEnabled     bool
 	MaxSearchDays     int
 	MaxBodySearchDays int
 	SelectedDay       string
@@ -180,6 +181,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		IsPaginatedView:   mode == "view",
 		SearchStatus:      "idle",
 		Searched:          q.Get("run_search") == "1",
+		OutboxEnabled:     s.outbox != nil,
 	}
 	if p, ok := s.auth.(*centralProvider); ok {
 		page.CSRFToken = p.csrfToken(r)

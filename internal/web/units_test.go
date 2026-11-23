@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ElcanoTek/explorer/internal/archive"
+	"github.com/ElcanoTek/explorer/internal/config"
 )
 
 func d(s string) day {
@@ -86,9 +87,12 @@ func TestCountDaysCovered(t *testing.T) {
 }
 
 func TestS3KeyScoping(t *testing.T) {
-	s := &Server{allowedRoots: []string{"emails/"}}
+	s := &Server{settings: config.Settings{Prefix: "emails/", DatePrefixFormat: "emails/%Y/%m/%d/", OutboxPrefix: "outbox/"}}
 	for key, want := range map[string]bool{
 		"emails/2026/06/01/abc123":            true,
+		"outbox/2026/06/01/abc123.eml":        true,
+		"outbox/2026/06/01/abc123.json":       false,
+		"outbox/2026/06/01/abc123":            false,
 		"secrets/backup.tar.gz":               false,
 		"":                                    false,
 		"emails/\x00bad":                      false,
