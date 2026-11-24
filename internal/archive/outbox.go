@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ElcanoTek/explorer/internal/config"
+	"github.com/ElcanoTek/explorer/internal/mailmsg"
 )
 
 // The client Outbox: a copy of every email Fleet's sender sent, under
@@ -95,10 +96,151 @@ func (o *Outbox) Prefix() string { return o.s.OutboxPrefix }
 
 // Search returns the records of email sent from from to to (inclusive
 // instants) that match q, newest first, at most q.Limit (0 means no limit).
-// It lists the day folders the span touches and keeps a record by its own
-// sent_at, never the object's upload time: a copy saved just after midnight
-// is still filed under, and found on, the day it was sent.
 func (o *Outbox) Search(ctx context.Context, from, to time.Time, q OutboxQuery) ([]SentRecord, OutboxStats, error) {
+	sent, stats, err := o.load(ctx, from, to)
+	if err != nil {
+		return nil, stats, err
+	}
+	var hits []sentHit
+	for _, h := range sent {
+		if q.matches(h.rec) {
+			hits = append(hits, h)
+		}
+	}
+	out, truncated := limitHits(hits, q.Limit)
+	stats.Truncated = truncated
+	return out, stats, nil
+}
+
+func (q OutboxQuery) matches(r SentRecord) bool {
+	has := func(field, want string) bool {
+		return want == "" || strings.Contains(strings.ToLower(field), strings.ToLower(want))
+	}
+	return has(r.Subject, q.Subject) && has(r.SentBy, q.SentBy) &&
+		has(strings.Join(r.Recipients(), " "), q.Recipient)
+}
+
+// OutboxFuzzy is a keyword search of the Outbox, the inbox's Fuzzy Search
+// for sent email: a record matches when any keyword (every keyword, with
+// MatchAll) appears in a searched field, case-insensitively.
+type OutboxFuzzy struct {
+	Keywords []string
+	// Subject, Recipients (to, cc and bcc) and Body choose the fields. The
+	// body is read from the .eml only when the record alone cannot decide.
+	Subject, Recipients, Body bool
+	MatchAll                  bool
+	Limit                     int
+}
+
+// SearchFuzzy returns the records of email sent from from to to that match
+// q, best first: like the inbox, 3 per keyword in the subject, 2 in the
+// recipients, 1 in the body, plus 1 for matching at all; ties newest first.
+func (o *Outbox) SearchFuzzy(ctx context.Context, from, to time.Time, q OutboxFuzzy) ([]SentRecord, OutboxStats, error) {
+	var terms []string
+	for _, k := range q.Keywords {
+		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+			terms = append(terms, k)
+		}
+	}
+	if len(terms) == 0 {
+		return nil, OutboxStats{}, nil
+	}
+	sent, stats, err := o.load(ctx, from, to)
+	if err != nil {
+		return nil, stats, err
+	}
+	scores := make([]int, len(sent))
+	err = parallel(ctx, len(sent), func(i int) error {
+		score, err := o.fuzzyScore(ctx, sent[i].rec, terms, q)
+		scores[i] = score
+		return err
+	})
+	if err != nil {
+		return nil, stats, err
+	}
+	var hits []sentHit
+	for i, h := range sent {
+		if scores[i] > 0 {
+			h.score = scores[i]
+			hits = append(hits, h)
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	out, truncated := limitHits(hits, q.Limit)
+	stats.Truncated = truncated
+	return out, stats, nil
+}
+
+// fuzzyScore is rec's score for terms, or 0 when it does not match.
+func (o *Outbox) fuzzyScore(ctx context.Context, rec SentRecord, terms []string, q OutboxFuzzy) (int, error) {
+	subject := strings.ToLower(rec.Subject)
+	recipients := strings.ToLower(strings.Join(rec.Recipients(), " "))
+	hits := make([]bool, len(terms))
+	score := 0
+	for i, t := range terms {
+		if q.Subject && strings.Contains(subject, t) {
+			hits[i], score = true, score+3
+		}
+		if q.Recipients && strings.Contains(recipients, t) {
+			hits[i], score = true, score+2
+		}
+	}
+	need := !anyTrue(hits)
+	if q.MatchAll {
+		need = !allTrue(hits)
+	}
+	if q.Body && need {
+		body, err := o.body(ctx, rec)
+		if err != nil {
+			return 0, err
+		}
+		for i, t := range terms {
+			if strings.Contains(body, t) {
+				hits[i], score = true, score+1
+			}
+		}
+	}
+	matched := anyTrue(hits)
+	if q.MatchAll {
+		matched = allTrue(hits)
+	}
+	if !matched {
+		return 0, nil
+	}
+	return score + 1, nil
+}
+
+// body is the lower-cased text of rec's message, every plain and HTML part
+// of its own (allBodies skips attachments and attached messages, so a
+// forwarded email's text never matches), or "" when the .eml is gone.
+// EmlKey is the record's sibling (readRecord checks it), so this never reads
+// outside the Outbox.
+func (o *Outbox) body(ctx context.Context, rec SentRecord) (string, error) {
+	raw, err := o.store.Get(ctx, rec.EmlKey, 0)
+	if err != nil {
+		if errors.Is(err, ErrNoSuchKey) {
+			return "", nil
+		}
+		return "", err
+	}
+	plain, htmls := allBodies(mailmsg.Parse(raw))
+	return strings.ToLower(strings.Join(append([]string{plain}, htmls...), "\n")), nil
+}
+
+// sentHit is a record kept by load, with its parsed sent_at (and, for a
+// fuzzy search, its score).
+type sentHit struct {
+	rec   SentRecord
+	at    time.Time
+	score int
+}
+
+// load returns every readable record of email sent from from to to
+// (inclusive instants), newest first. It lists the day folders the span
+// touches and keeps a record by its own sent_at, never the object's upload
+// time: a copy saved just after midnight is still filed under, and found
+// on, the day it was sent.
+func (o *Outbox) load(ctx context.Context, from, to time.Time) ([]sentHit, OutboxStats, error) {
 	var stats OutboxStats
 	if to.Before(from) {
 		from, to = to, from
@@ -122,11 +264,7 @@ func (o *Outbox) Search(ctx context.Context, from, to time.Time, q OutboxQuery) 
 	if err != nil {
 		return nil, stats, err
 	}
-	type hit struct {
-		rec SentRecord
-		at  time.Time
-	}
-	var hits []hit
+	var hits []sentHit
 	for _, rec := range records {
 		if rec == nil {
 			stats.Unreadable++
@@ -138,27 +276,26 @@ func (o *Outbox) Search(ctx context.Context, from, to time.Time, q OutboxQuery) 
 			continue
 		}
 		stats.Scanned++
-		if !at.Before(from) && !at.After(to) && q.matches(*rec) {
-			hits = append(hits, hit{*rec, at})
+		if !at.Before(from) && !at.After(to) {
+			hits = append(hits, sentHit{rec: *rec, at: at})
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].at.After(hits[j].at) })
+	return hits, stats, nil
+}
+
+// limitHits returns hits' records, at most limit of them (0 means no
+// limit), and whether any were cut.
+func limitHits(hits []sentHit, limit int) ([]SentRecord, bool) {
+	truncated := limit > 0 && len(hits) > limit
+	if truncated {
+		hits = hits[:limit]
+	}
 	out := make([]SentRecord, len(hits))
 	for i, h := range hits {
 		out[i] = h.rec
 	}
-	if q.Limit > 0 && len(out) > q.Limit {
-		out, stats.Truncated = out[:q.Limit], true
-	}
-	return out, stats, nil
-}
-
-func (q OutboxQuery) matches(r SentRecord) bool {
-	has := func(field, want string) bool {
-		return want == "" || strings.Contains(strings.ToLower(field), strings.ToLower(want))
-	}
-	return has(r.Subject, q.Subject) && has(r.SentBy, q.SentBy) &&
-		has(strings.Join(r.Recipients(), " "), q.Recipient)
+	return out, truncated
 }
 
 // recordKeys lists the .json records under the day folders ranges touch.

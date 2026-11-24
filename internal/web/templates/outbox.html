@@ -1,7 +1,5 @@
-{{define "header_title"}}Outbox{{end}}
 {{define "header_intro"}}Every email Fleet sent for your organization. Private notes people sent to themselves are not here.{{end}}
 {{define "topbar_actions"}}
-<a href="/" class="btn btn-ghost">Inbox</a>
 <form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action" type="submit" data-tooltip="Sign out" aria-label="Sign out" aria-describedby="sign-out-tooltip">
@@ -30,13 +28,48 @@
 {{- end}}
 {{define "date_input"}}<span class="date-input-wrap">
                 <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
-                <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else}}To date{{end}}" aria-haspopup="dialog" aria-expanded="false">
+                <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else if eq .Key "date_to"}}To date{{else}}day{{end}}" aria-haspopup="dialog" aria-expanded="false">
                   <svg class="date-input-icon" aria-hidden="true"><use href="{{asset "design-system/icons/core-icons.svg"}}#calendar"></use></svg>
                 </button>
               </span>{{end}}
 {{define "content"}}{{with .Page}}
+{{template "mailbox_tabs" "outbox"}}
 <section class="card">
+  <div class="mode-guide">
+    <a class="card featured-link mode-guide__item{{if eq .Mode "view"}} is-selected{{end}}" href="/outbox?mode=view"{{if eq .Mode "view"}} aria-current="true"{{end}}>
+      <div class="featured-head">
+        <p class="featured-kicker">Browse</p>
+        <h2>View Reports</h2>
+      </div>
+      <p class="description">Browse everything Fleet sent on a single day, newest first.</p>
+    </a>
+    <a class="card featured-link mode-guide__item{{if eq .Mode "exact"}} is-selected{{end}}" href="/outbox?mode=exact"{{if eq .Mode "exact"}} aria-current="true"{{end}}>
+      <div class="featured-head">
+        <p class="featured-kicker">Targeted</p>
+        <h2>Search Reports</h2>
+      </div>
+      <p class="description">Filter by recipient, subject, or who sent it when you know what details to target.</p>
+    </a>
+    <a class="card featured-link mode-guide__item{{if eq .Mode "fuzzy"}} is-selected{{end}}" href="/outbox?mode=fuzzy"{{if eq .Mode "fuzzy"}} aria-current="true"{{end}}>
+      <div class="featured-head">
+        <p class="featured-kicker">Flexible</p>
+        <h2>Fuzzy Search</h2>
+      </div>
+      <p class="description">Find close matches with keywords across selected fields when details are uncertain.</p>
+    </a>
+  </div>
+
   <form method="get" action="/outbox" class="filters" id="outbox-form" data-max-days="{{.MaxSearchDays}}">
+    <input type="hidden" name="mode" value="{{.Mode}}" />
+    {{- if eq .Mode "view"}}
+    <fieldset class="date-ranges">
+      <legend>Day</legend>
+      <label aria-label="Day">
+        {{template "date_input" (field "day" .SelectedDay)}}
+      </label>
+    </fieldset>
+    {{- else}}
+    <input type="hidden" name="run_search" value="1" />
     <fieldset class="date-ranges">
       <legend>Sent between</legend>
       <div class="date-range-row">
@@ -50,6 +83,9 @@
         </label>
       </div>
     </fieldset>
+    {{- end}}
+
+    {{- if eq .Mode "exact"}}
     <div class="filters__grid">
       <label>
         Recipient contains
@@ -64,8 +100,46 @@
         <input type="text" name="sent_by" value="{{.SentBy}}" placeholder="name@yourcompany.com" />
       </label>
     </div>
+    {{- end}}
+
+    {{- if eq .Mode "fuzzy"}}
+    <section class="search-panel" aria-label="Fuzzy search filters">
+      <div class="filters__grid">
+        <label class="filters__grid-wide">
+          Fuzzy keywords
+          <input type="text" name="keywords" value="{{.Keywords}}" placeholder="weekly, invoice, report" />
+        </label>
+      </div>
+      <fieldset class="options">
+        <legend>Fuzzy options</legend>
+        <input class="ds-checkbox-input" type="checkbox" id="match-all-checkbox" name="match_all"{{if .MatchAll}} checked{{end}} />
+        <label class="ds-checkbox" for="match-all-checkbox">
+          {{template "check"}}
+          <span class="ds-checkbox__label">Match all keywords</span>
+        </label>
+        <input class="ds-checkbox-input" type="checkbox" id="search-subject-checkbox" name="search_subject"{{if .SearchSubject}} checked{{end}} />
+        <label class="ds-checkbox" for="search-subject-checkbox">
+          {{template "check"}}
+          <span class="ds-checkbox__label">Subject</span>
+        </label>
+        <input class="ds-checkbox-input" type="checkbox" id="search-recipients-checkbox" name="search_recipients"{{if .SearchRecipients}} checked{{end}} />
+        <label class="ds-checkbox" for="search-recipients-checkbox">
+          {{template "check"}}
+          <span class="ds-checkbox__label">Recipients</span>
+        </label>
+        <input class="ds-checkbox-input" type="checkbox" id="search-body-checkbox" name="search_body"{{if .SearchBody}} checked{{end}} />
+        <label class="ds-checkbox" for="search-body-checkbox">
+          {{template "check"}}
+          <span class="ds-checkbox__label">Body (slower, up to {{.MaxBodySearchDays}} days)</span>
+        </label>
+      </fieldset>
+    </section>
+    {{- end}}
+
     <div class="filters__toolbar">
-      <button type="submit" class="btn btn-primary filters__actions" data-loading-text="Working...">Search the Outbox</button>
+      <button type="submit" class="btn btn-primary filters__actions" data-loading-text="Working...">
+        {{- if eq .Mode "view"}}View reports{{else if eq .Mode "exact"}}Search reports{{else}}Run fuzzy search{{end -}}
+      </button>
     </div>
   </form>
 </section>
@@ -80,8 +154,8 @@
 <section class="card inbox-list-card">
   <div class="results-toolbar">
     <div>
-      <h2>Sent ({{len .Rows}}{{if .Truncated}}+{{end}})</h2>
-      <p class="subtle">Read {{.Scanned}} record{{if ne .Scanned 1}}s{{end}}{{if .Unreadable}}; {{.Unreadable}} could not be read{{end}}.{{if .Truncated}} Showing the newest 500: narrow the dates or filters to see the rest.{{end}}</p>
+      <h2>{{if eq .Mode "view"}}Sent on {{.SelectedDay}}{{else}}Sent{{end}} ({{len .Rows}}{{if .Truncated}}+{{end}})</h2>
+      <p class="subtle">Read {{.Scanned}} record{{if ne .Scanned 1}}s{{end}}{{if .Unreadable}}; {{.Unreadable}} could not be read{{end}}.{{if .Truncated}} Showing the {{if eq .Mode "fuzzy"}}best{{else}}newest{{end}} {{.Limit}}: narrow the dates or filters to see the rest.{{end}}</p>
     </div>
   </div>
   {{- if .Rows}}

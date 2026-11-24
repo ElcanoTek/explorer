@@ -64,3 +64,13 @@
   </body>
 </html>
 {{end}}
+{{- /* The mailbox switch at the top of the Inbox and the Outbox (when it is
+       on): page tabs, each page its own URL, so a link with aria-current
+       rather than an ARIA tablist. */}}
+{{define "mailbox_tabs"}}
+<nav class="tabs mailbox-tabs" aria-label="Mailbox">
+  <a class="tab" href="/"{{if eq . "inbox"}} aria-current="page"{{end}}>Inbox</a>
+  <a class="tab" href="/outbox"{{if eq . "outbox"}} aria-current="page"{{end}}>Outbox</a>
+</nav>
+{{- end}}
+{{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"></path></svg></span>{{end}}
