@@ -1,8 +1,5 @@
 {{define "header_intro"}}{{- "" -}}{{end}}
 {{define "topbar_actions"}}
-{{- if .Page.OutboxEnabled}}
-<a href="/outbox" class="btn btn-ghost">Outbox</a>
-{{- end}}
 <form method="post" action="/logout" data-confirm-dialog="sign-out-dialog">
   {{if .Page.CSRFToken}}<input type="hidden" name="csrf_token" value="{{.Page.CSRFToken}}" />{{end}}
   <button class="icon-action" type="submit" data-tooltip="Sign out" aria-label="Sign out" aria-describedby="sign-out-tooltip">
@@ -31,7 +28,6 @@
 {{- end}}
 {{define "hidden_fields"}}{{range .}}
         <input type="hidden" name="{{.Key}}" value="{{.Value}}" />{{end}}{{end}}
-{{define "check"}}<span class="ds-checkbox__box" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"></path></svg></span>{{end}}
 {{define "date_input"}}<span class="date-input-wrap">
                 <input type="text" class="custom-datepicker" name="{{.Key}}" value="{{.Value}}" placeholder="YYYY-MM-DD" required />
                 <button type="button" class="date-input-button" data-date-button aria-label="Choose {{if eq .Key "date_from"}}From date{{else if eq .Key "date_to"}}To date{{else}}day{{end}}" aria-haspopup="dialog" aria-expanded="false">
@@ -39,6 +35,7 @@
                 </button>
               </span>{{end}}
 {{define "content"}}{{with .Page}}
+{{- if .OutboxEnabled}}{{template "mailbox_tabs" "inbox"}}{{end}}
 <section class="card">
   <div class="mode-guide">
     <a class="card featured-link mode-guide__item{{if eq .Mode "view"}} is-selected{{end}}" href="/?mode=view"{{if eq .Mode "view"}} aria-current="true"{{end}}>

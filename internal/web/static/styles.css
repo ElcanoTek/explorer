@@ -1134,3 +1134,16 @@ input.custom-datepicker[readonly] {
     max-width: 100%;
   }
 }
+
+/* The Inbox | Outbox switch: Flag's line tabs (.tabs/.tab) as page links.
+ * Flag styles the selected tab by aria-selected, which belongs to an ARIA
+ * tablist; a link to the current page says aria-current instead, so the
+ * same selected look is given to that here. */
+.mailbox-tabs {
+  margin-bottom: var(--space-4);
+}
+
+.mailbox-tabs .tab[aria-current="page"] {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-accent);
+}

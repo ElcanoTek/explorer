@@ -260,9 +260,13 @@ Fleet's outbound sender (example-config `mcp/outbox.py`) copies every email it
 sends to `EMAIL_S3_OUTBOX_PREFIX` (default `outbox/`) as
 `<prefix>YYYY/MM/DD/<ses-message-id>.eml` plus a `.json` record beside it
 (recipients including Bcc, subject, attachments, `sent_by`, `task_id`).
-`search_outbox` and the web UI's Outbox page read only the records; a sent
-message opens with `get_email` (or `/email`) by its `.eml` key, and a `.json`
-key is never served as mail. A record is used only when its `eml_key` is the
+`search_outbox` and the web UI's Outbox page read the records. The web UI
+gives the Outbox the inbox's three modes behind an Inbox | Outbox switch:
+View (one day), Search (recipient, subject, sent by) and Fuzzy Search
+(keywords over subject, recipients and, when Body is checked, the message
+text; a message is read only when its record alone cannot decide the match).
+A sent message opens with `get_email` (or `/email`) by its `.eml` key, and a
+`.json` key is never served as mail. A record is used only when its `eml_key` is the
 `.eml` beside it.
 
 The prefix sits beside the inbox prefix, never under it, so inbox search never

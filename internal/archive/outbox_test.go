@@ -6,6 +6,7 @@ package archive
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,5 +132,104 @@ func TestOutboxSearchUsesSentAtNotUploadTime(t *testing.T) {
 	got, _, _ = o.Search(context.Background(), day.Add(12*time.Hour), day.Add(16*time.Hour), OutboxQuery{})
 	if len(got) != 1 || got[0].Subject != "Deal sheet" {
 		t.Fatalf("bounds: %+v", got)
+	}
+}
+
+func fuzzyOutbox(t *testing.T, q OutboxFuzzy) ([]string, *fakeStore) {
+	t.Helper()
+	store := outboxFixture(t)
+	got, _, err := NewOutbox(store, settings()).SearchFuzzy(context.Background(), day,
+		day.Add(24*time.Hour-time.Nanosecond), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects := make([]string, 0, len(got))
+	for _, r := range got {
+		subjects = append(subjects, r.Subject)
+	}
+	return subjects, store
+}
+
+func TestOutboxFuzzyScoresLikeTheInbox(t *testing.T) {
+	both := OutboxFuzzy{Subject: true, Recipients: true}
+	for name, tc := range map[string]struct {
+		keywords []string
+		matchAll bool
+		want     string
+	}{
+		"subject":          {[]string{"WEEKLY"}, false, "Weekly report"},
+		"recipient in to":  {[]string{"bob@"}, false, "Deal sheet"},
+		"recipient in bcc": {[]string{"audit"}, false, "Weekly report"},
+		// A subject hit (3) outranks a recipient hit (2), though Deal sheet
+		// was sent later.
+		"best first":    {[]string{"weekly", " bob ", ""}, false, "Weekly report,Deal sheet"},
+		"match all":     {[]string{"weekly", "alice"}, true, "Weekly report"},
+		"match all off": {[]string{"weekly", "nothing"}, true, ""},
+		"no keywords":   {[]string{" ", ""}, false, ""},
+	} {
+		q := both
+		q.Keywords, q.MatchAll = tc.keywords, tc.matchAll
+		got, _ := fuzzyOutbox(t, q)
+		if strings.Join(got, ",") != tc.want {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+	if got, _ := fuzzyOutbox(t, OutboxFuzzy{Keywords: []string{"weekly"}, Recipients: true}); len(got) != 0 {
+		t.Fatalf("matched a field that is off: %q", got)
+	}
+	if got, _ := fuzzyOutbox(t, OutboxFuzzy{Keywords: []string{"weekly", "deal"}, Subject: true, Limit: 1}); len(got) != 1 {
+		t.Fatalf("limit: %q", got)
+	}
+}
+
+func TestOutboxFuzzyReadsABodyOnlyWhenTheRecordCannotDecide(t *testing.T) {
+	// The Weekly report's subject decides it; only the Deal sheet is read.
+	got, store := fuzzyOutbox(t, OutboxFuzzy{Keywords: []string{"weekly"}, Subject: true, Body: true})
+	if strings.Join(got, ",") != "Weekly report" || store.fullGets != 1 {
+		t.Fatalf("got %q after %d message reads", got, store.fullGets)
+	}
+	// "hi" is only in the bodies: both messages are read and match.
+	got, store = fuzzyOutbox(t, OutboxFuzzy{Keywords: []string{"HI"}, Body: true})
+	if len(got) != 2 || store.fullGets != 2 {
+		t.Fatalf("got %q after %d message reads", got, store.fullGets)
+	}
+	if got, _ := fuzzyOutbox(t, OutboxFuzzy{Keywords: []string{"hi"}, Subject: true}); len(got) != 0 {
+		t.Fatalf("searched a body that is off: %q", got)
+	}
+}
+
+func TestOutboxFuzzySkipsAMissingMessage(t *testing.T) {
+	store := outboxFixture(t)
+	delete(store.objects, "outbox/2026/06/01/a.eml")
+	got, _, err := NewOutbox(store, settings()).SearchFuzzy(context.Background(), day,
+		day.Add(24*time.Hour-time.Nanosecond), OutboxFuzzy{Keywords: []string{"hi"}, Body: true})
+	if err != nil || len(got) != 1 || got[0].Subject != "Deal sheet" {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
+func TestOutboxFuzzyBodyIsTheMessagesOwnText(t *testing.T) {
+	store := outboxFixture(t)
+	// An HTML report that attaches an email: the report's HTML is searched,
+	// the attached email's text is not.
+	store.objects["outbox/2026/06/01/a.eml"] = fakeObj{modified: received, data: []byte("From: v@x\r\n" +
+		"Content-Type: multipart/mixed; boundary=XX\r\n\r\n" +
+		"--XX\r\nContent-Type: text/html\r\n\r\n<p>Spend pacing summary</p>\r\n" +
+		"--XX\r\nContent-Type: message/rfc822\r\n\r\nFrom: a@b\r\nContent-Type: text/plain\r\n\r\nforwarded secret\r\n" +
+		"--XX--\r\n")}
+	o := NewOutbox(store, settings())
+	search := func(keyword string) []SentRecord {
+		got, _, err := o.SearchFuzzy(context.Background(), day, day.Add(24*time.Hour-time.Nanosecond),
+			OutboxFuzzy{Keywords: []string{keyword}, Body: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := search("pacing"); len(got) != 1 || got[0].Subject != "Weekly report" {
+		t.Fatalf("the report's HTML was not searched: %+v", got)
+	}
+	if got := search("forwarded"); len(got) != 0 {
+		t.Fatalf("an attached email's text matched: %+v", got)
 	}
 }
