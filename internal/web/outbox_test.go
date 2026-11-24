@@ -146,3 +146,15 @@ func TestInboxLinksToTheOutboxOnlyWhenItIsOn(t *testing.T) {
 		t.Fatalf("/outbox while off: %d", resp.StatusCode)
 	}
 }
+
+func TestALinkFromTheSingleFormOutboxStillSearches(t *testing.T) {
+	e := elcanoEnv(t)
+	putSent(e, "m1", "Weekly report", "dana@northwind.example")
+	putSent(e, "m2", "Deal sheet", "")
+	day := time.Now().UTC().Format("2006-01-02")
+	resp := e.get("/outbox?date_from=" + day + "&date_to=" + day + "&sent_by=dana")
+	if !strings.Contains(resp.body, "Sent (1)") || strings.Contains(resp.body, "Deal sheet") ||
+		!strings.Contains(resp.body, `<input type="hidden" name="mode" value="exact" />`) {
+		t.Fatalf("legacy link:\n%s", resp.body)
+	}
+}

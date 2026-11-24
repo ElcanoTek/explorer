@@ -66,7 +66,18 @@ func (s *Server) handleOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	mode := strings.ToLower(strings.TrimSpace(q.Get("mode")))
-	if mode != "exact" && mode != "fuzzy" {
+	legacy := false
+	if mode == "" {
+		// A link from the single-form Outbox (before the modes) has its
+		// dates and filters but no mode: it was a Search, run at once.
+		for _, k := range []string{"date_from", "date_to", "recipient", "subject", "sent_by"} {
+			legacy = legacy || q.Has(k)
+		}
+	}
+	switch {
+	case legacy:
+		mode = "exact"
+	case mode != "exact" && mode != "fuzzy":
 		mode = "view"
 	}
 	end := today(s.now())
@@ -79,7 +90,7 @@ func (s *Server) handleOutbox(w http.ResponseWriter, r *http.Request) {
 		MaxSearchDays:     s.settings.MaxDatePrefixDays,
 		MaxBodySearchDays: min(s.settings.MaxDatePrefixDays, s.settings.MaxBodySearchDays),
 		Limit:             outboxLimit,
-		Searched:          mode == "view" || q.Get("run_search") == "1",
+		Searched:          mode == "view" || legacy || q.Get("run_search") == "1",
 	}
 	if p, ok := s.auth.(*centralProvider); ok {
 		page.CSRFToken = p.csrfToken(r)
@@ -161,7 +172,7 @@ func (s *Server) searchOutbox(ctx context.Context, page *outboxPage) string {
 		records, stats, err = s.outbox.Search(ctx, from, to, archive.OutboxQuery{Limit: page.Limit})
 	}
 	if err != nil {
-		slog.Warn("outbox search", "mode", page.Mode, "err", err)
+		slog.Warn("outbox search", "err", err)
 		return "The Outbox could not be read. Try again, or narrow the dates."
 	}
 	page.Scanned, page.Unreadable, page.Truncated = stats.Scanned, stats.Unreadable, stats.Truncated
